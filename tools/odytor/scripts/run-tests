@@ -1,0 +1,19 @@
+#!/usr/bin/env sh
+# run-tests - run the odytor automated unit suite.
+#
+# These tests are offline by design: they never call gh, git, the network, or
+# the GitHub API. Pure functions are tested directly; subprocess calls are
+# mocked; PR/issue/label examples come from tests/fixtures/.
+set -eu
+
+SCRIPT_PATH=$0
+case "$SCRIPT_PATH" in
+	*/*) ;;
+	*) SCRIPT_PATH="$(command -v "$SCRIPT_PATH")" ;;
+esac
+SCRIPT_DIR="${SCRIPT_PATH%/*}"
+SCRIPT_DIR="$(CDPATH='' cd "$SCRIPT_DIR" && pwd)"
+ROOT="$(CDPATH='' cd "$SCRIPT_DIR/.." && pwd)"
+export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
+
+exec python3 -m unittest discover -s "$ROOT/tests" -t "$ROOT" -v

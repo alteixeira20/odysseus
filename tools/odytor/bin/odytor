@@ -1,0 +1,14 @@
+#!/usr/bin/env sh
+set -eu
+
+SCRIPT_PATH=$0
+case "$SCRIPT_PATH" in
+	*/*) ;;
+	*) SCRIPT_PATH="$(command -v "$SCRIPT_PATH")" ;;
+esac
+SCRIPT_DIR="${SCRIPT_PATH%/*}"
+SCRIPT_DIR="$(CDPATH='' cd "$SCRIPT_DIR" && pwd)"
+TOOL_ROOT="$(CDPATH='' cd "$SCRIPT_DIR/.." && pwd)"
+
+PYTHONPATH="$TOOL_ROOT${PYTHONPATH:+:$PYTHONPATH}" \
+exec python3 -m odytor "$@"

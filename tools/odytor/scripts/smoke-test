@@ -1,0 +1,76 @@
+#!/usr/bin/env sh
+# smoke-test - MANUAL live checks for odytor.
+#
+# This script fetches and saves reports. It does not write GitHub state.
+#
+# Requirements (these are NOT part of the automated unit suite):
+#   - GitHub CLI authenticated:  gh auth login
+#   - network access to github.com
+#   - pass a repo via ODYTOR_SMOKE_REPO, or use the Odysseus default
+#
+# Usage:
+#   scripts/smoke-test
+#   ODYTOR_SMOKE_REPO=owner/name scripts/smoke-test
+set -u
+
+SCRIPT_PATH=$0
+case "$SCRIPT_PATH" in
+	*/*) ;;
+	*) SCRIPT_PATH="$(command -v "$SCRIPT_PATH")" ;;
+esac
+SCRIPT_DIR="${SCRIPT_PATH%/*}"
+SCRIPT_DIR="$(CDPATH='' cd "$SCRIPT_DIR" && pwd)"
+TOOL_ROOT="$(CDPATH='' cd "$SCRIPT_DIR/.." && pwd)"
+REPO="${ODYTOR_SMOKE_REPO:-pewdiepie-archdaemon/odysseus}"
+ODYTOR="${ODYTOR_BIN:-$TOOL_ROOT/bin/odytor}"
+
+echo "==========================================================================="
+echo "odytor smoke test (READ-ONLY)"
+echo "repo: $REPO"
+echo "Requires: gh auth login, network. No GitHub state is modified."
+echo "==========================================================================="
+
+if [ ! -x "$ODYTOR" ]; then
+	echo "smoke-test: '$ODYTOR' is not executable." >&2
+	exit 1
+fi
+if ! command -v gh >/dev/null 2>&1; then
+	echo "smoke-test: 'gh' not found. Install and run: gh auth login" >&2
+	exit 1
+fi
+if ! gh auth status >/dev/null 2>&1; then
+	echo "smoke-test: gh is not authenticated. Run: gh auth login" >&2
+	exit 1
+fi
+
+fail=0
+
+run() {
+	echo
+	echo "\$ $*"
+	echo "---------------------------------------------------------------------------"
+	if ! "$@"; then
+		echo "[smoke-test] command failed (continuing): $*" >&2
+		fail=1
+	fi
+}
+
+run "$ODYTOR" --version
+run "$ODYTOR" --help
+run "$ODYTOR" --print --pr 3128 --repo "$REPO" --save
+run "$ODYTOR" --print --issue 2523 --repo "$REPO" --save
+run "$ODYTOR" --print --discussion 2528 --repo "$REPO" --save
+run "$ODYTOR" --labels --repo "$REPO"
+run "$ODYTOR" --review --pr 3128 --repo "$REPO"
+
+echo
+echo "==========================================================================="
+if [ "$fail" -eq 0 ]; then
+	echo "smoke-test: all commands completed."
+else
+	echo "smoke-test: one or more commands failed (see output above)."
+fi
+echo "Reminder: this script is read-only; nothing on GitHub was changed."
+echo "==========================================================================="
+
+exit "$fail"

@@ -1,0 +1,15 @@
+{
+  "number": 2523,
+  "title": "Bug: export fails on empty session",
+  "state": "open",
+  "user": {"login": "someuser"},
+  "labels": [{"name": "bug"}, {"name": "needs more info"}],
+  "assignees": [],
+  "milestone": null,
+  "comments": 2,
+  "created_at": "2026-05-01T00:00:00Z",
+  "updated_at": "2026-05-02T00:00:00Z",
+  "closed_at": null,
+  "html_url": "https://github.com/pewdiepie-archdaemon/odysseus/issues/2523",
+  "body": "Steps to reproduce the problem are listed here."
+}

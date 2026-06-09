@@ -1,0 +1,33 @@
+{
+  "number": 3128,
+  "title": "docs: add pull request review template",
+  "url": "https://github.com/pewdiepie-archdaemon/odysseus/pull/3128",
+  "state": "OPEN",
+  "author": {"login": "RaresKeY"},
+  "baseRefName": "dev",
+  "headRefName": "docs/pr-review-template",
+  "isDraft": false,
+  "mergeable": "MERGEABLE",
+  "mergeStateStatus": "BEHIND",
+  "reviewDecision": "",
+  "labels": [{"name": "ready for review"}],
+  "additions": 108,
+  "deletions": 0,
+  "changedFiles": 1,
+  "commits": [{"oid": "aaaaaaa"}, {"oid": "bbbbbbb"}],
+  "statusCheckRollup": [
+    {"name": "lint", "status": "COMPLETED", "conclusion": "SUCCESS"},
+    {"name": "unit", "status": "COMPLETED", "conclusion": "SUCCESS"},
+    {"name": "build", "status": "COMPLETED", "conclusion": "SUCCESS"},
+    {"name": "docs", "status": "COMPLETED", "conclusion": "SUCCESS"}
+  ],
+  "body": "Adds a pull request review template under .github.",
+  "comments": [
+    {"author": {"login": "alice"}},
+    {"author": {"login": "bob"}},
+    {"author": {"login": "carol"}}
+  ],
+  "reviews": [],
+  "createdAt": "2026-06-06T16:43:46Z",
+  "updatedAt": "2026-06-08T18:01:44Z"
+}
