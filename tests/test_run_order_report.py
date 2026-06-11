@@ -125,6 +125,13 @@ def test_explicit_seed_is_printed_with_repro_command(capsys):
     assert f"reproduce with: {repro}" in out
 
 
+def test_working_directory_is_reported(capsys, monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    run(["--seed", "123", "--", "-q"], pytest_main=_FakePytestMain())
+    out = capsys.readouterr().out
+    assert f"[order-report] working directory: {tmp_path}" in out
+
+
 def test_footer_repeats_seed_and_outcome(capsys):
     run(["--seed", "123", "--", "-q"], pytest_main=_FakePytestMain(returncode=1))
     out = capsys.readouterr().out

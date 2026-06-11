@@ -16,7 +16,8 @@ Examples:
 
 The shuffle is applied through a local ``pytest_collection_modifyitems`` hook
 passed to ``pytest.main`` as an in-process plugin; no conftest or global
-plugin is involved. The exit code is pytest's own.
+plugin is involved. Reproduction requires the reported working directory,
+seed, pytest arguments, and test environment. The exit code is pytest's own.
 """
 from __future__ import annotations
 
@@ -105,7 +106,12 @@ def print_report_header(seed: int, pytest_args: Sequence[str]) -> None:
         "--",
         *pytest_args,
     ]
+    print(f"[order-report] working directory: {Path.cwd()}")
     print(f"[order-report] shuffling test order with seed {seed}")
+    print(
+        "[order-report] reproduce from this working directory with the same "
+        "test environment:"
+    )
     print(f"[order-report] reproduce with: {shlex.join(repro)}")
 
 
