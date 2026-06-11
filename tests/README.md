@@ -83,6 +83,30 @@ python3 -m pytest tests/test_auth_config_lock_concurrency.py
 python3 -m pytest -m slow
 ```
 
+## Order-sensitivity reporting (report-only)
+
+`tests/run_order_report.py` runs pytest with the collected test items shuffled
+by a seeded RNG, to surface order-sensitive tests (hidden coupling through
+shared import state, module caches, databases, etc.). It is report-only: it is
+not wired into CI, adds no gate, and changes no normal pytest collection or
+ordering - the shuffle exists only inside this runner. The seed is always
+printed, and pytest targets/options go after a literal `--`:
+
+```bash
+python3 tests/run_order_report.py --seed 123 -- tests/cli/ -q
+python3 tests/run_order_report.py -- tests/cli/ -q   # generates and prints a seed
+```
+
+The same seed reproduces the same order, so to reproduce a failing run, re-run
+with the seed it printed (the runner prints an exact reproduction command at
+the top of each run). Failures discovered this way are real isolation bugs:
+fix them in separate scoped PRs - do not silence them with `skip`/`xfail`, and
+do not "fix" them by depending on a particular order.
+
+The runner propagates pytest's exit code, so it composes with normal local
+workflows; "report-only" means it is not a CI gate, not that failures are
+swallowed.
+
 ## Core principles
 
 - Keep PRs small and homogeneous: one kind of change per PR.
