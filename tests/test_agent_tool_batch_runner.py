@@ -9,6 +9,7 @@ from src.agent.execution.batch_runner import (
     ToolBatchRunner,
     ToolBatchState,
 )
+from src.agent.execution.observation_ledger import ObservationLedger
 
 
 def _block(name="bash", content='{"command":"printf ok"}'):
@@ -52,7 +53,7 @@ def _events(chunks):
     ]
 
 
-def _runner(request, state, execute, appended):
+def _runner(request, state, execute, appended, *, format_result=None):
     def append_results(*args, **kwargs):
         appended.append((args, kwargs))
 
@@ -60,8 +61,10 @@ def _runner(request, state, execute, appended):
         request,
         state,
         execute_tool=execute,
-        format_result=lambda desc, result: (
-            f"{desc}: {result.get('output', result.get('error', ''))}"
+        format_result=format_result or (
+            lambda desc, result: (
+                f"{desc}: {result.get('output', result.get('error', ''))}"
+            )
         ),
         append_results=append_results,
         strip_tool_blocks=lambda text, **kwargs: text,
@@ -201,3 +204,40 @@ async def test_ask_user_persists_question_and_stops_before_threading():
     assert appended == []
     assert runner.outcome is not None
     assert runner.outcome.disposition is BatchDisposition.AWAIT_USER
+
+
+@pytest.mark.asyncio
+async def test_repeated_read_is_marked_in_live_batch_without_hiding_output():
+    from src.tool_execution import format_tool_result
+
+    async def execute(block, **kwargs):
+        return "read_file: sample.py", {"output": "important bytes", "exit_code": 0}
+
+    ledger = ObservationLedger()
+    state = _state()
+    appended = []
+    request = _request(
+        [
+            _block("read_file", '{"path":"sample.py"}'),
+            _block("read_file", '{"path":"sample.py"}'),
+        ],
+        observation_ledger=ledger,
+        allowed_tools={"read_file"},
+    )
+    runner = _runner(
+        request,
+        state,
+        execute,
+        appended,
+        format_result=format_tool_result,
+    )
+
+    chunks = [chunk async for chunk in runner.stream()]
+
+    assert len(appended) == 1
+    threaded_results = appended[0][0][3]
+    assert "important bytes" in threaded_results[0]
+    assert "important bytes" in threaded_results[1]
+    assert "Repeated observation" in threaded_results[1]
+    assert len(ledger) == 1
+    assert len([event for event in _events(chunks) if event.get("type") == "tool_output"]) == 2

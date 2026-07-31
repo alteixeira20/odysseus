@@ -16,6 +16,13 @@ export function toolTerminalState(event) {
   return (event?.exit_code === 0 || event?.exit_code == null) ? 'done' : 'failed';
 }
 
+export function runTerminalToolState(state) {
+  if (state === 'completed' || state === 'done') return 'done';
+  if (state === 'cancelled' || state === 'stopped') return 'cancelled';
+  if (state === 'error' || state === 'failed') return 'failed';
+  return 'interrupted';
+}
+
 export function settleToolNode(node, state) {
   if (!node || !node.classList.contains('running')) return false;
   stopToolNodeTimers(node);

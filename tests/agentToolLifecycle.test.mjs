@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  runTerminalToolState,
   settleRunningToolNodes,
   settleToolNode,
   toolTerminalState,
@@ -51,6 +52,14 @@ test('terminal state distinguishes timeout, cancellation, failure and success', 
   assert.equal(toolTerminalState({ cancelled: true }), 'cancelled');
   assert.equal(toolTerminalState({ exit_code: 7 }), 'failed');
   assert.equal(toolTerminalState({ exit_code: 0 }), 'done');
+});
+
+
+test('run terminal states settle tools deterministically', () => {
+  assert.equal(runTerminalToolState('completed'), 'done');
+  assert.equal(runTerminalToolState('error'), 'failed');
+  assert.equal(runTerminalToolState('cancelled'), 'cancelled');
+  assert.equal(runTerminalToolState('future-state'), 'interrupted');
 });
 
 

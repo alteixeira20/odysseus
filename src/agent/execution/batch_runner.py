@@ -10,6 +10,7 @@ from typing import Any, AsyncIterator, Callable, Optional
 
 from src.agent.events import run_status_event
 from src.agent.execution.executor import ToolExecutionHandle
+from src.agent.execution.observation_ledger import ObservationLedger
 from src.agent.execution.result_adapters import (
     DOCUMENT_TOOL_NAMES,
     note_list_summary,
@@ -62,6 +63,7 @@ class ToolBatchRequest:
     odysseus_notes_finetune: bool = False
     odysseus_doc_finetune: bool = False
     odysseus_doc_stream_create: bool = False
+    observation_ledger: Optional[ObservationLedger] = None
 
 
 @dataclass(frozen=True)
@@ -203,6 +205,19 @@ class ToolBatchRunner:
                             }
                         )
                     description, result = await execution.result()
+
+            if request.observation_ledger is not None:
+                observation_notice = request.observation_ledger.note_tool_result(
+                    tool=block.tool_type,
+                    content=block.content,
+                    result=result,
+                )
+                if observation_notice:
+                    result = {
+                        **result,
+                        "repeated_observation": True,
+                        "observation_notice": observation_notice,
+                    }
 
             self._unlock_skill_tools(block, result)
             projection = project_tool_result(

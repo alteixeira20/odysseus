@@ -16,6 +16,78 @@ _CODENAV_SKIP_DIRS = frozenset({
 })
 _CODENAV_MAX_HITS = 200
 _CODENAV_MAX_LINE = 400
+_CODENAV_MAX_OFFSET = 10_000
+
+
+def _pagination_args(args: Dict[str, Any]) -> Tuple[int, int]:
+    try:
+        offset = int(args.get("offset") or 0)
+    except (TypeError, ValueError):
+        offset = 0
+    try:
+        limit = int(args.get("max_results") or _CODENAV_MAX_HITS)
+    except (TypeError, ValueError):
+        limit = _CODENAV_MAX_HITS
+    return (
+        max(0, min(offset, _CODENAV_MAX_OFFSET)),
+        max(1, min(limit, _CODENAV_MAX_HITS)),
+    )
+
+
+def _paged_result(
+    items: List[str],
+    *,
+    tool: str,
+    offset: int,
+    limit: int,
+    empty_output: str,
+    prefix: str = "",
+    source_has_more: bool = False,
+    total_results: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Return a bounded result page with a stable, model-readable cursor."""
+
+    # Reserve room for the continuation notice and structured formatting.
+    char_budget = max(MAX_OUTPUT_CHARS - len(prefix) - 400, 1)
+    selected: List[str] = []
+    used = 0
+    for item in items[offset : offset + limit]:
+        line = str(item)
+        addition = len(line) + (1 if selected else 0)
+        if selected and used + addition > char_budget:
+            break
+        if not selected and addition > char_budget:
+            line = line[:char_budget]
+            addition = len(line)
+        selected.append(line)
+        used += addition
+
+    next_offset = offset + len(selected)
+    has_more = next_offset < len(items) or source_has_more
+    if selected:
+        body = "\n".join(selected)
+        output = f"{prefix}{body}"
+    else:
+        output = empty_output
+    result: Dict[str, Any] = {
+        "output": output,
+        "exit_code": 0,
+        "offset": offset,
+        "returned_results": len(selected),
+        "truncated": has_more,
+    }
+    if total_results is not None:
+        result["total_results"] = total_results
+    if has_more and selected:
+        result["next_offset"] = next_offset
+        result["resume_hint"] = (
+            f"Call {tool} again with offset={next_offset} and the same "
+            "search arguments to continue."
+        )
+        result["output"] += (
+            f"\n... [more results; continue with offset={next_offset}]"
+        )
+    return result
 
 
 def _glob_to_regex(pat: str) -> "re.Pattern":
@@ -445,14 +517,17 @@ class LsTool:
     async def execute(self, content: str, ctx: dict) -> dict:
         from src.tool_execution import _resolve_tool_path, _resolve_search_root, _truncate
         raw_path = ""
+        args: Dict[str, Any] = {}
         _s = (content or "").strip()
         if _s.startswith("{"):
             try:
-                raw_path = str(json.loads(_s).get("path", "")).strip()
+                args = json.loads(_s)
+                raw_path = str(args.get("path", "")).strip()
             except json.JSONDecodeError:
                 raw_path = ""
         else:
             raw_path = _s.split("\n", 1)[0].strip()
+        offset, max_hits = _pagination_args(args)
         try:
             root = _resolve_search_root(raw_path)
         except ValueError as e:
@@ -476,19 +551,24 @@ class LsTool:
             except (PermissionError, OSError) as _e:
                 return None, f"ls: {_e}"
             rows.sort(key=lambda r: (not r[0], r[1].lower()))
-            lines = [f"{root}:"]
-            for is_dir, name, size in rows[:_CODENAV_MAX_HITS]:
-                lines.append(f"  {name}/" if is_dir else f"  {name}  ({size} B)")
-            if len(rows) > _CODENAV_MAX_HITS:
-                lines.append(f"  ... [{len(rows) - _CODENAV_MAX_HITS} more]")
-            if not rows:
-                lines.append("  (empty)")
-            return "\n".join(lines), None
+            lines = [
+                f"  {name}/" if is_dir else f"  {name}  ({size} B)"
+                for is_dir, name, size in rows
+            ]
+            return lines, None
 
-        out, err = await asyncio.to_thread(_ls)
+        lines, err = await asyncio.to_thread(_ls)
         if err:
             return {"error": err, "exit_code": 1}
-        return {"output": _truncate(out), "exit_code": 0}
+        return _paged_result(
+            lines,
+            tool="ls",
+            offset=offset,
+            limit=max_hits,
+            empty_output=f"{root}:\n  (empty)",
+            prefix=f"{root}:\n",
+            total_results=len(lines),
+        )
 
 class GlobTool:
     async def execute(self, content: str, ctx: dict) -> dict:
@@ -511,6 +591,7 @@ class GlobTool:
         pattern = str(args.get("pattern", "")).strip()
         if not pattern:
             return {"error": "glob: pattern is required", "exit_code": 1}
+        offset, max_hits = _pagination_args(args)
         try:
             root = _resolve_search_root(str(args.get("path", "")))
         except ValueError as e:
@@ -550,18 +631,21 @@ class GlobTool:
             # Compile glob to regex: * stays within one segment, **/ spans dirs.
             regex = _glob_to_regex(norm_pat)
             matched = []
-            cap = _CODENAV_MAX_HITS * 5
+            # Gather one extra item beyond the requested page. The hard scan
+            # cap bounds memory while increasing with later cursor pages.
+            cap = max(_CODENAV_MAX_HITS * 5, offset + max_hits + 1)
+            scan_capped = False
             try:
                 for dp, dns, fns in os.walk(base):
                     # Prune skipped dirs before descending (unlike rglob which
                     # descends first then filters — fatal on large node_modules).
                     # Sensitive dirs (.ssh, .gnupg, …) are pruned too so glob
                     # never enumerates the keys/tokens inside them.
-                    dns[:] = [
+                    dns[:] = sorted(
                         d for d in dns
                         if d not in _CODENAV_SKIP_DIRS and d not in _SENSITIVE_BASENAMES
-                    ]
-                    for name in fns + dns:
+                    )
+                    for name in sorted(fns) + dns:
                         full = os.path.join(dp, name)
                         rel = os.path.relpath(full, base).replace(os.sep, "/")
                         if regex.fullmatch(rel) or regex.fullmatch(name):
@@ -574,22 +658,41 @@ class GlobTool:
                             except OSError:
                                 mtime = 0
                             matched.append((mtime, full))
-                    if len(matched) > cap:
+                    if len(matched) >= cap:
+                        scan_capped = True
                         break
             except OSError as _e:
                 return None, f"glob: {_e}"
-            matched.sort(key=lambda t: t[0], reverse=True)
-            return [pth for _, pth in matched[:_CODENAV_MAX_HITS]], None
+            # Path tie-breaker makes cursor pages deterministic when many files
+            # share a timestamp (common after checkout/extraction).
+            matched.sort(key=lambda item: (-item[0], item[1]))
+            return [pth for _, pth in matched], scan_capped, None
 
-        paths, err = await asyncio.to_thread(_glob)
+        globbed = await asyncio.to_thread(_glob)
+        if len(globbed) == 2:
+            # Literal lookup and early errors use the compact return shape.
+            paths, err = globbed
+            scan_capped = False
+        else:
+            paths, scan_capped, err = globbed
         if err:
             return {"error": err, "exit_code": 1}
         if not paths:
-            return {"output": f"No files matching {pattern!r} under {root}", "exit_code": 0}
-        out = "\n".join(paths)
-        if len(paths) >= _CODENAV_MAX_HITS:
-            out += f"\n... [capped at {_CODENAV_MAX_HITS} files]"
-        return {"output": _truncate(out), "exit_code": 0}
+            return _paged_result(
+                [],
+                tool="glob",
+                offset=offset,
+                limit=max_hits,
+                empty_output=f"No files matching {pattern!r} under {root}",
+            )
+        return _paged_result(
+            paths,
+            tool="glob",
+            offset=offset,
+            limit=max_hits,
+            empty_output=f"No files matching {pattern!r} under {root}",
+            source_has_more=scan_capped,
+        )
 
 class GrepTool:
     async def execute(self, content: str, ctx: dict) -> dict:
@@ -614,11 +717,8 @@ class GrepTool:
             return {"error": "grep: pattern is required", "exit_code": 1}
         ignore_case = bool(args.get("ignore_case"))
         glob_pat = str(args.get("glob", "") or "").strip()
-        try:
-            max_hits = int(args.get("max_results") or _CODENAV_MAX_HITS)
-        except (TypeError, ValueError):
-            max_hits = _CODENAV_MAX_HITS
-        max_hits = max(1, min(max_hits, _CODENAV_MAX_HITS))
+        offset, max_hits = _pagination_args(args)
+        required_hits = offset + max_hits + 1
         try:
             root = _resolve_search_root(str(args.get("path", "")))
         except ValueError as e:
@@ -629,8 +729,14 @@ class GrepTool:
             import shutil
             rg = shutil.which("rg")
             if rg:
-                cmd = [rg, "--line-number", "--no-heading", "--color=never",
-                       "--max-count", str(max_hits)]
+                cmd = [
+                    rg,
+                    "--line-number",
+                    "--no-heading",
+                    "--color=never",
+                    "--sort",
+                    "path",
+                ]
                 if ignore_case:
                     cmd.append("--ignore-case")
                 if glob_pat:
@@ -646,30 +752,80 @@ class GrepTool:
                 cmd += ["--regexp", pattern, root]
                 try:
                     import subprocess
-                    p = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
-                    lines = [ln for ln in (p.stdout or "").splitlines() if ln][:max_hits]
-                    return lines, None
+                    import threading
+
+                    p = subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        bufsize=1,
+                    )
+                    timed_out = threading.Event()
+
+                    def _kill_on_timeout():
+                        timed_out.set()
+                        try:
+                            p.kill()
+                        except ProcessLookupError:
+                            pass
+
+                    timer = threading.Timer(20, _kill_on_timeout)
+                    timer.daemon = True
+                    timer.start()
+                    lines = []
+                    stopped_early = False
+                    try:
+                        assert p.stdout is not None
+                        for raw_line in p.stdout:
+                            line = raw_line.rstrip("\n")
+                            if line:
+                                lines.append(line)
+                            if len(lines) >= required_hits:
+                                stopped_early = True
+                                try:
+                                    p.terminate()
+                                except ProcessLookupError:
+                                    pass
+                                break
+                        try:
+                            p.wait(timeout=2)
+                        except subprocess.TimeoutExpired:
+                            p.kill()
+                            p.wait(timeout=2)
+                    finally:
+                        timer.cancel()
+                    stderr = p.stderr.read() if p.stderr is not None else ""
+                    if timed_out.is_set():
+                        return None, False, "grep: timed out"
+                    if not stopped_early and p.returncode not in (0, 1):
+                        detail = stderr.strip() or f"ripgrep exited {p.returncode}"
+                        return None, False, f"grep: {detail}"
+                    return lines, stopped_early, None
                 except subprocess.TimeoutExpired:
-                    return None, "grep: timed out"
+                    return None, False, "grep: timed out"
                 except Exception as _e:
-                    return None, f"grep: {_e}"
+                    return None, False, f"grep: {_e}"
             try:
                 rx = _re.compile(pattern, _re.IGNORECASE if ignore_case else 0)
             except _re.error as _e:
-                return None, f"grep: bad pattern: {_e}"
+                return None, False, f"grep: bad pattern: {_e}"
             hits = []
-            if os.path.isfile(root):
-                file_iter = [root]
-            else:
-                file_iter = []
+            def _files():
+                if os.path.isfile(root):
+                    yield root
+                    return
                 for dp, dns, fns in os.walk(root):
-                    dns[:] = [d for d in dns if d not in _CODENAV_SKIP_DIRS]
-                    for fn in fns:
-                        if glob_pat and not fnmatch.fnmatch(fn, glob_pat):
-                            continue
-                        file_iter.append(os.path.join(dp, fn))
+                    dns[:] = sorted(d for d in dns if d not in _CODENAV_SKIP_DIRS)
+                    for fn in sorted(fns):
+                        if not glob_pat or fnmatch.fnmatch(fn, glob_pat):
+                            yield os.path.join(dp, fn)
+
+            stopped_early = False
+            file_iter = _files()
             for fp in file_iter:
-                if len(hits) >= max_hits:
+                if len(hits) >= required_hits:
+                    stopped_early = True
                     break
                 if _is_sensitive_path(os.path.realpath(fp)):
                     continue
@@ -678,21 +834,32 @@ class GrepTool:
                         for i, line in enumerate(f, 1):
                             if rx.search(line):
                                 hits.append(f"{fp}:{i}:{line.rstrip()[:_CODENAV_MAX_LINE]}")
-                                if len(hits) >= max_hits:
+                                if len(hits) >= required_hits:
+                                    stopped_early = True
                                     break
                 except (UnicodeDecodeError, OSError):
                     continue
-            return hits, None
+            return hits, stopped_early, None
 
-        lines, err = await asyncio.to_thread(_grep)
+        lines, source_has_more, err = await asyncio.to_thread(_grep)
         if err:
             return {"error": err, "exit_code": 1}
         if not lines:
-            return {"output": f"No matches for {pattern!r} under {root}", "exit_code": 0}
-        out = "\n".join(ln[:_CODENAV_MAX_LINE] for ln in lines)
-        if len(lines) >= max_hits:
-            out += f"\n... [capped at {max_hits} matches]"
-        return {"output": _truncate(out), "exit_code": 0}
+            return _paged_result(
+                [],
+                tool="grep",
+                offset=offset,
+                limit=max_hits,
+                empty_output=f"No matches for {pattern!r} under {root}",
+            )
+        return _paged_result(
+            [line[:_CODENAV_MAX_LINE] for line in lines],
+            tool="grep",
+            offset=offset,
+            limit=max_hits,
+            empty_output=f"No matches for {pattern!r} under {root}",
+            source_has_more=source_has_more,
+        )
 
 class GetWorkspaceTool:
     """Report the active workspace folder (no args). File tools are confined to

@@ -1059,6 +1059,7 @@ _FORMATTER_HANDLED_KEYS = {
     "response", "results", "session_id", "name", "model", "session_name",
     "success", "path", "action", "title", "doc_id", "version", "applied",
     "error", "output",
+    "observation_notice", "repeated_observation",
 }
 
 
@@ -1068,6 +1069,9 @@ def format_tool_result(description: str, result: Dict) -> str:
 
     if result.get("error"):
         parts.append(f"**Error:** {result['error']}")
+
+    if result.get("observation_notice"):
+        parts.append(f"**Repeated observation:** {result['observation_notice']}")
 
     if "stdout" in result:
         if result["stdout"]:

@@ -274,6 +274,18 @@ async def test_subprocess_cwd_is_workspace_e2e(ws, admin):
     assert os.path.realpath(r["output"].strip()) == os.path.realpath(ws)
 
 
+@pytest.mark.asyncio
+async def test_local_bash_dispatch_starts_in_selected_workspace_e2e(ws, admin):
+    _, result = await execute_tool_block(
+        _block("bash", "pwd"),
+        owner="a",
+        workspace=ws,
+        allowed_tools={"bash"},
+    )
+    assert result["exit_code"] == 0
+    assert os.path.realpath(result["output"].strip()) == os.path.realpath(ws)
+
+
 # ── get_workspace tool ──────────────────────────────────────────────────
 
 @pytest.mark.asyncio

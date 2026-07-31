@@ -68,11 +68,39 @@ def test_local_models_receive_only_keyword_requested_mcp_schemas():
     assert requested.names == ("mcp__demo__read",)
 
 
-def test_local_schema_behavior_retains_legacy_disabled_tool_semantics():
+def test_local_schema_behavior_enforces_disabled_tool_semantics():
     prepared = _prepare(
         is_api_model=False,
         latest_user_text="use mcp",
         disabled_tools={"mcp__demo__read"},
     )
 
+    assert prepared.names == ()
+
+
+def test_local_schema_explicit_activation_does_not_require_keyword_match():
+    prepared = _prepare(
+        is_api_model=False,
+        latest_user_text="Use Serena",
+        mcp_keywords=("mcp", "demo"),
+        mcp_explicit_activation=True,
+    )
+
     assert prepared.names == ("mcp__demo__read",)
+
+
+def test_provider_schema_pack_deduplicates_names_with_local_precedence():
+    local = _schema("bash")
+    local["function"]["description"] = "local implementation"
+    duplicate = _schema("bash")
+    duplicate["function"]["description"] = "duplicate implementation"
+
+    prepared = _prepare(
+        relevant_tools={"bash"},
+        function_schemas=[local, duplicate],
+        mcp_schemas=[duplicate],
+    )
+
+    assert prepared.names == ("bash",)
+    assert len(prepared.schemas) == 1
+    assert prepared.schemas[0]["function"]["description"] == "local implementation"

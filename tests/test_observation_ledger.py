@@ -1,8 +1,4 @@
-"""Coverage for ObservationLedger (src/agent/execution/observation_ledger.py)
-— repeated-read protection for context-pressure prevention. Standalone this
-pass; not yet wired into the live tool-dispatch path (see that module's
-docstring for why — deferred to the typed per-run execution context).
-"""
+"""Coverage for per-run repeated-read protection."""
 
 from src.agent.execution.observation_ledger import ObservationLedger
 
@@ -79,3 +75,28 @@ def test_concurrent_runs_do_not_share_ledgers():
     assert warning is None
     assert len(run_a) == 1
     assert len(run_b) == 1
+
+
+def test_live_result_helper_flags_same_request_and_same_content():
+    ledger = ObservationLedger()
+    kwargs = {
+        "tool": "read_file",
+        "content": '{"path":"src/app.py","offset":1,"limit":20}',
+        "result": {"output": "same bytes", "exit_code": 0},
+    }
+    assert ledger.note_tool_result(**kwargs) is None
+    assert ledger.note_tool_result(**kwargs) is not None
+
+
+def test_live_result_helper_does_not_flag_changed_content():
+    ledger = ObservationLedger()
+    common = {
+        "tool": "grep",
+        "content": '{"pattern":"TODO","path":"src"}',
+    }
+    assert ledger.note_tool_result(
+        **common, result={"output": "src/a.py:1:TODO", "exit_code": 0}
+    ) is None
+    assert ledger.note_tool_result(
+        **common, result={"output": "src/b.py:2:TODO", "exit_code": 0}
+    ) is None

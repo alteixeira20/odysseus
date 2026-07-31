@@ -1779,6 +1779,7 @@ def setup_chat_routes(
                                     "run_status",
                                     "provider_timing",
                                     "effective_tools",
+                                    "mcp_activation",
                                     "run_state",
                                 ):
                                     if data.get("type") == "agent_step":

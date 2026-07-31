@@ -51,3 +51,16 @@ def run_status_event(phase: str, label: str, **extra: Any) -> str:
             **extra,
         )
     )
+
+
+def run_state_event(state: str, **extra: Any) -> str:
+    """Encode the single terminal lifecycle state for a finished run."""
+
+    return encode_legacy_sse(
+        AgentEvent.typed(
+            "run_state",
+            state=state,
+            terminal=True,
+            **extra,
+        )
+    )

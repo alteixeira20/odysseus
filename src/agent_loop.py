@@ -42,6 +42,7 @@ from src.agent.supervision.loop_breaker import (
 from src.agent.config import AgentSettingsSnapshot
 from src.agent.events import (
     encode_legacy_sse as _encode_legacy_sse,
+    run_state_event as _run_state_event,
     run_status_event as _run_status_event,
 )
 from src.agent.providers.capabilities import (
@@ -111,6 +112,10 @@ from src.agent.prompting.contexts.uploads import (
 from src.agent.prompting.contexts.shell_guidance import (
     shell_guidance_if_available as _shell_guidance_if_available,
 )
+from src.agent.tools.mcp_activation import (
+    McpActivationDecision,
+    resolve_mcp_activation,
+)
 from src.agent.prompting.contexts.skills import skill_index_context
 from src.agent.prompting.contexts.email import (
     compact_email_draft_context as _compact_email_draft_context,
@@ -158,6 +163,7 @@ from src.agent.execution.message_threading import (
     append_tool_results as _append_tool_results,
 )
 from src.agent.execution.executor import ToolExecutionHandle
+from src.agent.execution.observation_ledger import ObservationLedger
 from src.agent.execution.batch_runner import (
     BatchDisposition,
     ToolBatchRequest,
@@ -698,6 +704,7 @@ def _build_system_prompt(
     active_email: Optional[Dict[str, str]] = None,
     workspace: Optional[str] = None,
     effective_tool_names: Optional[Set[str]] = None,
+    mcp_activation_notice: str = "",
 ) -> List[Dict]:
     """Build agent system prompt, inject MCP/document context, merge consecutive system msgs."""
     global _cached_base_prompt, _cached_base_prompt_key
@@ -790,6 +797,11 @@ def _build_system_prompt(
     _email_style_message = None
     _integ_message = None
     _mcp_desc_message = None
+    _mcp_activation_message = (
+        untrusted_context_message("MCP activation status", mcp_activation_notice)
+        if mcp_activation_notice
+        else None
+    )
     _active_doc_is_email_doc = False
     if active_document:
         set_active_document(active_document.id)
@@ -1234,6 +1246,7 @@ def _build_system_prompt(
             _email_message,
             _email_style_message,
             _integ_message,
+            _mcp_activation_message,
             _mcp_desc_message,
             _skills_message,
             _datetime_message,
@@ -1505,6 +1518,7 @@ async def stream_agent_loop(
             "missing_workspace": True,
         }
         yield f"data: {json.dumps({'type': 'metrics', 'data': metrics})}\n\n"
+        yield _run_state_event("completed", reason="missing_workspace")
         yield "data: [DONE]\n\n"
         return
     logger.info(
@@ -1602,6 +1616,7 @@ async def stream_agent_loop(
             "direct_low_signal": True,
         }
         yield f"data: {json.dumps({'type': 'metrics', 'data': metrics})}\n\n"
+        yield _run_state_event("completed", reason="direct_response")
         yield "data: [DONE]\n\n"
         return
 
@@ -1906,6 +1921,37 @@ async def stream_agent_loop(
     if _relevant_tools is not None:
         logger.info("[agent-intent] selected_tools=%s", sorted(_relevant_tools)[:50])
 
+    # Explicit server selection is stronger than relevance retrieval but still
+    # composes beneath disabled-tool, authorization, and security policy.  The
+    # manager snapshot resolves stable server IDs/names; no qualified-name
+    # prefix or server-specific constant participates in selection.
+    _mcp_activation = McpActivationDecision()
+    if mcp_mgr:
+        try:
+            _mcp_activation = resolve_mcp_activation(
+                _last_user,
+                mcp_mgr.get_server_catalog(_mcp_disabled_map or {}),
+            )
+            if _mcp_activation.explicit:
+                _relevant_tools = _mcp_activation.apply(_relevant_tools)
+                logger.info(
+                    "[mcp-activation] exclusive=%s servers=%s tools=%s diagnostics=%s",
+                    _mcp_activation.exclusive,
+                    sorted(_mcp_activation.requested_server_ids),
+                    len(_mcp_activation.activated_tool_names),
+                    [item.code for item in _mcp_activation.diagnostics],
+                )
+                yield (
+                    "data: "
+                    + json.dumps(_mcp_activation.event())
+                    + "\n\n"
+                )
+        except Exception as _mcp_activation_error:
+            logger.warning(
+                "Explicit MCP activation resolution failed safely: %s",
+                _mcp_activation_error,
+            )
+
     prep_timings["tool_selection"] = time.time() - _t1
 
     _t2 = time.time()
@@ -2013,6 +2059,7 @@ async def stream_agent_loop(
         active_email=active_email,
         workspace=workspace,
         effective_tool_names=set(_effective_tools.names),
+        mcp_activation_notice=_mcp_activation.prompt_notice(),
     )
     if _ody_doc_finetune_mode and not plan_mode and not approved_plan and not guide_only:
         messages = _minimal_odysseus_doc_messages(
@@ -2158,6 +2205,8 @@ async def stream_agent_loop(
     # this round (so there is nothing that could be duplicated by resuming).
     _truncation_continuation_count = 0
     _MAX_TRUNCATION_CONTINUATIONS = 4
+    # Per-run by construction: concurrent sessions never share observations.
+    _observation_ledger = ObservationLedger()
 
     # Set when the loop runs out of rounds while the agent was still actively
     # using tools — i.e. it was cut off, not finished. Drives a "Continue" event
@@ -2217,6 +2266,7 @@ async def stream_agent_loop(
             disabled_tools=disabled_tools,
             latest_user_text=_last_user,
             mcp_keywords=_MCP_KEYWORDS,
+            mcp_explicit_activation=_mcp_activation.explicit,
         )
         all_tool_schemas = _prepared_schemas.as_provider_list()
         agent_stream_timeout = _settings.stream_timeout_seconds
@@ -2330,7 +2380,7 @@ async def stream_agent_loop(
             )
             if _provider_outcome.terminal_error_chunk:
                 yield _provider_outcome.terminal_error_chunk
-            yield f'data: {json.dumps({"type": "run_state", "state": "error", "terminal": True})}\n\n'
+            yield _run_state_event("error", reason="provider_error")
             yield "data: [DONE]\n\n"
             return
 
@@ -2818,6 +2868,7 @@ async def stream_agent_loop(
                 odysseus_notes_finetune=_ody_notes_finetune_mode,
                 odysseus_doc_finetune=_ody_doc_finetune_mode,
                 odysseus_doc_stream_create=_ody_doc_stream_create_mode,
+                observation_ledger=_observation_ledger,
             ),
             _batch_state,
             execute_tool=execute_tool_block,
@@ -2978,4 +3029,8 @@ async def stream_agent_loop(
         except Exception as _esc_err:
             logger.warning(f"teacher escalation hook failed: {_esc_err}", exc_info=True)
 
+    yield _run_state_event(
+        "completed",
+        reason="rounds_exhausted" if _exhausted_rounds else "completed",
+    )
     yield "data: [DONE]\n\n"

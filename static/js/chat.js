@@ -24,10 +24,12 @@ import createResearchSynapse from './researchSynapse.js';
 import { createStreamRenderer } from './streamingRenderer.js';
 import { wireArrowUpRecall, getUserMessagesFromChatHistory } from './composerArrowUpRecall.js?v=20260714promptrecall';
 import {
+  runTerminalToolState,
   settleRunningToolNodes,
   stopToolNodeTimers,
   toolTerminalState,
 } from './agentToolLifecycle.js?v=20260731bash1';
+import { appendAgentToolRequestFields } from './agentToolRequest.js?v=20260731runtime1';
 
   const RESEARCH_TIMEOUT_MS = 360000;
   const DEFAULT_TIMEOUT_MS = 120000;
@@ -1685,17 +1687,17 @@ import {
 	        fd.set('mode', 'chat');
 	        fd.set('plan_mode', 'false');
       }
-      fd.append('allow_bash', el('bash-toggle').checked ? 'true' : 'false');
+      const _ws = (Storage.KEYS && Storage.get(Storage.KEYS.WORKSPACE, '')) || '';
+      appendAgentToolRequestFields(fd, {
+        shellEnabled: !!el('bash-toggle').checked,
+        workspace: _ws,
+      });
       const ragChk = el('rag-toggle');
       if (ragChk && !ragChk.checked) {
         fd.append('use_rag', 'false');
       }
       if (isIncognito) {
         fd.append('incognito', 'true');
-      }
-      const _ws = (Storage.KEYS && Storage.get(Storage.KEYS.WORKSPACE, '')) || '';
-      if (_ws) {
-        fd.append('workspace', _ws);
       }
       if (presetsModule.getSelectedPreset()) {
         fd.append('preset_id', presetsModule.getSelectedPreset());
@@ -2376,6 +2378,17 @@ import {
               if (json.type === 'provider_timing' || json.type === 'effective_tools') {
                 continue;
               }
+              if (json.type === 'mcp_activation') {
+                const unavailable = (json.diagnostics || []).filter((item) =>
+                  item.code === 'server_disconnected' ||
+                  item.code === 'no_enabled_tools' ||
+                  item.code === 'ambiguous_server_name'
+                );
+                if (!_isBg && unavailable.length) {
+                  uiModule.showToast(unavailable.map((item) => item.message).join(' '), 7000);
+                }
+                continue;
+              }
               if (json.type === 'truncation_continuation') {
                 // Diagnostic only: agent_step (always its next event on the
                 // wire) reads and clears this to label the round's spinner.
@@ -2384,9 +2397,7 @@ import {
               }
               if (json.type === 'run_state' && json.terminal) {
                 _clearRunStatus();
-                if (json.state === 'cancelled' && !_isBg) {
-                  settleRunningToolNodes(document, 'cancelled');
-                }
+                if (!_isBg) settleRunningToolNodes(document, runTerminalToolState(json.state));
                 if (json.state === 'cancelled' && !_isBg && !accumulated) {
                   _renderCancelledBubble(holder);
                 }

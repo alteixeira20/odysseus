@@ -17,21 +17,22 @@ prior observation, which the caller decides what to do with (typically:
 prepend it to the tool result rather than the caller silently doing
 nothing with a legitimate re-read).
 
-Scope of this pass: this module is standalone and independently tested.
-Wiring it into the live tool-dispatch path (src/tool_execution.py's
-``execute_tool_block``) is deferred to the typed per-run execution
-context (``AgentExecutionContext.observation_ledger`` in the cross-cutting
-requirements of specs/agent-runtime-v2-progress.md) — that's the natural
-place a genuinely *per-run* instance is constructed and threaded through,
-and building that plumbing prematurely here would duplicate it. See the
-progress doc for status.
+The live loop constructs one ledger for each run and threads it through the
+typed tool-batch request.  Results are never suppressed: an exact repeat gets
+a compact note in the model-visible result, while changed content is treated
+as a fresh observation.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
+
+
+OBSERVED_READ_TOOLS = frozenset({"read_file", "grep", "glob", "ls"})
 
 
 @dataclass(frozen=True)
@@ -104,5 +105,85 @@ class ObservationLedger:
             )
         return None
 
+    def note_tool_result(
+        self,
+        *,
+        tool: str,
+        content: str,
+        result: dict[str, Any],
+    ) -> Optional[str]:
+        """Record one successful repository observation from live dispatch.
+
+        Canonical request arguments define the observation key and page.  A
+        digest of the returned structured result is the identity, so a file or
+        search result that changed between calls is never labelled a repeat.
+        """
+
+        if tool not in OBSERVED_READ_TOOLS or result.get("error"):
+            return None
+        args = _tool_arguments(content)
+        key, range_ = _observation_key(tool, args, content)
+        if not key:
+            return None
+        identity_payload = {
+            key: value
+            for key, value in result.items()
+            if key not in {"observation_notice", "repeated_observation"}
+        }
+        encoded = json.dumps(
+            identity_payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+            ensure_ascii=False,
+        ).encode("utf-8")
+        identity = hashlib.sha256(encoded).hexdigest()
+        return self.note(
+            tool=tool,
+            key=key,
+            range_=range_,
+            identity=identity,
+        )
+
     def __len__(self) -> int:
         return len(self._seen)
+
+
+def _tool_arguments(content: str) -> dict[str, Any]:
+    raw = str(content or "").strip()
+    if not raw.startswith("{"):
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _observation_key(
+    tool: str,
+    args: dict[str, Any],
+    content: str,
+) -> tuple[str, Any]:
+    if tool == "read_file":
+        key = str(args.get("path") or content or "").strip()
+        return key, (args.get("offset") or 0, args.get("limit") or 0)
+    if tool == "grep":
+        key = " | ".join(
+            str(args.get(name) or "")
+            for name in ("pattern", "path", "glob", "ignore_case")
+        ).strip(" |")
+        return key or str(content or "").strip(), (
+            args.get("offset") or 0,
+            args.get("max_results") or 200,
+        )
+    if tool == "glob":
+        key = " | ".join(
+            str(args.get(name) or "") for name in ("pattern", "path")
+        ).strip(" |")
+        return key or str(content or "").strip(), (
+            args.get("offset") or 0,
+            args.get("max_results") or 200,
+        )
+    key = str(args.get("path") or content or ".").strip()
+    return key, (args.get("offset") or 0, args.get("max_results") or 200)

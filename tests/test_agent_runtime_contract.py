@@ -148,6 +148,58 @@ async def test_two_concurrent_workspace_bindings_do_not_leak(tmp_path, monkeypat
     assert result_two["output"].splitlines()[0] == str(two.resolve())
 
 
+@pytest.mark.asyncio
+async def test_concurrent_agent_runs_keep_provider_tool_scopes_isolated(
+    tmp_path,
+    monkeypatch,
+):
+    _patch_agent_environment(monkeypatch)
+    captured = {}
+    both_started = asyncio.Event()
+
+    async def provider(candidates, messages, **kwargs):
+        session_id = kwargs["session_id"]
+        captured[session_id] = {
+            schema["function"]["name"] for schema in (kwargs.get("tools") or [])
+        }
+        if len(captured) == 2:
+            both_started.set()
+        await asyncio.wait_for(both_started.wait(), timeout=1)
+        yield 'data: {"delta": "done"}\n\n'
+        yield "data: [DONE]\n\n"
+
+    monkeypatch.setattr(agent_loop, "stream_llm_with_fallback", provider)
+
+    async def consume(session_id, workspace, shell_enabled):
+        return [
+            event
+            async for event in agent_loop.stream_agent_loop(
+                "https://api.openai.com/v1",
+                "gpt-4o",
+                [{"role": "user", "content": "Respond with done."}],
+                relevant_tools={"ask_user"},
+                owner="admin",
+                session_id=session_id,
+                workspace=str(workspace),
+                shell_enabled=shell_enabled,
+                max_rounds=1,
+            )
+        ]
+
+    one, two = tmp_path / "one", tmp_path / "two"
+    one.mkdir()
+    two.mkdir()
+    events_a, events_b = await asyncio.gather(
+        consume("scope-a", one, True),
+        consume("scope-b", two, False),
+    )
+
+    assert "bash" in captured["scope-a"]
+    assert "bash" not in captured["scope-b"]
+    assert events_a[-1] == "data: [DONE]\n\n"
+    assert events_b[-1] == "data: [DONE]\n\n"
+
+
 def test_tmux_workspace_key_handles_spaces_and_apostrophes():
     from src.agent_tools.subprocess_tools import _tmux_session_name
 
@@ -263,6 +315,7 @@ async def _capture_agent_contract(
     workspace,
     shell_enabled,
     security_blocked=frozenset(),
+    message="fix the repository",
 ):
     _patch_agent_environment(monkeypatch)
     monkeypatch.setattr(
@@ -284,7 +337,7 @@ async def _capture_agent_contract(
         async for event in agent_loop.stream_agent_loop(
             "https://api.openai.com/v1",
             "gpt-4o",
-            [{"role": "user", "content": "fix the repository"}],
+            [{"role": "user", "content": message}],
             relevant_tools={"ask_user"},
             owner="admin" if not security_blocked else "public",
             workspace=str(workspace) if workspace else None,
@@ -298,6 +351,32 @@ async def _capture_agent_contract(
         if event.startswith("data: {") and '"type": "effective_tools"' in event
     )
     return captured, diagnostic
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("workspace_enabled", "shell_enabled"),
+    ((False, False), (False, True), (True, False), (True, True)),
+)
+async def test_runtime_workspace_shell_provider_schema_matrix(
+    tmp_path,
+    monkeypatch,
+    workspace_enabled,
+    shell_enabled,
+):
+    captured, diagnostic = await _capture_agent_contract(
+        monkeypatch,
+        workspace=tmp_path if workspace_enabled else None,
+        shell_enabled=shell_enabled,
+        message="Respond with done.",
+    )
+    schema_names = {
+        schema["function"]["name"] for schema in captured["schemas"]
+    }
+
+    assert ("bash" in schema_names) is shell_enabled
+    assert ("bash" in diagnostic["names"]) is shell_enabled
+    assert (WORKSPACE_FOUNDATIONAL_TOOLS <= schema_names) is workspace_enabled
 
 
 @pytest.mark.asyncio
@@ -587,5 +666,7 @@ def test_frontend_separates_status_reasoning_answer_and_terminal_state():
 
 def test_frontend_does_not_override_explicit_shell_toggle():
     source = Path("static/js/chat.js").read_text(encoding="utf-8")
-    assert "fd.append('allow_bash', el('bash-toggle').checked ? 'true' : 'false')" in source
+    request_source = Path("static/js/agentToolRequest.js").read_text(encoding="utf-8")
+    assert "appendAgentToolRequestFields(fd" in source
+    assert "allow_bash: shellEnabled ? 'true' : 'false'" in request_source
     assert "fd.set('allow_bash', 'true')" not in source

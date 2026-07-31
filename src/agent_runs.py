@@ -106,13 +106,39 @@ async def _drain(session_id: str, agen: AsyncGenerator[str, None],
             pass
     try:
         terminal_error = False
+        terminal_state_seen = False
         async for ev in agen:
-            _publish(run, ev)
             if ev.startswith("event: error"):
                 terminal_error = True
+            if ev.startswith("data: {"):
+                try:
+                    payload = json.loads(ev[6:])
+                except (TypeError, ValueError):
+                    payload = {}
+                if payload.get("type") == "run_state" and payload.get("terminal"):
+                    # Terminal state is an exactly-once contract.  Preserve the
+                    # producer's first decision and suppress accidental repeats.
+                    if terminal_state_seen:
+                        continue
+                    terminal_state_seen = True
             if ev == "data: [DONE]\n\n":
+                if not terminal_state_seen:
+                    _publish(
+                        run,
+                        f"data: {json.dumps({'type': 'run_state', 'state': 'error' if terminal_error else 'completed', 'terminal': True, 'reason': 'stream_complete'})}\n\n",
+                    )
+                    terminal_state_seen = True
+                _publish(run, ev)
                 run.status = "error" if terminal_error else "done"
+                continue
+            _publish(run, ev)
         if run.status == "running":
+            if not terminal_state_seen:
+                _publish(
+                    run,
+                    f"data: {json.dumps({'type': 'run_state', 'state': 'completed', 'terminal': True, 'reason': 'generator_closed'})}\n\n",
+                )
+            _publish(run, "data: [DONE]\n\n")
             run.status = "done"
     except asyncio.CancelledError:
         run.status = "stopped"
@@ -129,10 +155,11 @@ async def _drain(session_id: str, agen: AsyncGenerator[str, None],
             await agen.aclose()
         except Exception:
             pass
-        _publish(
-            run,
-            f"data: {json.dumps({'type': 'run_state', 'state': 'cancelled', 'terminal': True})}\n\n",
-        )
+        if not terminal_state_seen:
+            _publish(
+                run,
+                f"data: {json.dumps({'type': 'run_state', 'state': 'cancelled', 'terminal': True})}\n\n",
+            )
         _publish(run, "data: [DONE]\n\n")
     except Exception as e:
         logger.error("[agent-run] %s failed: %s", session_id, e, exc_info=True)
@@ -142,6 +169,11 @@ async def _drain(session_id: str, agen: AsyncGenerator[str, None],
             "event: error\n"
             f"data: {json.dumps({'error': 'Agent run failed before completion.', 'status': 500})}\n\n",
         )
+        if not terminal_state_seen:
+            _publish(
+                run,
+                f"data: {json.dumps({'type': 'run_state', 'state': 'error', 'terminal': True, 'reason': 'run_exception'})}\n\n",
+            )
         _publish(run, "data: [DONE]\n\n")
     finally:
         # Wake every subscriber with the end sentinel so their SSE closes.

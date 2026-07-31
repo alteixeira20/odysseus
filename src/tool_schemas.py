@@ -128,7 +128,8 @@ FUNCTION_TOOL_SCHEMAS = [
                     "path": {"type": "string", "description": "Directory or file to search (optional; defaults to the project root)"},
                     "glob": {"type": "string", "description": "Only search files matching this glob, e.g. '*.py' (optional)"},
                     "ignore_case": {"type": "boolean", "description": "Case-insensitive match (optional)"},
-                    "max_results": {"type": "integer", "description": "Max matches to return (optional)"}
+                    "offset": {"type": "integer", "minimum": 0, "description": "Zero-based result offset for continuing a previous search (optional)"},
+                    "max_results": {"type": "integer", "minimum": 1, "maximum": 200, "description": "Max matches to return (optional, default 200)"}
                 },
                 "required": ["pattern"]
             }
@@ -143,7 +144,9 @@ FUNCTION_TOOL_SCHEMAS = [
                 "type": "object",
                 "properties": {
                     "pattern": {"type": "string", "description": "Glob pattern, e.g. '**/*.ts' or 'src/**/test_*.py'"},
-                    "path": {"type": "string", "description": "Base directory (optional; defaults to the project root)"}
+                    "path": {"type": "string", "description": "Base directory (optional; defaults to the project root)"},
+                    "offset": {"type": "integer", "minimum": 0, "description": "Zero-based result offset for continuing a previous listing (optional)"},
+                    "max_results": {"type": "integer", "minimum": 1, "maximum": 200, "description": "Max paths to return (optional, default 200)"}
                 },
                 "required": ["pattern"]
             }
@@ -157,7 +160,9 @@ FUNCTION_TOOL_SCHEMAS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "Directory to list (optional; defaults to the project root)"}
+                    "path": {"type": "string", "description": "Directory to list (optional; defaults to the project root)"},
+                    "offset": {"type": "integer", "minimum": 0, "description": "Zero-based entry offset for continuing a previous listing (optional)"},
+                    "max_results": {"type": "integer", "minimum": 1, "maximum": 200, "description": "Max entries to return (optional, default 200)"}
                 },
                 "required": []
             }

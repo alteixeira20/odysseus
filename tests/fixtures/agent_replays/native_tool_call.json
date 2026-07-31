@@ -66,6 +66,7 @@
     {"type": "run_status", "phase": "contacting_provider", "label": "Contacting provider"},
     {"delta": "Tool completed."},
     {"type": "metrics", "model": "gpt-4o"},
+    {"type": "run_state", "state": "completed", "terminal": true, "reason": "completed"},
     {"done": true}
   ]
 }

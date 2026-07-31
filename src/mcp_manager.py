@@ -578,6 +578,11 @@ class McpManager:
             if self.is_builtin(server_id) and server_id != "builtin_browser":
                 continue
             conn = self._connections.get(server_id, {})
+            # Never expose stale schemas from a server whose last connection
+            # attempt is no longer healthy.  The catalogue below still keeps
+            # the metadata so explicit activation can explain the state.
+            if conn.get("status") != "connected":
+                continue
             server_name = conn.get("name", server_id)
             disabled = (disabled_map or {}).get(server_id, set())
 
@@ -600,23 +605,51 @@ class McpManager:
 
         return schemas
 
-    def get_all_tools(self, disabled_map: Optional[Dict[str, set]] = None) -> List[Dict]:
-        """Return a flat list of all discovered tools with server info."""
+    def get_server_catalog(
+        self, disabled_map: Optional[Dict[str, set]] = None
+    ) -> List[Dict]:
+        """Return a stable per-server metadata/tool snapshot for one run.
+
+        Connection state is kept even when no tools are currently available,
+        which lets server-scoped activation report a disconnected or partially
+        disabled server clearly.  Callers must treat this as a snapshot and
+        continue to enforce their run-level authorization policy separately.
+        """
+
         result = []
-        for server_id, tools in self._tools.items():
+        server_ids = set(self._connections) | set(self._tools)
+        for server_id in sorted(server_ids):
             conn = self._connections.get(server_id, {})
             disabled = (disabled_map or {}).get(server_id, set())
-            for tool in tools:
-                result.append({
+            tools = []
+            for tool in self._tools.get(server_id, []):
+                tools.append({
                     "server_id": server_id,
                     "server_name": conn.get("name", server_id),
                     "name": tool["name"],
                     "qualified_name": f"mcp__{server_id}__{tool['name']}",
                     "description": tool.get("description", ""),
                     "input_schema": tool.get("input_schema") or {},
+                    "annotations": tool.get("annotations"),
                     "is_disabled": tool["name"] in disabled,
                 })
+            result.append({
+                "server_id": server_id,
+                "server_name": conn.get("name", server_id),
+                "status": conn.get("status", "disconnected"),
+                "identity": conn.get("identity", ""),
+                "tool_count": len(tools),
+                "tools": tuple(tools),
+            })
         return result
+
+    def get_all_tools(self, disabled_map: Optional[Dict[str, set]] = None) -> List[Dict]:
+        """Return a flat list of all discovered tools with server info."""
+        return [
+            {**tool, "connection_status": server["status"]}
+            for server in self.get_server_catalog(disabled_map)
+            for tool in server["tools"]
+        ]
 
     def plan_mode_blocked_mcp(self) -> Tuple[Dict[str, Set[str]], Set[str]]:
         """Plan mode: block every MCP tool that isn't clearly read-only.
@@ -677,6 +710,8 @@ class McpManager:
             if self.is_builtin(t["server_id"]) and t["server_id"] != "builtin_browser":
                 continue
             if t.get("is_disabled"):
+                continue
+            if t.get("connection_status") != "connected":
                 continue
             sn = t["server_name"]
             if sn not in by_server:

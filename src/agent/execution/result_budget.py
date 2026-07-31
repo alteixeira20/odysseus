@@ -16,13 +16,11 @@ caller can always check ``result.get("truncated")`` rather than pattern-
 matching output text: ``truncated``, ``returned_chars``, ``total_chars``,
 and (only where the tool has a natural resume point) ``next_offset``.
 
-Scope of this pass: wired into ``read_file`` (line-offset continuation —
-the clearest win, since it already has offset/limit paging) and
-``bash``/``python`` (char-count continuation on stdout/stderr, including
-the timeout/cancellation path, which previously discarded partial output
-entirely). grep/glob/ls already cap with a visible "N more" notice and are
-lower-value to restructure this pass; extending the same field convention
-to them is straightforward follow-up, not a redesign.
+The convention is wired into ``read_file`` (line offsets), repository
+``grep``/``glob``/``ls`` results (result offsets), and ``bash``/``python``
+(bounded stdout/stderr with total character counts). Repository result pages
+include ``next_offset`` and a concrete resume hint instead of requiring the
+model to repeat a full search and parse a prose-only cap notice.
 """
 
 from __future__ import annotations
