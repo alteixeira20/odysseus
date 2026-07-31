@@ -233,7 +233,8 @@ async def _call_teacher(teacher_model_spec: str, prompt: str,
                         owner: Optional[str] = None) -> Optional[str]:
     """Call the configured teacher endpoint with the escalation prompt."""
     from src.llm_core import llm_call_async
-    from src.ai_interaction import _resolve_model, _TEACHER_SYSTEM_PROMPT
+    from src.ai_interaction import _resolve_model
+    from src.agent_tools.model_interaction_tools import _TEACHER_SYSTEM_PROMPT
     try:
         url, model, headers = await asyncio.to_thread(_resolve_model, teacher_model_spec, owner=owner)
     except Exception as e:
@@ -657,7 +658,7 @@ async def run_teacher_inline(
     # Recursively invoke the agent loop with the teacher's params.
     # The _is_teacher_run flag prevents infinite recursion (the teacher
     # run will skip its own escalation hook).
-    from src.agent_loop import stream_agent_loop
+    from src.agent.api import stream_agent_loop
     captured_tool_events: List[Dict[str, Any]] = []
     captured_text_parts: List[str] = []
 

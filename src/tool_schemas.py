@@ -40,7 +40,17 @@ FUNCTION_TOOL_SCHEMAS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "command": {"type": "string", "description": "The shell command to execute"}
+                    "command": {"type": "string", "description": "The shell command to execute"},
+                    "timeout_seconds": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 1800,
+                        "default": 120,
+                        "description": (
+                            "Foreground timeout in seconds (1-1800, default 120). "
+                            "Use the background-job marker for deliberately long-running work."
+                        ),
+                    },
                 },
                 "required": ["command"]
             }
@@ -1592,4 +1602,4 @@ def function_call_to_tool_block(name: str, arguments: str) -> Optional[ToolBlock
     else:
         content = json.dumps(args)
 
-    return ToolBlock(tool_type, content)
+    return ToolBlock(tool_type, content, args)

@@ -16,7 +16,7 @@ from pydantic import ValidationError
 from core.models import ChatMessage
 from src.request_models import ChatRequest
 from src.llm_core import llm_call_async, stream_llm, stream_llm_with_fallback
-from src.agent_loop import stream_agent_loop
+from src.agent.api import stream_agent_loop
 from src import agent_runs
 from src.model_context import estimate_tokens
 from src.chat_helpers import coerce_message_and_session
@@ -48,6 +48,10 @@ from src.tool_policy import (
     build_effective_tool_policy,
     is_web_search_explicitly_denied,
     web_search_enabled_for_turn,
+)
+from src.effective_tools import (
+    SHELL_FOUNDATIONAL_TOOLS,
+    WORKSPACE_FOUNDATIONAL_TOOLS,
 )
 
 logger = logging.getLogger(__name__)
@@ -701,6 +705,7 @@ def setup_chat_routes(
     # ------------------------------------------------------------------ #
     @router.post("/api/chat_stream")
     async def chat_stream(request: Request) -> StreamingResponse:
+        _request_received_at = time.perf_counter()
         body = None
         try:
             if request.headers.get("content-type", "").startswith("application/json"):
@@ -726,7 +731,14 @@ def setup_chat_routes(
         # Issue #3229: API callers send JSON, not FormData.  Read from the
         # JSON body as fallback so callers who send {"allow_bash": true}
         # actually get bash enabled.
-        allow_bash = form_data.get("allow_bash") or (body or {}).get("allow_bash")
+        allow_bash = form_data.get("allow_bash")
+        if allow_bash is None:
+            allow_bash = (body or {}).get("allow_bash")
+        shell_enabled = (
+            None
+            if allow_bash is None
+            else str(allow_bash).lower() == "true"
+        )
         allow_web_search = form_data.get("allow_web_search") or (body or {}).get("allow_web_search")
         use_rag = form_data.get("use_rag")
         search_context = form_data.get("search_context")  # pre-fetched web search results (compare mode)
@@ -735,8 +747,17 @@ def setup_chat_routes(
         plan_mode = str(form_data.get("plan_mode") or (body or {}).get("plan_mode") or "").lower() == "true"
         chat_mode = str(form_data.get("mode", "")).lower()  # 'chat' or 'agent'
         # Workspace: confine the agent's file/shell tools to this folder.
+        _workspace_resolution_started = time.perf_counter()
         workspace, workspace_rejected = _resolve_request_workspace(
             request, form_data.get("workspace")
+        )
+        logger.info(
+            "[agent-timing] phase=workspace_resolution_complete session=%s "
+            "duration_ms=%.1f selected=%s rejected=%s",
+            session,
+            (time.perf_counter() - _workspace_resolution_started) * 1000,
+            bool(workspace),
+            bool(workspace_rejected),
         )
         # Plan mode is a modifier on agent mode — it only makes sense with tools.
         if plan_mode:
@@ -787,8 +808,9 @@ def setup_chat_routes(
             chat_mode = "agent"
             auto_escalated = True
             _workspace_agent_intent = _tool_intent.category in {"shell", "workspace"}
-            if _workspace_agent_intent:
+            if _workspace_agent_intent and allow_bash is None:
                 allow_bash = "true"
+                shell_enabled = True
             logger.info(
                 "chat→agent auto-escalation: category=%s reason=%s",
                 _tool_intent.category,
@@ -1093,7 +1115,7 @@ def setup_chat_routes(
         # (`use_web=true`) or agent web toggle (`allow_web_search=true`) must
         # explicitly enable it.
         if allow_bash is not None and str(allow_bash).lower() != "true":
-            disabled_tools.add("bash")
+            disabled_tools.update(SHELL_FOUNDATIONAL_TOOLS)
         _explicit_web_intent = _explicit_web_intent or bool(_tool_intent and _tool_intent.category == "web")
         if is_web_search_explicitly_denied(allow_web_search) or not _search_enabled:
             disabled_tools.update(WEB_TOOL_NAMES)
@@ -1153,7 +1175,9 @@ def setup_chat_routes(
             _privs = request.app.state.auth_manager.get_privileges(_user)
         if _privs:
             if not _privs.get("can_use_bash", True):
-                disabled_tools.update({"bash", "python", "read_file", "write_file"})
+                disabled_tools.update(
+                    SHELL_FOUNDATIONAL_TOOLS | WORKSPACE_FOUNDATIONAL_TOOLS
+                )
             if not _privs.get("can_use_browser", True):
                 disabled_tools.update(_BROWSER_MCP_TOOLS)
             if not _privs.get("can_use_documents", True):
@@ -1666,7 +1690,16 @@ def setup_chat_routes(
                 _answered_by = None  # set if the selected model failed and a fallback answered
                 _requested_model = sess.model
                 _actual_model = None
+                _agent_terminal_state = None
                 try:
+                    logger.info(
+                        "[agent-timing] phase=agent_loop_start session=%s "
+                        "route_preparation_ms=%.1f model=%s workspace=%s",
+                        session,
+                        (time.perf_counter() - _request_received_at) * 1000,
+                        sess.model,
+                        bool(workspace),
+                    )
                     from src.settings import get_setting
                     from src.agent_tools import MAX_AGENT_ROUNDS as _DEFAULT_ROUNDS
                     # Per-message tool budget from settings; guard defensively in
@@ -1716,6 +1749,7 @@ def setup_chat_routes(
                         workspace=workspace or None,
                         forced_tools=_forced_tools,
                         uploaded_files=ctx.uploaded_files,
+                        shell_enabled=shell_enabled,
                     ):
                         if chunk.startswith("data: ") and not chunk.startswith("data: [DONE]"):
                             try:
@@ -1742,11 +1776,17 @@ def setup_chat_routes(
                                     "intent_nudge_exhausted",
                                     "ask_user",
                                     "plan_update",
+                                    "run_status",
+                                    "provider_timing",
+                                    "effective_tools",
+                                    "run_state",
                                 ):
                                     if data.get("type") == "agent_step":
                                         _agent_rounds = max(_agent_rounds, data.get("round", 1))
                                     elif data.get("type") == "tool_start":
                                         _agent_tool_calls += 1
+                                    elif data.get("type") == "run_state" and data.get("terminal"):
+                                        _agent_terminal_state = data.get("state")
                                     yield chunk
                                 elif data.get("type") == "fallback":
                                     # Selected model failed; a fallback answered.
@@ -1782,6 +1822,12 @@ def setup_chat_routes(
                             if full_response or _has_tool_events:
                                 _response_to_save = full_response or "Done."
                                 _metrics_to_save = dict(last_metrics or {})
+                                if _agent_terminal_state == "error":
+                                    _metrics_to_save.update({
+                                        "error": True,
+                                        "resumable": True,
+                                        "stopped": True,
+                                    })
                                 if thinking_response.strip() and not _metrics_to_save.get("thinking"):
                                     _metrics_to_save["thinking"] = thinking_response.strip()
                                 _saved_id = save_assistant_response(
@@ -1794,19 +1840,23 @@ def setup_chat_routes(
                                 )
                                 if _saved_id:
                                     yield f'data: {json.dumps({"type": "message_saved", "id": _saved_id})}\n\n'
-                                run_post_response_tasks(
-                                    sess, session_manager, session, message, _response_to_save,
-                                    _metrics_to_save, ctx.uprefs, memory_manager, memory_vector, webhook_manager,
-                                    incognito=incognito, compare_mode=compare_mode,
-                                    character_name=ctx.preset.character_name,
-                                                            agent_rounds=_agent_rounds,
-                                    agent_tool_calls=_agent_tool_calls,
-                                    skills_manager=skills_manager,
-                                    owner=_user,
-                                    extract_skills=user_requested_agent,
-                                    allow_background_extraction=not tool_policy.block_all_tool_calls,
-                                )
-                            _stream_set(session, status="done")
+                                if _agent_terminal_state != "error":
+                                    run_post_response_tasks(
+                                        sess, session_manager, session, message, _response_to_save,
+                                        _metrics_to_save, ctx.uprefs, memory_manager, memory_vector, webhook_manager,
+                                        incognito=incognito, compare_mode=compare_mode,
+                                        character_name=ctx.preset.character_name,
+                                        agent_rounds=_agent_rounds,
+                                        agent_tool_calls=_agent_tool_calls,
+                                        skills_manager=skills_manager,
+                                        owner=_user,
+                                        extract_skills=user_requested_agent,
+                                        allow_background_extraction=not tool_policy.block_all_tool_calls,
+                                    )
+                            _stream_set(
+                                session,
+                                status="error" if _agent_terminal_state == "error" else "done",
+                            )
                             yield chunk
                 except (asyncio.CancelledError, GeneratorExit):
                     # Client disconnected — save partial response. Wrap

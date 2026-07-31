@@ -1,0 +1,71 @@
+{
+  "endpoint_url": "https://api.openai.com/v1",
+  "model": "gpt-4o",
+  "messages": [
+    {"role": "user", "content": "Run printf ok."}
+  ],
+  "relevant_tools": ["bash"],
+  "shell_enabled": true,
+  "owner": "admin",
+  "provider_rounds": [
+    [
+      {
+        "type": "tool_calls",
+        "calls": [
+          {
+            "id": "call-1",
+            "name": "bash",
+            "arguments": "{\"command\":\"printf ok\"}"
+          }
+        ]
+      }
+    ],
+    [
+      {"delta": "Tool completed."}
+    ]
+  ],
+  "tool_result": {
+    "description": "bash: printf ok",
+    "result": {
+      "output": "ok",
+      "exit_code": 0,
+      "completion_state": "completed"
+    }
+  },
+  "expected_events": [
+    {"type": "run_status", "phase": "preparing", "label": "Preparing agent"},
+    {
+      "type": "effective_tools",
+      "names": ["ask_user", "bash", "manage_bg_jobs", "python", "update_plan"]
+    },
+    {"type": "run_status", "phase": "prompt_ready", "label": "Prompt ready"},
+    {"type": "run_status", "phase": "contacting_provider", "label": "Contacting provider"},
+    {
+      "type": "run_status",
+      "phase": "executing_tool",
+      "label": "Executing bash",
+      "tool": "bash",
+      "round": 1
+    },
+    {
+      "type": "tool_start",
+      "tool": "bash",
+      "command": "printf ok",
+      "full_command": "printf ok",
+      "round": 1
+    },
+    {
+      "type": "tool_output",
+      "tool": "bash",
+      "command": "printf ok",
+      "output": "ok",
+      "exit_code": 0,
+      "completion_state": "completed"
+    },
+    {"type": "agent_step", "round": 2},
+    {"type": "run_status", "phase": "contacting_provider", "label": "Contacting provider"},
+    {"delta": "Tool completed."},
+    {"type": "metrics", "model": "gpt-4o"},
+    {"done": true}
+  ]
+}

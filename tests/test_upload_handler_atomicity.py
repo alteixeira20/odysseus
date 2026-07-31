@@ -251,6 +251,11 @@ def test_partial_write_recovery_via_bak(tmp_path):
     with open(db_path, "wb") as f:
         f.write(full[:truncated_len])
 
+    # Simulate the fresh process that would read after a crash. The in-memory
+    # cache intentionally still contains the last successful write and can
+    # otherwise mask this disk-recovery path when mtimes share one tick.
+    handler._index_cache = None
+    handler._index_mtime = 0.0
     recovered = handler._load_upload_index()
     missing = [k for k in original if k not in recovered]
     assert not missing, (
@@ -395,6 +400,9 @@ def test_smoke_info_lookup_after_bak_recovery(tmp_path):
     with open(db_path, "wb") as f:
         f.write(full[: max(1, len(full) // 2)])
 
+    # Model the post-crash reader: no prior process-local cache survives.
+    handler._index_cache = None
+    handler._index_mtime = 0.0
     info = handler.get_upload_info(first["id"])
     assert info is not None, "Info lookup must succeed after .bak recovery."
     assert info["id"] == first["id"]

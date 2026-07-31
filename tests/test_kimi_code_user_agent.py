@@ -5,9 +5,11 @@ from src import llm_core
 from src.llm_core import (
     KIMI_CODE_USER_AGENTS,
     KIMI_CODE_USER_AGENT,
+    KIMI_CODE_NEGOTIATION_ATTEMPTS,
     _is_kimi_code_access_denied,
     _is_kimi_code_url,
     _kimi_code_base_key,
+    _kimi_code_cache_key,
     _kimi_code_ua_cache,
     _kimi_code_ua_candidates,
     _remember_kimi_code_user_agent,
@@ -93,8 +95,26 @@ class TestKimiCodeUserAgents:
         assert calls[1] == KIMI_CODE_USER_AGENTS[1]
         _kimi_code_ua_cache.clear()
 
+    def test_post_negotiation_attempts_are_bounded(self, monkeypatch):
+        _kimi_code_ua_cache.clear()
+        calls = []
+
+        def fake_post(url, headers=None, **kwargs):
+            calls.append(headers.get("User-Agent"))
+            return _Resp(403, '{"error":{"type":"access_terminated_error"}}')
+
+        monkeypatch.setattr("src.llm_core.httpx.post", fake_post)
+        result = httpx_post_kimi_aware(
+            KIMI_CHAT_URL,
+            {"Authorization": "Bearer bounded"},
+            json={},
+        )
+        assert result.status_code == 403
+        assert len(calls) == KIMI_CODE_NEGOTIATION_ATTEMPTS
+        _kimi_code_ua_cache.clear()
+
     @pytest.mark.asyncio
-    async def test_async_post_uses_async_probe_not_sync_httpx_get(self, monkeypatch):
+    async def test_async_post_starts_generation_without_probe(self, monkeypatch):
         _kimi_code_ua_cache.clear()
 
         class FakeClient:
@@ -126,9 +146,8 @@ class TestKimiCodeUserAgents:
         )
 
         assert r.status_code == 200
-        assert client.get_user_agents == [KIMI_CODE_USER_AGENTS[0], KIMI_CODE_USER_AGENTS[1]]
-        assert client.post_user_agents == [KIMI_CODE_USER_AGENTS[1]]
-        assert _kimi_code_ua_cache[_kimi_code_base_key(KIMI_CHAT_URL)] == KIMI_CODE_USER_AGENTS[1]
+        assert client.get_user_agents == []
+        assert client.post_user_agents == [KIMI_CODE_USER_AGENTS[0]]
         _kimi_code_ua_cache.clear()
 
     @pytest.mark.asyncio
@@ -163,11 +182,13 @@ class TestKimiCodeUserAgents:
 
         assert r.status_code == 200
         assert client.post_user_agents == [KIMI_CODE_USER_AGENTS[0], KIMI_CODE_USER_AGENTS[1]]
-        assert _kimi_code_ua_cache[_kimi_code_base_key(KIMI_CHAT_URL)] == KIMI_CODE_USER_AGENTS[1]
+        assert _kimi_code_ua_cache[
+            _kimi_code_cache_key(KIMI_CHAT_URL, {"Authorization": "Bearer x"})
+        ] == KIMI_CODE_USER_AGENTS[1]
         _kimi_code_ua_cache.clear()
 
     @pytest.mark.asyncio
-    async def test_stream_uses_async_kimi_probe_not_sync_httpx_get(self, monkeypatch):
+    async def test_stream_starts_without_kimi_probe(self, monkeypatch):
         _kimi_code_ua_cache.clear()
 
         class FakeClient:
@@ -205,8 +226,8 @@ class TestKimiCodeUserAgents:
             )
         ]
 
-        assert chunks == ["data: [DONE]\n\n"]
-        assert client.get_user_agents == [KIMI_CODE_USER_AGENTS[0], KIMI_CODE_USER_AGENTS[1]]
-        assert client.stream_headers[0]["User-Agent"] == KIMI_CODE_USER_AGENTS[1]
-        assert _kimi_code_ua_cache[_kimi_code_base_key(KIMI_CHAT_URL)] == KIMI_CODE_USER_AGENTS[1]
+        assert chunks[-1] == "data: [DONE]\n\n"
+        assert any('"phase": "contacting_provider"' in chunk for chunk in chunks)
+        assert client.get_user_agents == []
+        assert client.stream_headers[0]["User-Agent"] == KIMI_CODE_USER_AGENTS[0]
         _kimi_code_ua_cache.clear()

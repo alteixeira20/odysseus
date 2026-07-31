@@ -113,7 +113,11 @@ TOOL_TAGS = {"bash", "python", "web_search", "web_fetch", "read_file", "write_fi
              # there's no named tool wrapper for the action.
              "app_api"} | BUILTIN_EMAIL_TOOLS
 
-ToolBlock = namedtuple("ToolBlock", ["tool_type", "content"])
+ToolBlock = namedtuple(
+    "ToolBlock",
+    ["tool_type", "content", "arguments"],
+    defaults=(None,),
+)
 
 # ---------------------------------------------------------------------------
 # Re-exports from sub-modules
@@ -145,8 +149,10 @@ from src.tool_execution import (  # noqa: E402, F401
 
 # Document functions
 from .document_tools import (
-    set_active_document, 
-    set_active_model
+    get_active_document,
+    get_active_model,
+    set_active_document,
+    set_active_model,
 )
 
 # Implementations

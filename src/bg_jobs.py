@@ -263,6 +263,30 @@ def list_for_session(session_id: str) -> List[Dict[str, Any]]:
     return [r for r in refresh().values() if r.get("session_id") == session_id]
 
 
+def kill_for_session_since(session_id: str, started_at: float) -> int:
+    """Kill jobs launched by a cancelled run, leaving older chat jobs alone."""
+    jobs = _load()
+    killed = 0
+    for rec in jobs.values():
+        if (
+            rec.get("session_id") != session_id
+            or rec.get("status") != "running"
+            or float(rec.get("started_at") or 0) < float(started_at or 0)
+        ):
+            continue
+        _kill(rec.get("pid"))
+        rec["status"] = "failed"
+        rec["exit_code"] = -1
+        rec["ended_at"] = time.time()
+        rec["killed"] = True
+        rec["cancelled_with_run"] = True
+        rec["followed_up"] = True
+        killed += 1
+    if killed:
+        _save(jobs)
+    return killed
+
+
 def kill(job_id: str) -> Optional[Dict[str, Any]]:
     """Terminate a running job's process tree and mark it killed. Returns the
     updated record, or None if the id is unknown. Idempotent: a job that already

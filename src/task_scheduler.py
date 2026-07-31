@@ -1850,7 +1850,7 @@ class TaskScheduler:
                               override_user_message: str | None = None,
                               datetime_context_msg: dict | None = None) -> str:
         """Run the full agent loop with tool access, collecting the final text."""
-        from src.agent_loop import stream_agent_loop
+        from src.agent.api import stream_agent_loop
 
         system_content = system_prompt or "You are a helpful assistant executing a scheduled task. Use available tools to complete the task thoroughly."
         user_content = override_user_message or task.prompt

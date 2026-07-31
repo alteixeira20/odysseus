@@ -299,17 +299,80 @@ def to_http_exception(exc: Exception) -> HTTPException:
     return HTTPException(502, str(exc))
 
 
+def _content_text(content: Any) -> str:
+    if isinstance(content, list):
+        return "\n".join(
+            str(part.get("text") or part.get("content") or "")
+            for part in content
+            if isinstance(part, dict)
+        )
+    return "" if content is None else str(content)
+
+
 def build_responses_input(messages: list[dict]) -> list[dict]:
+    """Convert OpenAI chat-completions-style messages to Responses API input items.
+
+    Tool calls and tool results are round-tripped as their own `function_call` /
+    `function_call_output` items (keyed by call_id) rather than flattened into
+    plain text — the Responses API needs that pairing to resolve a tool turn.
+    """
     input_items: list[dict] = []
     for msg in messages or []:
         role = msg.get("role") or "user"
+
         if role == "tool":
-            role = "user"
-        content = msg.get("content")
-        if isinstance(content, list):
-            text = "\n".join(str(part.get("text") or part.get("content") or "") for part in content if isinstance(part, dict))
-        else:
-            text = "" if content is None else str(content)
+            call_id = msg.get("tool_call_id") or ""
+            if not call_id:
+                continue
+            input_items.append({
+                "type": "function_call_output",
+                "call_id": call_id,
+                "output": _content_text(msg.get("content")),
+            })
+            continue
+
+        tool_calls = msg.get("tool_calls") if role == "assistant" else None
+        if tool_calls:
+            text = _content_text(msg.get("content")).strip()
+            if text:
+                input_items.append({"role": "assistant", "content": [{"type": "output_text", "text": text}]})
+            for tc in tool_calls:
+                fn = tc.get("function") or {}
+                call_id = tc.get("id") or ""
+                name = fn.get("name") or ""
+                if not call_id or not name:
+                    continue
+                arguments = fn.get("arguments")
+                if not isinstance(arguments, str):
+                    arguments = json.dumps(arguments or {})
+                input_items.append({
+                    "type": "function_call",
+                    "call_id": call_id,
+                    "name": name,
+                    "arguments": arguments,
+                })
+            continue
+
+        text = _content_text(msg.get("content"))
         input_type = "output_text" if role == "assistant" else "input_text"
         input_items.append({"role": role, "content": [{"type": input_type, "text": text}]})
     return input_items
+
+
+def build_responses_tools(tools: Optional[list[dict]]) -> list[dict]:
+    """Convert OpenAI chat-completions-style tool schemas to the flat Responses API shape."""
+    converted: list[dict] = []
+    for t in tools or []:
+        if not isinstance(t, dict) or t.get("type") != "function":
+            continue
+        fn = t.get("function") or {}
+        name = fn.get("name")
+        if not name:
+            continue
+        converted.append({
+            "type": "function",
+            "name": name,
+            "description": fn.get("description", ""),
+            "parameters": fn.get("parameters") or {"type": "object", "properties": {}},
+        })
+    return converted

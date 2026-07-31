@@ -269,6 +269,8 @@ class _HarmonyStreamRouter:
 
 
 def _stream_delta_event(text: str, *, thinking: bool = False) -> str:
+    if not isinstance(text, str):
+        text = ""
     payload = {"delta": text}
     if thinking:
         payload["thinking"] = True
@@ -674,6 +676,156 @@ def _host_match(url: str, *domains: str) -> bool:
     return any(host == d or host.endswith("." + d) for d in domains)
 
 
+def _is_featherless_base(url: str) -> bool:
+    return _host_match(url, "featherless.ai")
+
+
+class _WeightedGate:
+    """Async gate that admits callers whose combined weight fits a capacity.
+
+    Unlike asyncio.Semaphore (fixed weight-1 permits), callers can request a
+    variable weight per acquire — needed because different models cost a
+    different number of provider-metered "units" out of the same budget.
+    """
+
+    def __init__(self) -> None:
+        self._cond = asyncio.Condition()
+        self._in_use = 0
+
+    async def acquire(self, weight: int, capacity: int) -> None:
+        async with self._cond:
+            while self._in_use + weight > capacity:
+                await self._cond.wait()
+            self._in_use += weight
+
+    async def release(self, weight: int) -> None:
+        async with self._cond:
+            self._in_use = max(0, self._in_use - weight)
+            self._cond.notify_all()
+
+
+_FEATHERLESS_GATES: Dict[str, _WeightedGate] = {}
+# (base_url) -> (max_concurrent_units, {model_pattern_lower: {"units": int, "max_tokens": int}})
+_featherless_config_cache: Dict[str, tuple] = {}
+_featherless_config_cache_at: Dict[str, float] = {}
+_FEATHERLESS_CONFIG_TTL_SECONDS = 30.0
+
+
+def _featherless_endpoint_config(url: str) -> Optional[tuple]:
+    """Load (max_concurrent_units, overrides_dict) for a Featherless endpoint from the DB.
+
+    Cached briefly — this is read on every request in the hot streaming path,
+    same tradeoff as the endpoint supports_tools lookup in agent_loop.py.
+    """
+    if not _is_featherless_base(url):
+        return None
+    now = time.time()
+    cached_at = _featherless_config_cache_at.get(url, 0.0)
+    if now - cached_at < _FEATHERLESS_CONFIG_TTL_SECONDS and url in _featherless_config_cache:
+        return _featherless_config_cache[url]
+    result = (None, {})
+    try:
+        from core.database import SessionLocal as _SL, ModelEndpoint as _ME
+        db = _SL()
+        try:
+            # Match by host, not exact base_url string: the DB stores the bare
+            # base (e.g. ".../v1") while `url` here is the normalized request
+            # target (e.g. ".../v1/chat/completions") — an exact-equality
+            # query silently finds nothing once those diverge.
+            ep = next(
+                (row for row in db.query(_ME).filter(_ME.base_url.like("%featherless.ai%")).all()
+                 if _is_featherless_base(row.base_url)),
+                None,
+            )
+            if ep is not None:
+                overrides = {}
+                if ep.model_unit_overrides:
+                    try:
+                        raw = json.loads(ep.model_unit_overrides)
+                        if isinstance(raw, dict):
+                            overrides = {str(k).lower(): v for k, v in raw.items() if isinstance(v, dict)}
+                    except Exception:
+                        pass
+                result = (ep.max_concurrent_units, overrides)
+        finally:
+            db.close()
+    except Exception as e:
+        logger.debug(f"featherless endpoint config lookup failed: {e}")
+    _featherless_config_cache[url] = result
+    _featherless_config_cache_at[url] = now
+    return result
+
+
+def _featherless_model_override(url: str, model: str) -> Optional[Dict]:
+    """Return the {"units":.., "max_tokens":..} override matching `model`, if any."""
+    cfg = _featherless_endpoint_config(url)
+    if not cfg:
+        return None
+    _budget, overrides = cfg
+    model_lc = (model or "").lower()
+    for pattern, spec in overrides.items():
+        if pattern and pattern in model_lc:
+            return spec
+    return None
+
+
+@asynccontextmanager
+async def _featherless_unit_slot(target_url: str, model: str):
+    """Serialize Featherless traffic so concurrent in-flight unit cost stays within budget.
+
+    Featherless meters concurrent capacity per account in provider-defined
+    "units" that vary per model (e.g. a larger model costs more units of the
+    same pool) rather than a flat concurrent-request count. No-ops for every
+    other provider and for Featherless endpoints with no configured budget.
+    """
+    cfg = _featherless_endpoint_config(target_url)
+    if not cfg or not cfg[0]:
+        yield
+        return
+    budget = cfg[0]
+    override = _featherless_model_override(target_url, model) or {}
+    weight = max(1, int(override.get("units") or 1))
+    # A malformed override larger than the entire pool used to wait forever.
+    weight = min(weight, int(budget))
+    gate = _FEATHERLESS_GATES.setdefault(target_url, _WeightedGate())
+    wait_started = time.perf_counter()
+    await gate.acquire(weight, budget)
+    waited_ms = (time.perf_counter() - wait_started) * 1000
+    if waited_ms >= 10:
+        logger.info(
+            "[provider-capacity] provider=featherless model=%s wait_ms=%.1f weight=%s capacity=%s",
+            model,
+            waited_ms,
+            weight,
+            budget,
+        )
+    try:
+        yield
+    finally:
+        await gate.release(weight)
+
+
+def _apply_featherless_max_tokens(payload: Dict, target_url: str, model: str, max_tokens: int) -> None:
+    """Apply a model's configured default/cap for max_tokens on Featherless.
+
+    Featherless enforces a hard per-model ceiling on some models (e.g.
+    Kimi-K3's real ceiling is ~33k tokens); requests without an explicit cap,
+    or with one above the model's ceiling, get rejected or hang. Fill in the
+    configured default when the caller didn't set one, and clamp down to it
+    when the caller's value is higher.
+    """
+    override = _featherless_model_override(target_url, model)
+    if not override:
+        return
+    default_cap = override.get("max_tokens")
+    if not default_cap:
+        return
+    tok_key = "max_completion_tokens" if _uses_max_completion_tokens(model) else "max_tokens"
+    current = payload.get(tok_key)
+    if not current or current <= 0 or current > default_cap:
+        payload[tok_key] = default_cap
+
+
 # Kimi Code subscription keys (api.kimi.com/coding/v1) require a whitelisted
 # coding-agent User-Agent; otherwise the API returns 403 access_terminated_error.
 # Tried in order; first success is cached per base URL for later requests.
@@ -686,6 +838,7 @@ KIMI_CODE_USER_AGENTS: tuple[str, ...] = (
     "Cursor/1.0",
 )
 KIMI_CODE_USER_AGENT = KIMI_CODE_USER_AGENTS[0]
+KIMI_CODE_NEGOTIATION_ATTEMPTS = 2
 _kimi_code_ua_cache: dict[str, str] = {}
 
 
@@ -709,6 +862,16 @@ def _kimi_code_base_key(url: str) -> str:
     return f"{parsed.scheme}://{parsed.netloc}{path}"
 
 
+def _kimi_code_cache_key(url: str, headers: Optional[Dict] = None) -> str:
+    """Scope negotiation by endpoint and credential without retaining secrets."""
+    base = _kimi_code_base_key(url)
+    auth = ""
+    if isinstance(headers, dict):
+        auth = str(headers.get("Authorization") or headers.get("authorization") or "")
+    fingerprint = hashlib.sha256(auth.encode("utf-8")).hexdigest()[:16] if auth else "anonymous"
+    return f"{base}|{fingerprint}"
+
+
 def _is_kimi_code_access_denied(status: int, body: bytes | str) -> bool:
     if status != 403:
         return False
@@ -721,79 +884,70 @@ def _is_kimi_code_access_denied(status: int, body: bytes | str) -> bool:
     )
 
 
-def _kimi_code_ua_candidates(url: str) -> list[str]:
+def _retry_after_seconds(headers) -> Optional[float]:
+    """Parse a bounded delta-seconds Retry-After value."""
+    try:
+        raw = headers.get("Retry-After") or headers.get("retry-after")
+        value = float(raw)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if value < 0:
+        return None
+    return min(value, 30.0)
+
+
+def _kimi_code_ua_candidates(url: str, headers: Optional[Dict] = None) -> list[str]:
     if not _is_kimi_code_url(url):
         return []
-    base_key = _kimi_code_base_key(url)
-    cached = _kimi_code_ua_cache.get(base_key)
+    cached = _kimi_code_ua_cache.get(_kimi_code_cache_key(url, headers))
     if cached:
         return [cached] + [ua for ua in KIMI_CODE_USER_AGENTS if ua != cached]
     return list(KIMI_CODE_USER_AGENTS)
 
 
-def _remember_kimi_code_user_agent(url: str, user_agent: str) -> None:
-    _kimi_code_ua_cache[_kimi_code_base_key(url)] = user_agent
+def _remember_kimi_code_user_agent(
+    url: str,
+    user_agent: str,
+    headers: Optional[Dict] = None,
+) -> None:
+    _kimi_code_ua_cache[_kimi_code_cache_key(url, headers)] = user_agent
+
+
+def _rotate_kimi_code_user_agent(
+    url: str,
+    rejected: str,
+    headers: Optional[Dict] = None,
+) -> Optional[str]:
+    try:
+        index = KIMI_CODE_USER_AGENTS.index(rejected)
+    except ValueError:
+        index = -1
+    if index + 1 >= len(KIMI_CODE_USER_AGENTS):
+        return None
+    next_ua = KIMI_CODE_USER_AGENTS[index + 1]
+    _remember_kimi_code_user_agent(url, next_ua, headers)
+    return next_ua
 
 
 def apply_kimi_code_headers(headers: Optional[Dict], url: str) -> Dict[str, str]:
-    """Pick a Kimi Code User-Agent (cached probe when possible)."""
+    """Apply the deterministic preferred/cached Kimi Code User-Agent.
+
+    Negotiation is response-driven: generation is attempted immediately and
+    only a specific coding-agent 403 rotates the cached value.
+    """
     h = dict(headers or {})
     if not _is_kimi_code_url(url):
         return h
-    base_key = _kimi_code_base_key(url)
-    cached = _kimi_code_ua_cache.get(base_key)
-    if cached:
-        h["User-Agent"] = cached
-        return h
-    models_url = base_key.rstrip("/") + "/models"
-    from src.tls_overrides import llm_verify
-    for ua in KIMI_CODE_USER_AGENTS:
-        trial = dict(h)
-        trial["User-Agent"] = ua
-        try:
-            r = httpx.get(models_url, headers=trial, timeout=8, verify=llm_verify())
-        except Exception:
-            continue
-        if _is_kimi_code_access_denied(r.status_code, r.content):
-            logger.debug("Kimi Code rejected User-Agent %s (403), trying next", ua)
-            continue
-        if r.status_code < 400:
-            _remember_kimi_code_user_agent(url, ua)
-            h["User-Agent"] = ua
-            return h
-        break
-    h.setdefault("User-Agent", KIMI_CODE_USER_AGENT)
+    h["User-Agent"] = _kimi_code_ua_cache.get(
+        _kimi_code_cache_key(url, h),
+        KIMI_CODE_USER_AGENT,
+    )
     return h
 
 
 async def apply_kimi_code_headers_async(client, headers: Optional[Dict], url: str) -> Dict[str, str]:
-    """Pick a Kimi Code User-Agent without blocking the event loop."""
-    h = dict(headers or {})
-    if not _is_kimi_code_url(url):
-        return h
-    base_key = _kimi_code_base_key(url)
-    cached = _kimi_code_ua_cache.get(base_key)
-    if cached:
-        h["User-Agent"] = cached
-        return h
-    models_url = base_key.rstrip("/") + "/models"
-    for ua in KIMI_CODE_USER_AGENTS:
-        trial = dict(h)
-        trial["User-Agent"] = ua
-        try:
-            r = await client.get(models_url, headers=trial, timeout=8)
-        except Exception:
-            continue
-        if _is_kimi_code_access_denied(r.status_code, r.content):
-            logger.debug("Kimi Code rejected User-Agent %s (403), trying next", ua)
-            continue
-        if r.status_code < 400:
-            _remember_kimi_code_user_agent(url, ua)
-            h["User-Agent"] = ua
-            return h
-        break
-    h.setdefault("User-Agent", KIMI_CODE_USER_AGENT)
-    return h
+    """Async-compatible deterministic header selection (no preflight probes)."""
+    return apply_kimi_code_headers(headers, url)
 
 
 def httpx_get_kimi_aware(url: str, headers: Optional[Dict], **kwargs):
@@ -801,13 +955,13 @@ def httpx_get_kimi_aware(url: str, headers: Optional[Dict], **kwargs):
     if not _is_kimi_code_url(url):
         return httpx.get(url, headers=h, **kwargs)
     last = None
-    for ua in _kimi_code_ua_candidates(url):
+    for ua in _kimi_code_ua_candidates(url, h)[:KIMI_CODE_NEGOTIATION_ATTEMPTS]:
         trial = dict(h)
         trial["User-Agent"] = ua
         last = httpx.get(url, headers=trial, **kwargs)
         if not _is_kimi_code_access_denied(last.status_code, last.content):
             if last.status_code < 400:
-                _remember_kimi_code_user_agent(url, ua)
+                _remember_kimi_code_user_agent(url, ua, h)
             return last
     return last
 
@@ -817,13 +971,13 @@ def httpx_post_kimi_aware(url: str, headers: Optional[Dict], **kwargs):
     if not _is_kimi_code_url(url):
         return httpx.post(url, headers=h, **kwargs)
     last = None
-    for ua in _kimi_code_ua_candidates(url):
+    for ua in _kimi_code_ua_candidates(url, h)[:KIMI_CODE_NEGOTIATION_ATTEMPTS]:
         trial = dict(h)
         trial["User-Agent"] = ua
         last = httpx.post(url, headers=trial, **kwargs)
         if not _is_kimi_code_access_denied(last.status_code, last.content):
             if last.status_code < 400:
-                _remember_kimi_code_user_agent(url, ua)
+                _remember_kimi_code_user_agent(url, ua, h)
             return last
     return last
 
@@ -833,13 +987,13 @@ async def httpx_post_kimi_aware_async(client, url: str, headers: Optional[Dict],
     if not _is_kimi_code_url(url):
         return await client.post(url, headers=h, **kwargs)
     last = None
-    for ua in _kimi_code_ua_candidates(url):
+    for ua in _kimi_code_ua_candidates(url, h)[:KIMI_CODE_NEGOTIATION_ATTEMPTS]:
         trial = dict(h)
         trial["User-Agent"] = ua
         last = await client.post(url, headers=trial, **kwargs)
         if not _is_kimi_code_access_denied(last.status_code, last.content):
             if last.status_code < 400:
-                _remember_kimi_code_user_agent(url, ua)
+                _remember_kimi_code_user_agent(url, ua, h)
             return last
     return last
 
@@ -1110,8 +1264,9 @@ def _build_chatgpt_responses_payload(
     max_tokens: int,
     *,
     stream: bool = False,
+    tools: Optional[List[Dict]] = None,
 ) -> Dict:
-    from src.chatgpt_subscription import build_responses_input
+    from src.chatgpt_subscription import build_responses_input, build_responses_tools
 
     conversation = [msg for msg in (messages or []) if (msg.get("role") or "") != "system"]
     payload: Dict = {
@@ -1123,6 +1278,10 @@ def _build_chatgpt_responses_payload(
     }
     if not _restricts_temperature(model):
         payload["temperature"] = temperature
+    if tools:
+        converted_tools = build_responses_tools(tools)
+        if converted_tools:
+            payload["tools"] = converted_tools
     # ChatGPT Subscription Codex API does not support max_output_tokens —
     # passing it returns HTTP 400 "Unsupported parameter: max_output_tokens".
     # Do not include it in the payload.
@@ -1287,16 +1446,43 @@ def _normalize_mistral_content(content):
         if btype == "text":
             t = block.get("text", "")
             if t:
-                text_parts.append(t)
+                text_parts.append(t if isinstance(t, str) else "")
         elif btype == "thinking":
-            inner = block.get("thinking", [])
-            if isinstance(inner, list):
-                for tb in inner:
-                    if isinstance(tb, dict) and tb.get("text"):
-                        thinking_parts.append(tb["text"])
-            elif isinstance(inner, str):
+            inner = _normalize_reasoning_text(block.get("thinking", []))
+            if inner:
                 thinking_parts.append(inner)
     return "".join(text_parts), "".join(thinking_parts)
+
+
+def _normalize_reasoning_text(value, _depth: int = 0) -> str:
+    """Extract text from known reasoning shapes without stringifying objects."""
+    if _depth > 8 or value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "".join(_normalize_reasoning_text(item, _depth + 1) for item in value)
+    if not isinstance(value, dict):
+        return ""
+
+    # Prefer explicit text-bearing keys.  Provider metadata, signatures, ids,
+    # and arbitrary objects are intentionally ignored.
+    parts = []
+    for key in (
+        "text",
+        "reasoning_content",
+        "reasoning",
+        "thinking",
+        "reasoning_text",
+        "thought",
+        "summary",
+        "content",
+    ):
+        if key in value:
+            text = _normalize_reasoning_text(value.get(key), _depth + 1)
+            if text:
+                parts.append(text)
+    return "".join(parts)
 
 
 def _convert_openai_content_to_anthropic(content):
@@ -1847,6 +2033,7 @@ def llm_call(url: str, model: str, messages: List[Dict], temperature: float = LL
         if max_tokens and max_tokens > 0:
             tok_key = "max_completion_tokens" if _uses_max_completion_tokens(model) else "max_tokens"
             payload[tok_key] = max_tokens
+        _apply_featherless_max_tokens(payload, target_url, model, max_tokens)
         _apply_local_generation_stability(payload, target_url, model)
         if provider == "mistral" and _supports_thinking(model):
             payload["reasoning_effort"] = _MISTRAL_REASONING_EFFORT
@@ -2055,6 +2242,7 @@ async def llm_call_async(
         if max_tokens and max_tokens > 0:
             tok_key = "max_completion_tokens" if _uses_max_completion_tokens(model) else "max_tokens"
             payload[tok_key] = max_tokens
+        _apply_featherless_max_tokens(payload, target_url, model, max_tokens)
         # Suppress thinking for qwen3/gemma4 on Ollama /v1 — same as stream_llm.
         if _is_ollama_openai_compat_url(url) and _supports_thinking(model):
             payload["think"] = False
@@ -2072,7 +2260,7 @@ async def llm_call_async(
         attempt += 1
         start = time.time()
         try:
-            async with _local_model_slot(target_url, model, workload):
+            async with _local_model_slot(target_url, model, workload), _featherless_unit_slot(target_url, model):
                 note_model_activity(target_url, model)
                 client = _get_http_client()
                 r = await httpx_post_kimi_aware_async(client, target_url, h, json=payload, timeout=call_timeout)
@@ -2134,7 +2322,11 @@ async def stream_llm(url: str, model: str, messages: List[Dict], temperature: fl
                      tools: Optional[List[Dict]] = None, session_id: Optional[str] = None,
                      tool_choice_none: bool = False, workload: str = "foreground"):
     target_url = _stream_target_url(url)
-    async with _local_model_slot(target_url, model, workload):
+    gate_started = time.perf_counter()
+    yield f'data: {json.dumps({"type": "run_status", "phase": "waiting_local_capacity", "label": "Waiting for local capacity", "ephemeral": True})}\n\n'
+    async with _local_model_slot(target_url, model, workload), _featherless_unit_slot(target_url, model):
+        capacity_wait_ms = round((time.perf_counter() - gate_started) * 1000, 1)
+        yield f'data: {json.dumps({"type": "run_status", "phase": "contacting_provider", "label": "Contacting provider", "ephemeral": True, "capacity_wait_ms": capacity_wait_ms})}\n\n'
         async for chunk in _stream_llm_inner(
             url,
             model,
@@ -2197,7 +2389,7 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
     elif provider == "chatgpt-subscription":
         target_url = _normalize_chatgpt_subscription_url(url)
         h = _provider_headers(provider, headers)
-        payload = _build_chatgpt_responses_payload(model, messages_copy, temperature, max_tokens, stream=True)
+        payload = _build_chatgpt_responses_payload(model, messages_copy, temperature, max_tokens, stream=True, tools=tools)
     else:
         target_url = _normalize_openai_chat_url(url)
         payload = {
@@ -2213,6 +2405,7 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
         if max_tokens and max_tokens > 0:
             tok_key = "max_completion_tokens" if _uses_max_completion_tokens(model) else "max_tokens"
             payload[tok_key] = max_tokens
+        _apply_featherless_max_tokens(payload, target_url, model, max_tokens)
         if tools:
             payload["tools"] = tools
         elif tool_choice_none:
@@ -2254,9 +2447,12 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
         event_name = ""
         input_tokens = 0
         output_tokens = 0
+        _cgpt_calls: list = []
         try:
             client = _get_http_client()
+            provider_request_started = time.perf_counter()
             async with client.stream('POST', target_url, json=payload, headers=h, timeout=stream_timeout) as r:
+                yield f'data: {json.dumps({"type": "provider_timing", "phase": "first_byte", "duration_ms": round((time.perf_counter() - provider_request_started) * 1000, 1), "ephemeral": True})}\n\n'
                 _clear_host_dead(target_url)
                 if r.status_code != 200:
                     raw = (await r.aread()).decode(errors="replace")
@@ -2287,10 +2483,25 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
                                 yield _degenerate
                                 return
                             yield f'data: {json.dumps({"delta": delta})}\n\n'
+                    elif evt == "response.output_item.done":
+                        # The final response.completed envelope's `output` array
+                        # comes back empty on this backend, so completed
+                        # function_call items must be captured here as they
+                        # stream — this is the only place they carry full args.
+                        item = data.get("item") or {}
+                        if isinstance(item, dict) and item.get("type") == "function_call":
+                            _cgpt_calls.append({
+                                "id": item.get("call_id") or item.get("id") or f"call_{len(_cgpt_calls)}",
+                                "name": item.get("name") or "",
+                                "arguments": item.get("arguments") or "{}",
+                            })
                     elif evt == "response.completed":
-                        usage = (data.get("response") or {}).get("usage") or data.get("usage") or {}
+                        resp_obj = data.get("response") or {}
+                        usage = resp_obj.get("usage") or data.get("usage") or {}
                         input_tokens = usage.get("input_tokens") or usage.get("prompt_tokens") or input_tokens
                         output_tokens = usage.get("output_tokens") or usage.get("completion_tokens") or output_tokens
+                        if _cgpt_calls:
+                            yield f'data: {json.dumps({"type": "tool_calls", "calls": _cgpt_calls})}\n\n'
                         if input_tokens or output_tokens:
                             yield f'data: {json.dumps({"type": "usage", "data": {"input_tokens": input_tokens, "output_tokens": output_tokens}})}\n\n'
                         yield "data: [DONE]\n\n"
@@ -2321,7 +2532,9 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
         _harmony_router = _HarmonyStreamRouter()
         try:
             client = _get_http_client()
+            provider_request_started = time.perf_counter()
             async with client.stream('POST', target_url, json=payload, headers=h, timeout=stream_timeout) as r:
+                yield f'data: {json.dumps({"type": "provider_timing", "phase": "first_byte", "duration_ms": round((time.perf_counter() - provider_request_started) * 1000, 1), "ephemeral": True})}\n\n'
                 _clear_host_dead(target_url)
                 if r.status_code != 200:
                     raw = (await r.aread()).decode(errors="replace")
@@ -2387,7 +2600,9 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
         _anth_block_type = ""
         try:
             client = _get_http_client()
+            provider_request_started = time.perf_counter()
             async with client.stream('POST', target_url, json=payload, headers=h, timeout=stream_timeout) as r:
+                yield f'data: {json.dumps({"type": "provider_timing", "phase": "first_byte", "duration_ms": round((time.perf_counter() - provider_request_started) * 1000, 1), "ephemeral": True})}\n\n'
                 _clear_host_dead(target_url)
                 if r.status_code != 200:
                     raw = (await r.aread()).decode(errors="replace")
@@ -2525,12 +2740,27 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
     try:
         client = _get_http_client()
         h = await apply_kimi_code_headers_async(client, h, target_url)
+        provider_request_started = time.perf_counter()
         async with client.stream('POST', target_url, json=payload, headers=h, timeout=stream_timeout) as r:
+            yield f'data: {json.dumps({"type": "provider_timing", "phase": "first_byte", "duration_ms": round((time.perf_counter() - provider_request_started) * 1000, 1), "ephemeral": True})}\n\n'
             _clear_host_dead(target_url)
             if r.status_code != 200:
                 raw = (await r.aread()).decode(errors="replace")
                 friendly = _format_upstream_error(r.status_code, raw, target_url)
-                yield f'event: error\ndata: {json.dumps({"status": r.status_code, "text": friendly, "raw": raw[:500]})}\n\n'
+                error_data = {
+                    "status": r.status_code,
+                    "text": friendly,
+                    "raw": raw[:500],
+                }
+                retry_after = _retry_after_seconds(r.headers)
+                if retry_after is not None:
+                    error_data["retry_after"] = retry_after
+                if _is_kimi_code_access_denied(r.status_code, raw):
+                    current_ua = str(h.get("User-Agent") or KIMI_CODE_USER_AGENT)
+                    next_ua = _rotate_kimi_code_user_agent(target_url, current_ua, h)
+                    if next_ua:
+                        error_data["negotiation_retry"] = True
+                yield f'event: error\ndata: {json.dumps(error_data)}\n\n'
                 return
 
             async for line in r.aiter_lines():
@@ -2607,7 +2837,14 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
                                     if isinstance(delta, dict):
                                         # Text content
                                         # Reasoning tokens (VLLM --reasoning-parser, e.g. Qwen3/DeepSeek-R1, Nemotron). vLLM 0.20.2 / NIM emit the field as `reasoning`; older builds use `reasoning_content`. Some OpenAI-compatible Ollama builds use `thinking`.
-                                        reasoning = delta.get("reasoning_content") or delta.get("reasoning") or delta.get("thinking") or ""
+                                        reasoning = _normalize_reasoning_text(
+                                            delta.get("reasoning_content")
+                                            or delta.get("reasoning")
+                                            or delta.get("thinking")
+                                            or delta.get("reasoning_text")
+                                            or delta.get("thought")
+                                            or delta.get("thoughts")
+                                        )
                                         content = delta.get("content") or ""
                                         # Mistral structured content: content is a list of typed blocks
                                         # ({"type": "thinking", ...}, {"type": "text", ...}). Split into
@@ -2847,6 +3084,12 @@ async def stream_llm_with_fallback(candidates, messages, **kwargs):
 
             delta = event_data.get("delta")
             event_type = event_data.get("type")
+            if event_type in {"run_status", "provider_timing"}:
+                # Ephemeral progress/timing never commits a fallback candidate,
+                # but must reach the browser immediately while the provider is
+                # still silent.
+                yield chunk
+                continue
             substantive = (
                 isinstance(delta, str) and bool(delta)
             ) or (

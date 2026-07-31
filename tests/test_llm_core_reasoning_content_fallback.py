@@ -112,18 +112,18 @@ from src.agent_loop import _empty_response_fallback  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
-# 4. Reasoning-only round: generic error is suppressed
+# 4. Reasoning-only round: private reasoning is never promoted to final text
 # ---------------------------------------------------------------------------
 
-def test_stream_agent_reasoning_only_does_not_emit_error():
+def test_stream_agent_reasoning_only_returns_safe_visible_diagnostic():
     final_response, chunk = _empty_response_fallback(
         full_response="",
         round_reasoning="I reasoned carefully",
         tool_events=[],
     )
-    assert chunk is None, "Must not emit any SSE chunk when reasoning is present"
-    assert "The model returned an empty response" not in (chunk or "")
-    assert final_response == "I reasoned carefully"
+    assert "I reasoned carefully" not in final_response
+    assert "I reasoned carefully" not in (chunk or "")
+    assert "did not provide a final answer" in final_response
 
 
 # ---------------------------------------------------------------------------
@@ -137,7 +137,4 @@ def test_stream_agent_reasoning_not_duplicated_as_normal_delta():
         round_reasoning=reasoning_text,
         tool_events=[],
     )
-    # chunk must be None — the reasoning was already sent as {thinking:true}
-    assert chunk is None, (
-        f"reasoning text was re-emitted as a normal delta chunk: {chunk!r}"
-    )
+    assert reasoning_text not in (chunk or "")

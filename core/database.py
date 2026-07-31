@@ -457,6 +457,15 @@ class ModelEndpoint(TimestampMixin, Base):
     # can be toggled per-endpoint in the UI. NULL = unknown, falls
     # back to the model-name keyword heuristic in agent_loop.py.
     supports_tools = Column(Boolean, nullable=True, default=None)
+    # Concurrency-unit budget for providers (e.g. Featherless) that meter
+    # concurrent capacity per model in provider-defined "units" rather than a
+    # flat request count. NULL = no gating (unlimited, the historical default
+    # for every other provider).
+    max_concurrent_units = Column(Integer, nullable=True, default=None)
+    # JSON dict of per-model overrides for unit-metered providers:
+    # {"<model name/pattern>": {"units": 4, "max_tokens": 32420}, ...}.
+    # A model not listed here costs 1 unit and gets no max_tokens default.
+    model_unit_overrides = Column(Text, nullable=True, default=None)
     # Per-user ownership. NULL = legacy/shared (visible to every user) — this
     # is the historical default. When non-null, the model picker only shows
     # the endpoint to that user (admins always see everything).
@@ -1065,6 +1074,35 @@ def _migrate_add_supports_tools_column():
             logging.getLogger(__name__).info("Migrated: added 'supports_tools' column to model_endpoints")
     except Exception as e:
         logging.getLogger(__name__).warning(f"supports_tools migration failed: {e}")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _migrate_add_unit_metering_columns():
+    """Add max_concurrent_units/model_unit_overrides columns to model_endpoints if missing."""
+    import sqlite3
+    db_path = DATABASE_URL.replace("sqlite:///", "")
+    if not os.path.exists(db_path):
+        return
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.execute("PRAGMA table_info(model_endpoints)")
+        columns = [row[1] for row in cursor.fetchall()]
+        if not columns:
+            return
+        if "max_concurrent_units" not in columns:
+            conn.execute("ALTER TABLE model_endpoints ADD COLUMN max_concurrent_units INTEGER")
+            logging.getLogger(__name__).info("Migrated: added 'max_concurrent_units' column to model_endpoints")
+        if "model_unit_overrides" not in columns:
+            conn.execute("ALTER TABLE model_endpoints ADD COLUMN model_unit_overrides TEXT")
+            logging.getLogger(__name__).info("Migrated: added 'model_unit_overrides' column to model_endpoints")
+        conn.commit()
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"unit-metering columns migration failed: {e}")
     finally:
         try:
             conn.close()
@@ -1935,6 +1973,7 @@ def init_db():
     _migrate_add_model_endpoint_owner_column()
     _migrate_add_provider_auth_id_column()
     _migrate_add_supports_tools_column()
+    _migrate_add_unit_metering_columns()
     _migrate_add_task_run_model_column()
     _migrate_add_owner_column()
     _migrate_add_document_archived_column()

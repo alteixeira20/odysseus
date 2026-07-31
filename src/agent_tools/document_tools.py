@@ -1,3 +1,4 @@
+from contextvars import ContextVar
 from typing import Any, Dict, List, Optional
 import logging
 import re
@@ -16,24 +17,32 @@ def _missing_document_upload(owner: Optional[str], content: Any) -> Optional[str
 # Active document state
 # ---------------------------------------------------------------------------
 
-_active_document_id: Optional[str] = None
-_active_model: Optional[str] = None
+_active_document_id: ContextVar[Optional[str]] = ContextVar(
+    "agent_active_document_id",
+    default=None,
+)
+_active_model: ContextVar[Optional[str]] = ContextVar(
+    "agent_active_model",
+    default=None,
+)
 
 
 def set_active_document(doc_id: Optional[str]):
     """Set the active document ID for document tool execution."""
-    global _active_document_id
-    _active_document_id = doc_id
+    _active_document_id.set(doc_id)
 
 
 def set_active_model(model: Optional[str]):
     """Set the current model name for version summaries."""
-    global _active_model
-    _active_model = model
+    _active_model.set(model)
+
+
+def get_active_model():
+    return _active_model.get()
 
 
 def get_active_document():
-    return _active_document_id
+    return _active_document_id.get()
 
 
 def clear_active_document(doc_id: Optional[str] = None) -> bool:
@@ -47,9 +56,9 @@ def clear_active_document(doc_id: Optional[str] = None) -> bool:
     path re-surface a closed document in a later, unrelated chat — even one whose
     session no longer matches — because an unlinked doc has session_id NULL (#1160).
     """
-    global _active_document_id
-    if doc_id is None or _active_document_id == doc_id:
-        _active_document_id = None
+    active_document_id = _active_document_id.get()
+    if doc_id is None or active_document_id == doc_id:
+        _active_document_id.set(None)
         return True
     return False
 
@@ -412,7 +421,7 @@ class CreateDocumentTool:
                 document_id=doc_id,
                 version_number=1,
                 content=content,
-                summary=f"Created by {_active_model or 'AI'}",
+                summary=f"Created by {_active_model.get() or 'AI'}",
                 source="ai",
             )
             db.add(doc)
@@ -446,7 +455,9 @@ class UpdateDocumentTool:
         import uuid
         from src.database import SessionLocal, Document, DocumentVersion
 
-        target_id = ctx.get("doc_id", None) or _active_document_id
+        target_id = (
+            ctx.get("doc_id", None) or _active_document_id.get()
+        )
         owner = ctx.get("owner")
 
         db = SessionLocal()
@@ -481,7 +492,10 @@ class UpdateDocumentTool:
                     source_doc=doc,
                     content=new_content,
                     owner=owner,
-                    summary=f"Created from PDF edit by {_active_model or 'AI'}",
+                    summary=(
+                        "Created from PDF edit by "
+                        f"{_active_model.get() or 'AI'}"
+                    ),
                 )
 
             new_ver = doc.version_count + 1
@@ -490,7 +504,7 @@ class UpdateDocumentTool:
                 document_id=target_id,
                 version_number=new_ver,
                 content=new_content,
-                summary=f"Updated by {_active_model or 'AI'}",
+                summary=f"Updated by {_active_model.get() or 'AI'}",
                 source="ai",
             )
             doc.current_content = new_content
@@ -518,7 +532,9 @@ class EditDocumentTool:
         import uuid
         from src.database import SessionLocal, Document, DocumentVersion
 
-        target_id = ctx.get("doc_id", None) or _active_document_id
+        target_id = (
+            ctx.get("doc_id", None) or _active_document_id.get()
+        )
         owner = ctx.get("owner")
 
         edits = parse_edit_blocks(content)
@@ -564,7 +580,10 @@ class EditDocumentTool:
                         document_id=target_id,
                         version_number=new_ver,
                         content=updated_content,
-                        summary=f"Edited email body by {_active_model or 'AI'}",
+                        summary=(
+                            "Edited email body by "
+                            f"{_active_model.get() or 'AI'}"
+                        ),
                         source="ai",
                     )
                     doc.current_content = updated_content
@@ -623,7 +642,11 @@ class EditDocumentTool:
                     source_doc=doc,
                     content=updated_content,
                     owner=owner,
-                    summary=f"Created from PDF edit by {_active_model or 'AI'} ({applied} edit(s))",
+                    summary=(
+                        "Created from PDF edit by "
+                        f"{_active_model.get() or 'AI'} "
+                        f"({applied} edit(s))"
+                    ),
                 )
 
             new_ver = doc.version_count + 1
@@ -632,7 +655,10 @@ class EditDocumentTool:
                 document_id=target_id,
                 version_number=new_ver,
                 content=updated_content,
-                summary=f"Edited by {_active_model or 'AI'} ({applied} edit(s))",
+                summary=(
+                    f"Edited by {_active_model.get() or 'AI'} "
+                    f"({applied} edit(s))"
+                ),
                 source="ai",
             )
             doc.current_content = updated_content
@@ -661,7 +687,9 @@ class SuggestDocumentTool:
         """Create inline suggestions for the active document WITHOUT modifying it."""
         from src.database import SessionLocal, Document
 
-        target_id = ctx.get("doc_id", None) or _active_document_id
+        target_id = (
+            ctx.get("doc_id", None) or _active_document_id.get()
+        )
         owner = ctx.get("owner")
 
         if not target_id:
@@ -805,7 +833,12 @@ class ManageDocumentTool:
                 }
 
             elif action == "delete":
-                doc_id = args.get("document_id") or args.get("id") or args.get("uid") or _active_document_id
+                doc_id = (
+                    args.get("document_id")
+                    or args.get("id")
+                    or args.get("uid")
+                    or _active_document_id.get()
+                )
                 doc = None
                 if doc_id:
                     doc = _get_owned_document(db, Document, doc_id, owner)
@@ -817,7 +850,7 @@ class ManageDocumentTool:
                 title = doc.title
                 doc.is_active = False
                 db.commit()
-                if _active_document_id == doc.id:
+                if _active_document_id.get() == doc.id:
                     set_active_document(None)
                 return {"response": f"Deleted document '{title}'", "exit_code": 0}
 

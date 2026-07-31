@@ -415,7 +415,7 @@ async def _run_skill_test_job(key, name, md, task, url, model, headers, owner, s
     """Background coroutine: run the skill in an agent loop, capture a condensed
     log + transcript, then have the judge grade it. Writes into _skill_test_jobs."""
     import json as _json
-    from src.agent_loop import stream_agent_loop
+    from src.agent.api import stream_agent_loop
 
     job = _skill_test_jobs.get(key)
     if job is None:
@@ -692,7 +692,7 @@ def _apply_skill_md(skills_manager, name: str, md: str, owner) -> bool:
 async def _run_skill_test_once(md: str, task: str, url, model, headers, owner) -> tuple:
     """Run the skill once in the agent loop; return (transcript, verdict)."""
     import json as _json
-    from src.agent_loop import stream_agent_loop
+    from src.agent.api import stream_agent_loop
     transcript = []
     messages = [
         {"role": "system", "content":

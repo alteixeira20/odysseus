@@ -522,6 +522,8 @@ async def _direct_fallback(
     progress_cb: Optional[Callable[[Dict], Awaitable[None]]] = None,
     session_id: Optional[str] = None,
     owner: Optional[str] = None,
+    arguments: Optional[Dict[str, Any]] = None,
+    invocation_id: Optional[str] = None,
 ) -> Optional[Dict]:
     _subproc_env = {
         **os.environ,
@@ -537,6 +539,8 @@ async def _direct_fallback(
             "subproc_env": _subproc_env,
             "session_id": session_id,
             "owner": owner,
+            "arguments": arguments,
+            "invocation_id": invocation_id,
         }
 
         from src.agent_tools import TOOL_HANDLERS
@@ -575,6 +579,8 @@ async def execute_tool_block(
     progress_cb: Optional[Callable[[Dict], Awaitable[None]]] = None,
     workspace: Optional[str] = None,
     tool_policy: Optional[Any] = None,
+    allowed_tools: Optional[set] = None,
+    invocation_id: Optional[str] = None,
 ) -> Tuple[str, Dict]:
     """Execute a single tool block. Returns (description, result_dict).
 
@@ -588,9 +594,11 @@ async def execute_tool_block(
             block,
             session_id=session_id,
             disabled_tools=disabled_tools,
+            allowed_tools=allowed_tools,
             owner=owner,
             progress_cb=progress_cb,
             tool_policy=tool_policy,
+            invocation_id=invocation_id,
         )
         return output
     finally:
@@ -604,6 +612,8 @@ async def _execute_tool_block_impl(
     owner: Optional[str] = None,
     progress_cb: Optional[Callable[[Dict], Awaitable[None]]] = None,
     tool_policy: Optional[Any] = None,
+    allowed_tools: Optional[set] = None,
+    invocation_id: Optional[str] = None,
 ) -> Tuple[str, Dict]:
     """Execute a single tool block. Returns (description, result_dict).
 
@@ -644,12 +654,62 @@ async def _execute_tool_block_impl(
 
     tool = block.tool_type
     content = block.content
+    arguments = getattr(block, "arguments", None)
+
+    if (
+        isinstance(arguments, dict)
+        and arguments.get("__unknown_native_tool__") is True
+    ):
+        requested_tool = str(
+            arguments.get("requested_tool") or tool or "unknown"
+        )
+        suggestions = [
+            str(name)
+            for name in (arguments.get("suggestions") or [])
+            if name
+        ]
+        suggestion_text = (
+            " Did you mean: " + ", ".join(suggestions) + "?"
+            if suggestions
+            else ""
+        )
+        return (
+            f"unknown: {requested_tool}",
+            {
+                "error": (
+                    f"Unknown tool: {requested_tool}."
+                    f"{suggestion_text} Retry with an available tool name."
+                ),
+                "error_type": "unknown_tool",
+                "requested_tool": requested_tool,
+                "suggestions": suggestions,
+                "retryable": True,
+                "exit_code": 1,
+            },
+        )
 
     # The block/disable gates below must match every policy-equivalent
     # spelling of the tool name (bare email names alias their mcp__email__
     # form — see email_tool_policy_names), not just the spelling the model
     # happened to emit.
     policy_names = email_tool_policy_names(tool)
+
+    # The authoritative effective set is an allowlist.  Relevance/provider
+    # selection therefore cannot advertise one set while fenced calls reach a
+    # broader dispatcher surface.  Return a normal correctable tool result
+    # rather than terminating the agent round.
+    if allowed_tools is not None and policy_names.isdisjoint(allowed_tools):
+        desc = f"{tool}: UNAVAILABLE"
+        result = {
+            "error": (
+                f"Tool '{tool}' is not available in this run. "
+                "Use one of the tools listed in the current tool contract."
+            ),
+            "exit_code": 1,
+            "unavailable": True,
+        }
+        logger.info("Tool rejected outside effective set: %s", tool)
+        return desc, result
 
     # Misformatted tool call detection: model put JSON inside ```python``` (or
     # similar) without naming the tool. Common with MiniMax-style outputs.
@@ -687,7 +747,7 @@ async def _execute_tool_block_impl(
     if tool_policy and any(tool_policy.blocks(name) for name in policy_names):
         desc = f"{tool}: BLOCKED"
         result = {
-            "error": f"Execution of tool '{tool}' is forbade by the active guide-only policy.",
+            "error": f"Execution of tool '{tool}' is forbidden by the active tool policy.",
             "exit_code": 1,
         }
         logger.warning("Tool policy blocked tool=%s", tool)
@@ -739,10 +799,24 @@ async def _execute_tool_block_impl(
             logger.info(f"Tool executed: {desc} -> bg job {rec['id']}")
             return desc, result
 
-    # Route MCP-extracted tools through the MCP manager. Forward
-    # the progress callback so long-running subprocess tools
-    # (bash, python) can stream `tool_progress` events to the UI.
-    if tool in _MCP_TOOL_MAP:
+    # Foundational local coding tools always use the per-run direct handler.
+    # A same-named MCP server may be disconnected, stale, or bound to a
+    # different host/workspace; it must never override the explicit execution
+    # context selected for this run.
+    if tool in {"bash", "python", "read_file", "write_file"}:
+        first_line = content.split(chr(10))[0][:80]
+        desc = f"{tool}: {first_line}"
+        result = await _direct_fallback(
+            tool,
+            content,
+            progress_cb=progress_cb,
+            session_id=session_id,
+            owner=owner,
+            arguments=arguments,
+            invocation_id=invocation_id,
+        ) or {"error": f"{tool}: execution failed", "exit_code": 1}
+    # Route remaining MCP-extracted tools through the MCP manager.
+    elif tool in _MCP_TOOL_MAP:
         first_line = content.split(chr(10))[0][:80]
         desc = f"{tool}: {first_line}"
         result = await _call_mcp_tool(tool, content, progress_cb=progress_cb)
@@ -949,7 +1023,15 @@ async def _execute_tool_block_impl(
     elif tool in dynamic_handlers:
         first_line = content.split(chr(10))[0][:80]
         desc = f"registry: {tool} {first_line}".strip()
-        res = await _direct_fallback(tool, content, progress_cb=progress_cb)
+        res = await _direct_fallback(
+            tool,
+            content,
+            progress_cb=progress_cb,
+            session_id=session_id,
+            owner=owner,
+            arguments=arguments,
+            invocation_id=invocation_id,
+        )
 
         if isinstance(res, tuple):
             desc, result = res
@@ -983,6 +1065,9 @@ _FORMATTER_HANDLED_KEYS = {
 def format_tool_result(description: str, result: Dict) -> str:
     """Format a tool result into text for feeding back to the LLM."""
     parts = [f"### {description}"]
+
+    if result.get("error"):
+        parts.append(f"**Error:** {result['error']}")
 
     if "stdout" in result:
         if result["stdout"]:
@@ -1020,9 +1105,6 @@ def format_tool_result(description: str, result: Dict) -> str:
             parts.append(f"Document updated: \"{result.get('title', '')}\" (v{result['version']})")
         elif action == "edit":
             parts.append(f'Document edited: "{result.get("title", "")}" (v{result.get("version", "?")}, {result.get("applied", 0)} edit(s) applied)')
-    elif "error" in result:
-        parts.append(f"**Error:** {result['error']}")
-
     # Surface any additional structured payload (events, tasks, notes, calendars,
     # documents, attachments, etc.) that the dedicated branches above don't show.
     # Without this, tools that return {"response": "...", "events": [...]} would

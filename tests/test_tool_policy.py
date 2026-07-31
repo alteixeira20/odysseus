@@ -81,6 +81,12 @@ def test_normal_policy_preserves_existing_disabled_tools():
     assert not policy.blocks("bash")
 
 
+def test_known_tool_names_cover_every_prompt_section_without_loop_import():
+    from src.tool_policy import known_tool_names
+
+    assert set(al.TOOL_SECTIONS) <= known_tool_names()
+
+
 def test_web_search_enabled_for_turn_requires_explicit_enable():
     assert web_search_enabled_for_turn(None, None) is False
     assert web_search_enabled_for_turn("true", None) is True
@@ -198,7 +204,7 @@ def test_executor_policy_backstop_blocks_tools():
     )
     assert desc == "bash: BLOCKED"
     assert result["exit_code"] == 1
-    assert "forbade" in result["error"]
+    assert "forbidden" in result["error"]
 
 
 def test_agent_loop_blocks_guide_only_fenced_tool_before_start(monkeypatch):

@@ -189,12 +189,6 @@ def known_tool_names() -> Set[str]:
     except Exception:
         pass
     try:
-        from src.agent_loop import TOOL_SECTIONS
-
-        names.update(TOOL_SECTIONS.keys())
-    except Exception:
-        pass
-    try:
         from src.tool_security import PLAN_MODE_READONLY_TOOLS, _PLAN_MODE_KNOWN_MUTATORS
 
         names.update(PLAN_MODE_READONLY_TOOLS)

@@ -8,36 +8,16 @@ Verifies two critical cases:
 """
 import pytest
 from src.agent_loop import _API_HOSTS, _endpoint_lookup_keys, _is_ollama_openai_compat_url
-from src.llm_core import _is_ollama_native_url
+from src.agent.providers.capabilities import detect_model_capabilities
 
 
 def _compute_is_api_model(model: str, endpoint_url: str, endpoint_supports=None) -> bool:
-    """Replicate the heuristic from stream_agent_loop without side effects."""
-    model_lc = model.lower()
-
-    model_supports_tools = any(kw in model_lc for kw in (
-        "gpt-4", "gpt-5", "gpt-o", "claude", "gemini", "gemma",
-        "qwen3", "qwen2.5", "mixtral", "mistral", "llama-3.1", "llama-3.2",
-        "llama-3.3", "llama-4", "llama3.1", "llama3.2", "llama3.3", "llama4",
-        "minimax", "kimi", "yi-", "phi-3", "phi-4", "command-r",
-        "glm-4", "internlm", "hermes",
-        "deepseek-v", "deepseek-chat",
-    ))
-    model_no_tools = any(kw in model_lc for kw in (
-        "deepseek-r1",
-        "gpt-oss",
-    ))
-
-    if endpoint_supports is True:
-        return True
-    if (
-        endpoint_supports is False
-        or model_no_tools
-        or _is_ollama_native_url(endpoint_url)
-        or _is_ollama_openai_compat_url(endpoint_url)
-    ):
-        return False
-    return any(h in endpoint_url for h in _API_HOSTS) or model_supports_tools
+    """Exercise the production capability decision without provider I/O."""
+    return detect_model_capabilities(
+        endpoint_url,
+        model,
+        endpoint_supports_tools=endpoint_supports,
+    ).native_tool_calls
 
 
 class TestDeepSeekToolSupport:
@@ -151,6 +131,28 @@ class TestApiHostsContainsDeepSeek:
 
     def test_deepseek_com_in_api_hosts(self):
         assert "deepseek.com" in _API_HOSTS
+
+
+class TestStructuredCapabilities:
+    def test_ollama_fenced_capability_is_explicit(self):
+        capabilities = detect_model_capabilities(
+            "http://localhost:11434/v1",
+            "qwen3.5:4b",
+        )
+        assert capabilities.native_tool_calls is False
+        assert capabilities.fenced_tool_calls is True
+        assert capabilities.compact_prompt is True
+        assert capabilities.provider_family == "ollama_openai_compat"
+
+    def test_hosted_native_capability_is_explicit(self):
+        capabilities = detect_model_capabilities(
+            "https://api.openai.com/v1",
+            "gpt-5",
+        )
+        assert capabilities.native_tool_calls is True
+        assert capabilities.fenced_tool_calls is False
+        assert capabilities.mcp_schemas is True
+        assert capabilities.document_streaming_mode == "native_delta"
 
 
 class TestEndpointLookupKeys:

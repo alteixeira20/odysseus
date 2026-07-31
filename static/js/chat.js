@@ -19,10 +19,15 @@ import searchModule from './search.js';
 import documentModule from './document.js?v=20260722emailfastindex1';
 import * as emailInbox from './emailInbox.js?v=20260722emailfastindex1';
 import codeRunnerModule from './codeRunner.js';
-import slashCommands, { initSlashCommands, isCommand, handleSlashCommand, handleSetupInput, handleSetupWizard, typewriterInto } from './slashCommands.js?v=20260722emailfastindex1';
+import slashCommands, { initSlashCommands, isCommand, handleSlashCommand, handleSetupInput, handleSetupWizard } from './slashCommands.js?v=20260722emailfastindex1';
 import createResearchSynapse from './researchSynapse.js';
 import { createStreamRenderer } from './streamingRenderer.js';
 import { wireArrowUpRecall, getUserMessagesFromChatHistory } from './composerArrowUpRecall.js?v=20260714promptrecall';
+import {
+  settleRunningToolNodes,
+  stopToolNodeTimers,
+  toolTerminalState,
+} from './agentToolLifecycle.js?v=20260731bash1';
 
   const RESEARCH_TIMEOUT_MS = 360000;
   const DEFAULT_TIMEOUT_MS = 120000;
@@ -1024,25 +1029,7 @@ import { wireArrowUpRecall, getUserMessagesFromChatHistory } from './composerArr
       abortCurrentRequest(true);  // explicit user Stop → also cancel the detached server run
 
       // Clean up any running agent thread nodes (stop wave animation, remove "running" state)
-      document.querySelectorAll('.agent-thread-node.running').forEach(node => {
-        if (node._waveInterval) { clearInterval(node._waveInterval); node._waveInterval = null; }
-        if (node._elapsedTicker) { clearInterval(node._elapsedTicker); node._elapsedTicker = null; }
-        node.classList.remove('running');
-        const wave = node.querySelector('.agent-thread-wave');
-        if (wave) wave.textContent = '';
-        const icon = node.querySelector('.agent-thread-icon');
-        if (icon) icon.textContent = '\u25A0'; // stop square
-        const statusEl = node.querySelector('.agent-thread-status');
-        if (!statusEl) {
-          const header = node.querySelector('.agent-thread-header');
-          if (header) {
-            const s = document.createElement('span');
-            s.className = 'agent-thread-status';
-            s.textContent = 'stopped';
-            header.appendChild(s);
-          }
-        }
-      });
+      settleRunningToolNodes(document, 'cancelled');
       document.querySelectorAll('.agent-thread.streaming').forEach(t => t.classList.remove('streaming'));
 
       // Clean up any thinking spinners
@@ -1697,9 +1684,8 @@ import { wireArrowUpRecall, getUserMessagesFromChatHistory } from './composerArr
 	        // Research always runs in chat mode — override agent if set
 	        fd.set('mode', 'chat');
 	        fd.set('plan_mode', 'false');
-	      }
+      }
       fd.append('allow_bash', el('bash-toggle').checked ? 'true' : 'false');
-      if (workspaceAgentIntent) fd.set('allow_bash', 'true');
       const ragChk = el('rag-toggle');
       if (ragChk && !ragChk.checked) {
         fd.append('use_rag', 'false');
@@ -1878,7 +1864,10 @@ import { wireArrowUpRecall, getUserMessagesFromChatHistory } from './composerArr
             Storage.setJSON(Storage.KEYS.TOGGLES, _st);
           }
         }
-        typewriterInto(holder.querySelector('.body'), errText);
+        const errorBody = holder.querySelector('.body');
+        errorBody.textContent = errText;
+        errorBody.style.color = 'var(--red)';
+        errorBody.style.fontStyle = 'italic';
         enableResearchBtn();
         return;
       }
@@ -1975,6 +1964,42 @@ import { wireArrowUpRecall, getUserMessagesFromChatHistory } from './composerArr
           if (el._spinner) el._spinner.destroy();
           el.remove();
         }
+      };
+
+      const _clearRunStatus = () => {
+        document.querySelectorAll('.agent-run-status').forEach((node) => node.remove());
+      };
+      const _showRunStatus = (label) => {
+        _clearRunStatus();
+        const row = document.createElement('div');
+        row.className = 'msg msg-ai agent-run-status';
+        const body = document.createElement('div');
+        body.className = 'body';
+        body.textContent = label || 'Preparing';
+        row.appendChild(body);
+        document.getElementById('chat-history')?.appendChild(row);
+        uiModule.scrollHistory();
+      };
+      const _showTerminalStreamError = (message) => {
+        _clearRunStatus();
+        _removeThinkingSpinner();
+        const body = roundHolder?.querySelector('.body');
+        if (!body) return;
+        let note = body.querySelector('.agent-terminal-error');
+        if (!note) {
+          note = document.createElement('div');
+          note.className = 'agent-terminal-error';
+          note.style.cssText = 'color:var(--red);font-style:italic;padding:4px 0;';
+          body.appendChild(note);
+        }
+        note.textContent = message;
+      };
+      const _toolNodeForEvent = (event) => {
+        const invocationId = String(event?.invocation_id || '');
+        if (!invocationId) return currentToolBubble;
+        return Array.from(document.querySelectorAll('.agent-thread-node')).find(
+          (node) => node.dataset.invocationId === invocationId
+        ) || currentToolBubble;
       };
 
       // Tool-aware thinking spinner
@@ -2185,6 +2210,7 @@ import { wireArrowUpRecall, getUserMessagesFromChatHistory } from './composerArr
 
       let _nextIsError = false;
       let _streamSawDone = false;
+      let _terminalStreamError = null;
       let _firstVisibleOutputSeen = false;
       const markFirstVisibleOutput = () => {
         if (_firstVisibleOutputSeen) return;
@@ -2210,8 +2236,6 @@ import { wireArrowUpRecall, getUserMessagesFromChatHistory } from './composerArr
           }
           if (line.startsWith('data: ')) {
             const data = line.slice(6);
-            if (data && data !== '[DONE]') markFirstVisibleOutput();
-
             // (thinking spinner removal is handled in agent_step / tool_start / content handlers)
 
             // Background detection: are we on a different session?
@@ -2235,6 +2259,13 @@ import { wireArrowUpRecall, getUserMessagesFromChatHistory } from './composerArr
 
             if (data === '[DONE]') {
               _streamSawDone = true;
+              _clearRunStatus();
+              if (!_isBg) {
+                settleRunningToolNodes(
+                  document,
+                  _terminalStreamError ? 'failed' : 'interrupted',
+                );
+              }
               // Always update background map if entry exists (even if user switched back)
               var bgDone = _backgroundStreams.get(streamSessionId);
               if (bgDone && !_isBg) {
@@ -2310,13 +2341,16 @@ import { wireArrowUpRecall, getUserMessagesFromChatHistory } from './composerArr
               // Handle SSE error events (e.g. HTTP 404 from provider)
               if (_nextIsError || json.status >= 400) {
                 _nextIsError = false;
-                const errMsg = json.text || json.error?.message || `Error ${json.status || 'unknown'}`;
+                const errMsg = json.text ||
+                  (typeof json.error === 'string' ? json.error : json.error?.message) ||
+                  `Error ${json.status || 'unknown'}`;
                 console.error('Stream error:', errMsg);
                 if (spinner && spinner.element) spinner.destroy();
-                typewriterInto(roundHolder.querySelector('.body'), errMsg);
-                break;
+                _terminalStreamError = errMsg;
+                _showTerminalStreamError(errMsg);
+                continue;
               }
-              if (json.delta || json.type === 'agent_prep' || json.type === 'generated_image' || json.type === 'tool_start' || json.type === 'tool_output' || json.type === 'tool_progress' || json.type === 'agent_step' || json.type === 'loop_breaker_triggered' || json.type === 'intent_nudge_exhausted' || json.type === 'doc_stream_open' || json.type === 'doc_stream_delta' || json.type === 'research_progress') {
+              if (json.delta || json.type === 'generated_image' || json.type === 'tool_start' || json.type === 'tool_output' || json.type === 'tool_progress' || json.type === 'agent_step' || json.type === 'loop_breaker_triggered' || json.type === 'intent_nudge_exhausted' || json.type === 'doc_stream_open' || json.type === 'doc_stream_delta' || json.type === 'research_progress') {
                 clearResponseTimeout();
                 clearProcessingProbe();
                 clearFirstTokenWaitTimers();
@@ -2326,14 +2360,28 @@ import { wireArrowUpRecall, getUserMessagesFromChatHistory } from './composerArr
                 if (!_isBg) _appendGeneratedImageBubble(json);
                 continue;
               }
-              if (json.type === 'agent_prep') {
+              if (json.type === 'run_status' || json.type === 'agent_prep') {
                 if (!_isBg) {
-                  _cancelThinkingTimer();
-                  _replaceThinkingSpinner('Preparing agent');
+                  _showRunStatus(json.message || json.label || 'Preparing agent');
+                }
+                continue;
+              }
+              if (json.type === 'provider_timing' || json.type === 'effective_tools') {
+                continue;
+              }
+              if (json.type === 'run_state' && json.terminal) {
+                _clearRunStatus();
+                if (json.state === 'cancelled' && !_isBg) {
+                  settleRunningToolNodes(document, 'cancelled');
+                }
+                if (json.state === 'cancelled' && !_isBg && !accumulated) {
+                  _renderCancelledBubble(holder);
                 }
                 continue;
               }
               if (json.delta) {
+                markFirstVisibleOutput();
+                _clearRunStatus();
                 _cancelThinkingTimer();
                 _removeThinkingSpinner();
                 // Text arrived after tools — connect thread line to this bubble
@@ -3043,10 +3091,14 @@ import { wireArrowUpRecall, getUserMessagesFromChatHistory } from './composerArr
                 lastToolThread = threadWrap;
                 const toolLabel = _toolLabels[json.tool.toLowerCase()] || json.tool;
                 const toolIcon = _toolIcons[json.tool.toLowerCase()] || '\u25B6';
-                const node = document.createElement('div')
-                node.className = 'agent-thread-node running';
-                const cmdHtml = cmd ? `<pre class="agent-thread-cmd">${esc(cmd)}</pre>` : '';
-                node.innerHTML = `<div class="agent-thread-dot"></div><div class="agent-thread-header"><span class="agent-thread-icon">${toolIcon}</span><span class="agent-thread-tool">${esc(toolLabel)}</span><span class="agent-thread-wave">▁▂▃</span></div><div class="agent-thread-content">${cmdHtml}</div>`;
+	                const node = document.createElement('div')
+	                node.className = 'agent-thread-node running';
+	                node.dataset.invocationId = String(json.invocation_id || '');
+	                const cmdHtml = cmd ? `<pre class="agent-thread-cmd">${esc(cmd)}</pre>` : '';
+	                const timeoutHtml = json.timeout_seconds != null
+	                  ? `<span class="agent-thread-timeout">timeout ${esc(String(json.timeout_seconds))}s</span>`
+	                  : '';
+	                node.innerHTML = `<div class="agent-thread-dot"></div><div class="agent-thread-header"><span class="agent-thread-icon">${toolIcon}</span><span class="agent-thread-tool">${esc(toolLabel)}</span><span class="agent-thread-status">running</span>${timeoutHtml}<span class="agent-thread-wave">▁▂▃</span></div><div class="agent-thread-content">${cmdHtml}</div>`;
                 // Expand/collapse via delegated click handler (init at module bottom).
                 threadWrap.appendChild(node);
                 currentToolBubble = node;
@@ -3082,14 +3134,20 @@ import { wireArrowUpRecall, getUserMessagesFromChatHistory } from './composerArr
                 }, 50);
                 uiModule.scrollHistory();
 
-              } else if (json.type === 'tool_progress') {
+	              } else if (json.type === 'tool_progress') {
                 // Long-running subprocess (bash, python) is still in
                 // flight — refresh the running tool card with the
                 // elapsed-time + tail of its stdout/stderr so the
                 // user doesn't stare at a blind "Running…" spinner.
                 if (_isBg) continue;
-                if (!currentToolBubble) continue;
-                const isImageProgress = /image/i.test(String(json.tool || '')) || /image/i.test(String(json.message || ''));
+	                const progressToolBubble = _toolNodeForEvent(json);
+	                if (!progressToolBubble) continue;
+	                currentToolBubble = progressToolBubble;
+	                if (json.state === 'timing_out') {
+	                  const status = currentToolBubble.querySelector('.agent-thread-status');
+	                  if (status) status.textContent = 'timing out';
+	                }
+	                const isImageProgress = /image/i.test(String(json.tool || '')) || /image/i.test(String(json.message || ''));
                 if (json.total || json.percent != null || isImageProgress) {
                   const content = currentToolBubble.querySelector('.agent-thread-content');
                   if (content) {
@@ -3129,20 +3187,16 @@ import { wireArrowUpRecall, getUserMessagesFromChatHistory } from './composerArr
                 }
                 uiModule.scrollHistory();
 
-              } else if (json.type === 'tool_output') {
-                if (_isBg) continue;
-                // --- Update the current thread node ---
-                if (currentToolBubble) {
+	              } else if (json.type === 'tool_output') {
+	                if (_isBg) continue;
+	                const outputToolBubble = _toolNodeForEvent(json);
+	                if (outputToolBubble) currentToolBubble = outputToolBubble;
+	                // --- Update the current thread node ---
+	                if (currentToolBubble) {
                   // Stop wave animation + the per-second cooking ticker
-                  if (currentToolBubble._waveInterval) {
-                    clearInterval(currentToolBubble._waveInterval);
-                    currentToolBubble._waveInterval = null;
-                  }
-                  if (currentToolBubble._elapsedTicker) {
-                    clearInterval(currentToolBubble._elapsedTicker);
-                    currentToolBubble._elapsedTicker = null;
-                  }
-                  const ok = (json.exit_code === 0 || json.exit_code == null);
+	                  stopToolNodeTimers(currentToolBubble);
+	                  const terminalState = toolTerminalState(json);
+	                  const ok = terminalState === 'done';
                   const cmd = json.command || '';
                   let outHtml = '';
                   if (json.output && json.output.trim()) {
@@ -3181,8 +3235,8 @@ import { wireArrowUpRecall, getUserMessagesFromChatHistory } from './composerArr
                   // click again. Click handling is delegated (see init at
                   // bottom of file) so no per-node listener needed.
                   const _wasOpen = currentToolBubble.classList.contains('open');
-                  currentToolBubble.className = 'agent-thread-node' + (ok ? '' : ' error') + (_wasOpen ? ' open' : '');
-                  currentToolBubble.innerHTML = `<div class="agent-thread-dot"></div><div class="agent-thread-header"><span class="agent-thread-icon">${ok ? '\u2713' : '\u2717'}</span><span class="agent-thread-tool">${esc(json.tool)}</span><span class="agent-thread-status">${ok ? 'done' : 'failed'}</span><span class="agent-thread-chevron">\u25B6</span></div><div class="agent-thread-content">${cmdHtml2}${outHtml}${diffHtml}</div>`;
+	                  currentToolBubble.className = 'agent-thread-node' + (ok ? '' : ' error') + (_wasOpen ? ' open' : '');
+	                  currentToolBubble.innerHTML = `<div class="agent-thread-dot"></div><div class="agent-thread-header"><span class="agent-thread-icon">${ok ? '\u2713' : (json.cancelled ? '\u25A0' : '\u2717')}</span><span class="agent-thread-tool">${esc(json.tool)}</span><span class="agent-thread-status">${terminalState}</span><span class="agent-thread-chevron">\u25B6</span></div><div class="agent-thread-content">${cmdHtml2}${outHtml}${diffHtml}</div>`;
                   // Reset so thinking spinner between tools says "Thinking" not the old tool's label
                   _lastToolName = '';
                   uiModule.scrollHistory();
@@ -3457,6 +3511,7 @@ import { wireArrowUpRecall, getUserMessagesFromChatHistory } from './composerArr
       if (spinner && spinner.element) { try { spinner.destroy(); } catch (_) {} spinner = null; }
       _cancelThinkingTimer();
       _removeThinkingSpinner();
+      _clearRunStatus();
       // Stop any thread pulse animations
       document.querySelectorAll('.agent-thread.streaming').forEach(t => t.classList.remove('streaming'));
       // --- Final render (skip if stream was ever backgrounded or currently in background) ---
@@ -3731,6 +3786,9 @@ import { wireArrowUpRecall, getUserMessagesFromChatHistory } from './composerArr
             }
           }
         }
+        if (_terminalStreamError) {
+          _showTerminalStreamError(_terminalStreamError);
+        }
       } // end if (!_isBgFinal)
 
     } catch (err) {
@@ -3739,6 +3797,7 @@ import { wireArrowUpRecall, getUserMessagesFromChatHistory } from './composerArr
       if (spinner && spinner.element) spinner.destroy();
       _cancelThinkingTimer();
       _removeThinkingSpinner();
+      _clearRunStatus();
       document.querySelectorAll('.agent-thread.streaming').forEach(t => t.classList.remove('streaming'));
       // Check if this stream was running in background
       const _isBgCatch = (sessionModule.getCurrentSessionId() !== streamSessionId) || _backgroundStreams.has(streamSessionId);
@@ -3897,11 +3956,7 @@ import { wireArrowUpRecall, getUserMessagesFromChatHistory } from './composerArr
           // fire forever on the orphaned node (and auto-recover compounds it per
           // nudge). Safe here: auto-recover's new send is deferred 200ms, so no
           // fresh running nodes exist yet.
-          document.querySelectorAll('.agent-thread-node.running').forEach(node => {
-            if (node._waveInterval) { clearInterval(node._waveInterval); node._waveInterval = null; }
-            if (node._elapsedTicker) { clearInterval(node._elapsedTicker); node._elapsedTicker = null; }
-            node.classList.remove('running');
-          });
+	          settleRunningToolNodes(document, 'interrupted');
           // Stream died unexpectedly — the "silently died" case. Re-engage the
           // model immediately (no wait) with a completion handshake, up to the
           // cap. Only auto-recover from connection-class failures; deterministic
@@ -3915,12 +3970,15 @@ import { wireArrowUpRecall, getUserMessagesFromChatHistory } from './composerArr
               if (err.message && (err.message.includes('tool') || err.message.includes('auto'))) {
                 errMsg += '\n\nThis model may not support tools — try switching to Chat mode.';
               }
-              typewriterInto(errorHolder, errMsg);
+              errorHolder.textContent = errMsg;
+              errorHolder.style.color = 'var(--red)';
+              errorHolder.style.fontStyle = 'italic';
             }
           }
         }
       }
     } finally {
+      document.querySelectorAll('.agent-run-status').forEach((node) => node.remove());
       clearResponseTimeout();
       clearProcessingProbe();
       clearFirstTokenWaitTimers();

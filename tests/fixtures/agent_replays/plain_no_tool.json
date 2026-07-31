@@ -1,0 +1,23 @@
+{
+  "endpoint_url": "https://api.openai.com/v1",
+  "model": "gpt-4o",
+  "messages": [
+    {"role": "user", "content": "Explain this plainly."}
+  ],
+  "relevant_tools": ["ask_user"],
+  "shell_enabled": false,
+  "provider_rounds": [
+    [
+      {"delta": "Plain answer."}
+    ]
+  ],
+  "expected_events": [
+    {"type": "run_status", "phase": "preparing", "label": "Preparing agent"},
+    {"type": "effective_tools", "names": ["ask_user", "update_plan"]},
+    {"type": "run_status", "phase": "prompt_ready", "label": "Prompt ready"},
+    {"type": "run_status", "phase": "contacting_provider", "label": "Contacting provider"},
+    {"delta": "Plain answer."},
+    {"type": "metrics", "model": "gpt-4o"},
+    {"done": true}
+  ]
+}

@@ -559,6 +559,33 @@ def _parse_positive_int(raw: Any, *, minimum: int = 1, maximum: int = 86400) -> 
     return min(val, maximum)
 
 
+def _parse_model_unit_overrides(raw: Any) -> Optional[Dict[str, Dict[str, int]]]:
+    """Validate/normalize a {model_pattern: {units, max_tokens}} override map.
+
+    Returns None for an empty/invalid map (caller should clear the column in
+    that case) rather than raising — this is user-editable config, not a
+    hard API contract, so a malformed row is dropped instead of 400ing the
+    whole save.
+    """
+    if not isinstance(raw, dict):
+        return None
+    cleaned: Dict[str, Dict[str, int]] = {}
+    for pattern, spec in raw.items():
+        pattern = str(pattern or "").strip().lower()
+        if not pattern or not isinstance(spec, dict):
+            continue
+        entry: Dict[str, int] = {}
+        units = _parse_positive_int(spec.get("units"), minimum=1, maximum=1000)
+        if units is not None:
+            entry["units"] = units
+        max_tokens = _parse_positive_int(spec.get("max_tokens"), minimum=1, maximum=10_000_000)
+        if max_tokens is not None:
+            entry["max_tokens"] = max_tokens
+        if entry:
+            cleaned[pattern] = entry
+    return cleaned or None
+
+
 def _explicit_model_list_timeout(base_url: str, endpoint_kind: str = "auto", requested: Any = None) -> float:
     """Timeout for explicit user-triggered model-list fetches during setup."""
     requested_val = _parse_positive_int(requested, minimum=1, maximum=60)
@@ -1971,6 +1998,11 @@ def setup_model_routes(model_discovery):
                     "model_refresh_mode": _endpoint_refresh_mode(r, kind),
                     "model_refresh_interval": getattr(r, "model_refresh_interval", None),
                     "model_refresh_timeout": getattr(r, "model_refresh_timeout", None),
+                    "is_unit_metered": _host_match(base, "featherless.ai"),
+                    "max_concurrent_units": getattr(r, "max_concurrent_units", None),
+                    "model_unit_overrides": _parse_model_unit_overrides(
+                        json.loads(r.model_unit_overrides) if getattr(r, "model_unit_overrides", None) else {}
+                    ) or {},
                 })
             if upgraded_legacy_pins:
                 db.commit()
@@ -2149,6 +2181,16 @@ def setup_model_routes(model_discovery):
             from src.auth_helpers import get_current_user as _gcu
             _shared_flag = (shared or "").strip().lower() in ("true", "1", "yes")
             _owner_val = None if _shared_flag else (_gcu(request) or None)
+            # Featherless meters concurrent capacity in provider-defined "units"
+            # per model rather than a flat request count. Seed a starter budget
+            # + the one known constrained model (Kimi-K3) so the endpoint is
+            # usable out of the box; editable from the endpoint's UI afterward.
+            _is_featherless_new = _host_match(base_url, "featherless.ai")
+            _seed_units = 4 if _is_featherless_new else None
+            _seed_overrides = (
+                json.dumps({"kimi-k3": {"units": 4, "max_tokens": 32420}})
+                if _is_featherless_new else None
+            )
             ep = ModelEndpoint(
                 id=ep_id,
                 name=name.strip(),
@@ -2164,6 +2206,8 @@ def setup_model_routes(model_discovery):
                 pinned_models=json.dumps(_pinned) if _pinned else None,
                 supports_tools=_st,
                 owner=_owner_val,
+                max_concurrent_units=_seed_units,
+                model_unit_overrides=_seed_overrides,
             )
             db.add(ep)
             db.commit()
@@ -2569,6 +2613,13 @@ def setup_model_routes(model_discovery):
                 if "model_refresh_timeout" in body:
                     timeout = _parse_positive_int(body.get("model_refresh_timeout"), minimum=1, maximum=60)
                     ep.model_refresh_timeout = timeout
+                if "max_concurrent_units" in body:
+                    ep.max_concurrent_units = _parse_positive_int(
+                        body.get("max_concurrent_units"), minimum=1, maximum=100_000
+                    )
+                if "model_unit_overrides" in body:
+                    _overrides = _parse_model_unit_overrides(body.get("model_unit_overrides"))
+                    ep.model_unit_overrides = json.dumps(_overrides) if _overrides else None
                 # Rotating an API key used to require DELETE+POST, which wiped
                 # endpoint_url/model from every session referencing the old base
                 # URL. Allow in-place updates so the admin can change the key
@@ -2602,6 +2653,10 @@ def setup_model_routes(model_discovery):
                 "model_refresh_mode": getattr(ep, "model_refresh_mode", None) or "auto",
                 "model_refresh_interval": getattr(ep, "model_refresh_interval", None),
                 "model_refresh_timeout": getattr(ep, "model_refresh_timeout", None),
+                "max_concurrent_units": getattr(ep, "max_concurrent_units", None),
+                "model_unit_overrides": _parse_model_unit_overrides(
+                    json.loads(ep.model_unit_overrides) if getattr(ep, "model_unit_overrides", None) else {}
+                ) or {},
             }
         finally:
             db.close()

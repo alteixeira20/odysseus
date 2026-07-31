@@ -521,6 +521,33 @@ async function loadEndpoints() {
       const keyLabel = ep.has_key
         ? (ep.api_key_fingerprint ? ` (key ${esc(ep.api_key_fingerprint)})` : ' (key set)')
         : '';
+      // Unit-metered providers (currently Featherless) budget concurrent
+      // capacity in provider-defined "units" per model rather than a flat
+      // request count — e.g. a bigger model costs more units of the same
+      // pool. Surface a small editable panel so the budget and per-model
+      // costs/token ceilings can be tuned without a code change.
+      const unitOverrides = ep.model_unit_overrides && typeof ep.model_unit_overrides === 'object'
+        ? ep.model_unit_overrides : {};
+      const unitsPanel = ep.is_unit_metered ? `
+        <div class="adm-ep-units-panel" data-adm-ep-units="${ep.id}" style="margin-top:6px;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:11px;" onclick="event.stopPropagation()">
+          <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">
+            <span style="opacity:0.7;">Concurrency units available</span>
+            <input type="number" min="1" class="adm-ep-units-budget" value="${Number.isFinite(Number(ep.max_concurrent_units)) ? Number(ep.max_concurrent_units) : 4}" style="width:60px;padding:2px 4px;">
+          </div>
+          <div style="opacity:0.55;margin-bottom:4px;">Per-model overrides (model name contains → units, max tokens)</div>
+          <div class="adm-ep-units-rows">
+            ${Object.entries(unitOverrides).map(([pattern, spec]) => `
+              <div class="adm-ep-units-row" style="display:flex;gap:4px;margin-bottom:3px;align-items:center;">
+                <input type="text" class="adm-ep-units-pattern" placeholder="e.g. kimi-k3" value="${esc(pattern)}" style="flex:1;padding:2px 4px;">
+                <input type="number" min="1" class="adm-ep-units-count" placeholder="units" value="${esc(String((spec || {}).units || ''))}" style="width:52px;padding:2px 4px;">
+                <input type="number" min="1" class="adm-ep-units-maxtok" placeholder="max_tokens" value="${esc(String((spec || {}).max_tokens || ''))}" style="width:84px;padding:2px 4px;">
+                <button type="button" class="admin-btn-sm adm-ep-units-remove" title="Remove">✕</button>
+              </div>`).join('')}
+          </div>
+          <button type="button" class="admin-btn-sm adm-ep-units-add">+ Add model override</button>
+          <button type="button" class="admin-btn-sm adm-ep-units-save">Save</button>
+          <span class="adm-ep-units-status" style="opacity:0.5;margin-left:6px;"></span>
+        </div>` : '';
       return `
         <div class="admin-user-row${ep.is_enabled ? '' : ' admin-ep-disabled'}${justAddedClass}" data-adm-ep-id="${ep.id}">
           <div style="display:flex;align-items:center;justify-content:space-between;${hasModels ? 'cursor:pointer;' : ''}padding:4px 0;" data-adm-ep-header="${ep.id}">
@@ -540,6 +567,7 @@ async function loadEndpoints() {
             </div>
           </div>
           <div class="admin-ep-detail">${esc(ep.base_url)}${category === 'local' ? `<button type="button" class="admin-ep-copy-btn" data-adm-copy-url="${esc(ep.base_url)}" title="Copy URL" aria-label="Copy URL" style="background:none;border:none;padding:0 2px;margin-left:6px;cursor:pointer;color:inherit;opacity:0.45;vertical-align:-2px;line-height:1;"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>` : ''}${keyLabel}</div>
+          ${unitsPanel}
           ${hasModels ? `<div class="mcp-tools-panel hidden" data-adm-ep-models-panel="${ep.id}"></div>` : ''}
         </div>`;
     });
@@ -625,6 +653,62 @@ async function loadEndpoints() {
           .then(() => _refreshAfterEndpointChange(epId))
           .then(() => loadEndpoints())
           .catch(() => loadEndpoints());
+      });
+    });
+    queryAll('[data-adm-ep-units]').forEach(panel => {
+      const epId = panel.dataset.admEpUnits;
+      const rowsEl = panel.querySelector('.adm-ep-units-rows');
+      const statusEl = panel.querySelector('.adm-ep-units-status');
+      const addRow = (pattern, units, maxTokens) => {
+        const row = document.createElement('div');
+        row.className = 'adm-ep-units-row';
+        row.style.cssText = 'display:flex;gap:4px;margin-bottom:3px;align-items:center;';
+        row.innerHTML = `
+          <input type="text" class="adm-ep-units-pattern" placeholder="e.g. kimi-k3" value="${esc(pattern || '')}" style="flex:1;padding:2px 4px;">
+          <input type="number" min="1" class="adm-ep-units-count" placeholder="units" value="${esc(units || '')}" style="width:52px;padding:2px 4px;">
+          <input type="number" min="1" class="adm-ep-units-maxtok" placeholder="max_tokens" value="${esc(maxTokens || '')}" style="width:84px;padding:2px 4px;">
+          <button type="button" class="admin-btn-sm adm-ep-units-remove" title="Remove">✕</button>`;
+        rowsEl.appendChild(row);
+      };
+      panel.querySelector('.adm-ep-units-add')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        addRow('', '', '');
+      });
+      panel.addEventListener('click', (e) => {
+        if (e.target.closest('.adm-ep-units-remove')) {
+          e.stopPropagation();
+          e.target.closest('.adm-ep-units-row')?.remove();
+        }
+      });
+      panel.querySelector('.adm-ep-units-save')?.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const budgetVal = parseInt(panel.querySelector('.adm-ep-units-budget')?.value, 10);
+        const overrides = {};
+        rowsEl.querySelectorAll('.adm-ep-units-row').forEach(row => {
+          const pattern = (row.querySelector('.adm-ep-units-pattern')?.value || '').trim().toLowerCase();
+          if (!pattern) return;
+          const spec = {};
+          const units = parseInt(row.querySelector('.adm-ep-units-count')?.value, 10);
+          const maxTokens = parseInt(row.querySelector('.adm-ep-units-maxtok')?.value, 10);
+          if (Number.isFinite(units) && units > 0) spec.units = units;
+          if (Number.isFinite(maxTokens) && maxTokens > 0) spec.max_tokens = maxTokens;
+          if (Object.keys(spec).length) overrides[pattern] = spec;
+        });
+        if (statusEl) statusEl.textContent = 'Saving…';
+        try {
+          const res = await fetch(`/api/model-endpoints/${epId}`, {
+            method: 'PATCH', credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              max_concurrent_units: Number.isFinite(budgetVal) && budgetVal > 0 ? budgetVal : null,
+              model_unit_overrides: overrides,
+            }),
+          });
+          if (statusEl) statusEl.textContent = res.ok ? 'Saved' : 'Failed to save';
+        } catch (_) {
+          if (statusEl) statusEl.textContent = 'Failed to save';
+        }
+        setTimeout(() => { if (statusEl) statusEl.textContent = ''; }, 2000);
       });
     });
     // Clear the just-added marker now that the row has been rendered

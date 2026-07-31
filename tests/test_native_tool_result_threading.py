@@ -10,9 +10,12 @@ calls aligned 1:1 with tool_blocks/tool_result_texts, and that aligned list is
 what is threaded back.
 """
 import src.agent_loop as al
+from src.agent.rounds.tool_calls import resolve_tool_blocks
+from src.agent.execution.message_threading import append_tool_results
 
 
 def test_resolve_returns_converted_calls_aligned():
+    assert al._resolve_tool_blocks is resolve_tool_blocks
     native = [
         {"name": "bogus_unknown_tool", "arguments": "{}", "id": "A"},
         {"name": "web_search", "arguments": '{"query": "hello"}', "id": "B"},
@@ -25,6 +28,7 @@ def test_resolve_returns_converted_calls_aligned():
 
 
 def test_append_threads_result_to_correct_tool_call_id():
+    assert al._append_tool_results is append_tool_results
     messages = []
     converted = [{"id": "B", "name": "web_search", "arguments": "{}"}]
     al._append_tool_results(

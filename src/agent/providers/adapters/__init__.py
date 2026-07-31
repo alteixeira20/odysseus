@@ -1,0 +1,1 @@
+"""Provider-family behavior adapters."""

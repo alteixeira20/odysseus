@@ -20,6 +20,11 @@ import re
 import time
 
 from src.agent_loop import _strip_think_blocks
+from src.agent.providers.adapters.default import strip_think_blocks
+
+
+def test_legacy_strip_think_blocks_is_provider_adapter_alias():
+    assert _strip_think_blocks is strip_think_blocks
 
 # The exact pattern this fix replaces. Used only as an equivalence oracle on
 # well-formed inputs (never on the adversarial one, where it is the slow path).

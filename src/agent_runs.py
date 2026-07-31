@@ -1,10 +1,9 @@
-"""Detached agent-run manager.
+"""Agent-run manager with replay while a real client remains connected.
 
-Keeps an agent/chat stream running server-side after the SSE client disconnects
-(tab close, navigate away, refresh). The streaming generator is drained by a
-background asyncio task into a per-session replay buffer; SSE clients SUBSCRIBE
-to that buffer (replay everything so far, then live). Closing the SSE only drops
-the subscriber — the drain task keeps going.
+The producer is drained into a per-session replay buffer so UI session changes
+can keep a request alive and reconnects do not miss events.  When the last real
+SSE subscriber disconnects, the run is cancelled; explicit background work must
+retain its own live subscriber instead of orphaning provider/tool tasks.
 
 The wrapped generator already persists the assistant message to the session on
 completion, so reopening the session shows the finished result even if nobody
@@ -17,13 +16,14 @@ close / navigation / refresh). It does NOT survive a server restart.
 import asyncio
 import json
 import logging
+import time
 from typing import AsyncGenerator, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
 
 class _Run:
-    __slots__ = ("buffer", "subscribers", "status", "task", "evict_task")
+    __slots__ = ("buffer", "subscribers", "status", "task", "evict_task", "started_at")
 
     def __init__(self) -> None:
         self.buffer: list = []          # ordered SSE event strings (replay log)
@@ -31,6 +31,7 @@ class _Run:
         self.status: str = "running"    # running | done | error | stopped
         self.task: Optional[asyncio.Task] = None
         self.evict_task: Optional[asyncio.Task] = None
+        self.started_at: float = time.time()
 
 
 _RUNS: Dict[str, _Run] = {}
@@ -104,18 +105,35 @@ async def _drain(session_id: str, agen: AsyncGenerator[str, None],
         except Exception:
             pass
     try:
+        terminal_error = False
         async for ev in agen:
             _publish(run, ev)
+            if ev.startswith("event: error"):
+                terminal_error = True
+            if ev == "data: [DONE]\n\n":
+                run.status = "error" if terminal_error else "done"
         if run.status == "running":
             run.status = "done"
     except asyncio.CancelledError:
         run.status = "stopped"
+        try:
+            from src import bg_jobs
+            killed = bg_jobs.kill_for_session_since(session_id, run.started_at)
+            if killed:
+                logger.info("[agent-run] cancelled %s background job(s) for %s", killed, session_id)
+        except Exception:
+            logger.exception("[agent-run] failed to cancel background jobs for %s", session_id)
         # Let the wrapped generator's own CancelledError handler run (it saves
         # the partial response to the session).
         try:
             await agen.aclose()
         except Exception:
             pass
+        _publish(
+            run,
+            f"data: {json.dumps({'type': 'run_state', 'state': 'cancelled', 'terminal': True})}\n\n",
+        )
+        _publish(run, "data: [DONE]\n\n")
     except Exception as e:
         logger.error("[agent-run] %s failed: %s", session_id, e, exc_info=True)
         run.status = "error"
@@ -198,6 +216,14 @@ async def subscribe(session_id: str) -> AsyncGenerator[str, None]:
                 next_seq = seq + 1
     finally:
         run.subscribers.discard(q)
+        if (
+            not run.subscribers
+            and run.status == "running"
+            and run.task
+            and not run.task.done()
+        ):
+            logger.info("[agent-run] cancelling %s after last client disconnect", session_id)
+            run.task.cancel()
         # Last subscriber gone on a finished run — (re)arm eviction so the
         # buffer doesn't linger indefinitely.
         if not run.subscribers and run.status != "running":

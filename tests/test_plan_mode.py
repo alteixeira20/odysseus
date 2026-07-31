@@ -94,6 +94,10 @@ def test_active_plan_note_pins_checklist():
     """The approved-plan note re-grounds execution so a long plan survives
     history truncation (the agent can always re-read it)."""
     from src.agent_loop import build_active_plan_note
+    from src.agent.prompting.plan_context import (
+        build_active_plan_note as canonical_build_active_plan_note,
+    )
+    assert build_active_plan_note is canonical_build_active_plan_note
     plan = "- [ ] step one\n- [ ] step two"
     note = build_active_plan_note(plan)
     assert "ACTIVE PLAN" in note

@@ -304,7 +304,9 @@ class TestComputeFinalMetrics:
             prep_timings={"request_setup": 0.2, "tool_selection": 0.3, "prompt_build": 0.15},
         ))
         assert m["agent_prep_time"] == 0.65
-        assert m["agent_model_wait_time"] == 0.6
+        # TTFT starts after preparation in stream_agent_loop, so model wait is
+        # already isolated and must not subtract preparation a second time.
+        assert m["agent_model_wait_time"] == 1.25
         assert m["agent_prep_breakdown"] == {
             "request_setup": 0.2,
             "tool_selection": 0.3,
