@@ -174,10 +174,14 @@ async def test_replay_matches_golden_event_sequence(
             "2769a2810838b46939434f2a8ee9691a652241021a3f9ea04d2c30a6fe1d0876",
         ),
         (
+            # Length/digest updated for the new "## Shell rules" fragment
+            # (src/agent/prompting/contexts/shell_guidance.py), appended
+            # only when `bash` is in the tool set — see
+            # domain_rules_for_tools in src/agent/routing/tool_domains.py.
             {"ask_user", "update_plan", "bash", "manage_bg_jobs"},
             True,
-            1667,
-            "4df9389033dac6bbd28ffc3dd34a8846dc5549e8d4af877414f48d5117ab8966",
+            4215,
+            "af00f499e88b871d91f5de2b19857816920c7c63f9aba7a7385d02c8558dc6d9",
         ),
         (
             {

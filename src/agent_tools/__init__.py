@@ -25,6 +25,7 @@ from .filesystem_tools import ReadFileTool, WriteFileTool, EditFileTool, ApplyPa
 from .coding_tools import TodoWriteTool
 from .document_tools import CreateDocumentTool, UpdateDocumentTool, EditDocumentTool, SuggestDocumentTool, ManageDocumentTool
 from .interaction_tools import AskUserTool, UpdatePlanTool
+from .planning_tools import ManagePlanTool
 from .model_interaction_tools import ChatWithModelTool, AskTeacherTool, ListModelsTool
 from .bg_job_tools import ManageBgJobsTool
 from .session_tools import CreateSessionTool, ListSessionsTool, SendToSessionTool, ManageSessionTool
@@ -55,6 +56,7 @@ TOOL_HANDLERS = {
     "get_workspace": GetWorkspaceTool().execute,
     "ask_user": AskUserTool().execute,
     "update_plan": UpdatePlanTool().execute,
+    "manage_plan": ManagePlanTool().execute,
     "chat_with_model": ChatWithModelTool().execute,
     "ask_teacher": AskTeacherTool().execute,
     "list_models": ListModelsTool().execute,
@@ -85,7 +87,7 @@ TOOL_TAGS = {"bash", "python", "web_search", "web_fetch", "read_file", "write_fi
              "send_to_session",
              "pipeline",
              "manage_session", "manage_memory", "list_models",
-             "ui_control", "generate_image", "ask_user", "update_plan",
+             "ui_control", "generate_image", "ask_user", "update_plan", "manage_plan",
              "manage_tasks", "api_call", "ask_teacher", "manage_skills",
              "suggest_document",
              "manage_endpoints", "manage_mcp", "manage_webhooks",
@@ -105,7 +107,7 @@ TOOL_TAGS = {"bash", "python", "web_search", "web_fetch", "read_file", "write_fi
              "list_downloads", "cancel_download",
              "search_hf_models", "list_cached_models",
              "list_serve_presets", "serve_preset", "adopt_served_model",
-             "list_cookbook_servers",
+             "list_cookbook_servers", "tail_serve_output",
              # Other tools the agent reaches for that were also missing.
              "edit_image", "trigger_research", "manage_research",
              # Generic loopback to any UI-button endpoint (cookbook,

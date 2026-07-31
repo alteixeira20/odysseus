@@ -31,7 +31,7 @@ SHELL_FOUNDATIONAL_TOOLS = frozenset({
     "manage_bg_jobs",
 })
 
-LOOP_PRIMITIVE_TOOLS = frozenset({"ask_user", "update_plan"})
+LOOP_PRIMITIVE_TOOLS = frozenset({"ask_user", "update_plan", "manage_plan"})
 
 
 @dataclass(frozen=True)

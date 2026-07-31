@@ -2448,6 +2448,7 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
         input_tokens = 0
         output_tokens = 0
         _cgpt_calls: list = []
+        _cgpt_finish_emitted = False
         try:
             client = _get_http_client()
             provider_request_started = time.perf_counter()
@@ -2504,6 +2505,21 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
                             yield f'data: {json.dumps({"type": "tool_calls", "calls": _cgpt_calls})}\n\n'
                         if input_tokens or output_tokens:
                             yield f'data: {json.dumps({"type": "usage", "data": {"input_tokens": input_tokens, "output_tokens": output_tokens}})}\n\n'
+                        # Responses API reports truncation via
+                        # status=="incomplete" + incomplete_details.reason
+                        # (e.g. "max_output_tokens"), not a finish_reason
+                        # field — map it onto the same normalized contract
+                        # the OpenAI-compatible/Ollama branches use.
+                        _cgpt_status = resp_obj.get("status")
+                        if _cgpt_status == "incomplete":
+                            _cgpt_reason = (
+                                (resp_obj.get("incomplete_details") or {}).get("reason")
+                                or "incomplete"
+                            )
+                        else:
+                            _cgpt_reason = "stop"
+                        _cgpt_finish_emitted = True
+                        yield f'data: {json.dumps({"type": "finish", "reason": _cgpt_reason, "protocol_terminal_seen": True})}\n\n'
                         yield "data: [DONE]\n\n"
                         return
                     elif evt in ("response.failed", "error"):
@@ -2511,19 +2527,29 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
                         text = err.get("message") if isinstance(err, dict) else str(err or "ChatGPT Subscription request failed")
                         yield f'event: error\ndata: {json.dumps({"status": 502, "text": text})}\n\n'
                         return
+                # Stream ended without response.completed/failed — matches the
+                # "no explicit [DONE]"-equivalent fallback in the other
+                # branches below: emit an explicit unknown-reason finish
+                # rather than letting the caller infer a clean stop.
+                # protocol_terminal_seen=False since no such signal arrived.
+                if not _cgpt_finish_emitted:
+                    yield f'data: {json.dumps({"type": "finish", "reason": None, "protocol_terminal_seen": False})}\n\n'
                 yield "data: [DONE]\n\n"
         except (httpx.ConnectError, httpx.ConnectTimeout) as e:
             _cooled = _mark_host_dead(target_url)
             _tail = f" — host cooled for {DEAD_HOST_COOLDOWN:.0f}s" if _cooled else " — transient, will retry"
             logger.warning(f"ChatGPT Subscription stream connect to {target_url} failed: {e}{_tail}")
-            yield f'event: error\ndata: {json.dumps({"error": f"Cannot reach {_host_key(target_url)}", "status": 503})}\n\n'
+            yield f'event: error\ndata: {json.dumps({"error": f"Cannot reach {_host_key(target_url)}", "status": 503, "error_kind": "connect"})}\n\n'
         except httpx.ReadTimeout:
-            yield f'event: error\ndata: {json.dumps({"error": "Read timeout", "status": 504})}\n\n'
+            yield f'event: error\ndata: {json.dumps({"error": "Read timeout", "status": 504, "error_kind": "read_timeout"})}\n\n'
+        except httpx.ProtocolError as e:
+            logger.warning(f"ChatGPT Subscription stream protocol error from {target_url}: {e}")
+            yield f'event: error\ndata: {json.dumps({"error": "Connection interrupted", "status": 502, "error_kind": "protocol"})}\n\n'
         except httpx.NetworkError:
-            yield f'event: error\ndata: {json.dumps({"error": "Network error", "status": 502})}\n\n'
+            yield f'event: error\ndata: {json.dumps({"error": "Network error", "status": 502, "error_kind": "network"})}\n\n'
         except Exception as e:
             logger.error(f"ChatGPT Subscription stream error: {e}")
-            yield f'event: error\ndata: {json.dumps({"error": str(e), "status": 502})}\n\n'
+            yield f'event: error\ndata: {json.dumps({"error": str(e), "status": 502, "error_kind": "unknown_exception"})}\n\n'
         return
 
     # ── Native Ollama streaming ──
@@ -2569,31 +2595,44 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
                             yield _stream_delta_event(part, thinking=is_thinking)
                         if _ollama_tool_calls:
                             yield f'data: {json.dumps({"type": "tool_calls", "calls": _ollama_tool_calls})}\n\n'
+                        yield f'data: {json.dumps({"type": "finish", "reason": j.get("done_reason"), "protocol_terminal_seen": True})}\n\n'
                         if j.get("prompt_eval_count") is not None or j.get("eval_count") is not None:
                             yield f'data: {json.dumps({"type": "usage", "data": {"input_tokens": j.get("prompt_eval_count", 0), "output_tokens": j.get("eval_count", 0)}})}\n\n'
                         yield "data: [DONE]\n\n"
                         return
+                # Stream ended without ever receiving "done": true — either
+                # this backend doesn't send it (unusual for Ollama) or the
+                # transport cut off mid-generation. Emit an explicit
+                # unknown-reason finish so the caller can tell this apart
+                # from a genuine completion (previously no finish event was
+                # emitted here at all, which made this case invisible).
                 for part, is_thinking in _harmony_router.flush():
                     yield _stream_delta_event(part, thinking=is_thinking)
+                yield f'data: {json.dumps({"type": "finish", "reason": None, "protocol_terminal_seen": False})}\n\n'
                 yield "data: [DONE]\n\n"
         except (httpx.ConnectError, httpx.ConnectTimeout) as e:
             _cooled = _mark_host_dead(target_url)
             _tail = f" — host cooled for {DEAD_HOST_COOLDOWN:.0f}s" if _cooled else " — transient, will retry"
             logger.warning(f"Ollama stream connect to {target_url} failed: {e}{_tail}")
-            yield f'event: error\ndata: {json.dumps({"error": f"Cannot reach {_host_key(target_url)}", "status": 503})}\n\n'
+            yield f'event: error\ndata: {json.dumps({"error": f"Cannot reach {_host_key(target_url)}", "status": 503, "error_kind": "connect"})}\n\n'
         except httpx.ReadTimeout:
-            yield f'event: error\ndata: {json.dumps({"error": "Read timeout", "status": 504})}\n\n'
+            yield f'event: error\ndata: {json.dumps({"error": "Read timeout", "status": 504, "error_kind": "read_timeout"})}\n\n'
+        except httpx.ProtocolError as e:
+            logger.warning(f"Ollama stream protocol error from {target_url}: {e}")
+            yield f'event: error\ndata: {json.dumps({"error": "Connection interrupted", "status": 502, "error_kind": "protocol"})}\n\n'
         except httpx.NetworkError:
-            yield f'event: error\ndata: {json.dumps({"error": "Network error", "status": 502})}\n\n'
+            yield f'event: error\ndata: {json.dumps({"error": "Network error", "status": 502, "error_kind": "network"})}\n\n'
         except Exception as e:
             logger.error(f"Ollama stream error: {e}")
-            yield f'event: error\ndata: {json.dumps({"error": str(e), "status": 502})}\n\n'
+            yield f'event: error\ndata: {json.dumps({"error": str(e), "status": 502, "error_kind": "unknown_exception"})}\n\n'
         return
 
     # ── Anthropic streaming ──
     if provider == "anthropic":
         _anth_input_tokens = 0
         _anth_output_tokens = 0
+        _anth_stop_reason: Optional[str] = None
+        _anth_finish_emitted = False
         # Track tool_use blocks: {index: {id, name, arguments_json}}
         _anth_tool_blocks: Dict[int, Dict] = {}
         _anth_block_idx = -1
@@ -2662,6 +2701,13 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
                                 )
                         elif evt == "message_delta":
                             _anth_output_tokens = j.get("usage", {}).get("output_tokens", 0)
+                            # Anthropic reports termination here, not on
+                            # message_stop: one of end_turn / max_tokens /
+                            # stop_sequence / tool_use.
+                            _anth_stop_reason = (
+                                (j.get("delta") or {}).get("stop_reason")
+                                or _anth_stop_reason
+                            )
                         elif evt == "message_stop":
                             # Emit accumulated tool calls in OpenAI-compatible format
                             if _anth_tool_blocks:
@@ -2676,6 +2722,8 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
                                 yield f'data: {json.dumps({"type": "tool_calls", "calls": calls})}\n\n'
                             if _anth_input_tokens or _anth_output_tokens:
                                 yield f'data: {json.dumps({"type": "usage", "data": {"input_tokens": _anth_input_tokens, "output_tokens": _anth_output_tokens}})}\n\n'
+                            _anth_finish_emitted = True
+                            yield f'data: {json.dumps({"type": "finish", "reason": _anth_stop_reason, "protocol_terminal_seen": True})}\n\n'
                             yield "data: [DONE]\n\n"
                             return
                         elif evt == "error":
@@ -2684,19 +2732,27 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
                             return
                     except json.JSONDecodeError:
                         continue
+                # Stream ended without message_stop — no explicit protocol
+                # terminal was ever observed (see
+                # src/agent/providers/termination.py).
+                if not _anth_finish_emitted:
+                    yield f'data: {json.dumps({"type": "finish", "reason": None, "protocol_terminal_seen": False})}\n\n'
                 yield "data: [DONE]\n\n"
         except (httpx.ConnectError, httpx.ConnectTimeout) as e:
             _cooled = _mark_host_dead(target_url)
             _tail = f" — host cooled for {DEAD_HOST_COOLDOWN:.0f}s" if _cooled else " — transient, will retry"
             logger.warning(f"Anthropic stream connect to {target_url} failed: {e}{_tail}")
-            yield f'event: error\ndata: {json.dumps({"error": f"Cannot reach {_host_key(target_url)}", "status": 503})}\n\n'
+            yield f'event: error\ndata: {json.dumps({"error": f"Cannot reach {_host_key(target_url)}", "status": 503, "error_kind": "connect"})}\n\n'
         except httpx.ReadTimeout:
-            yield f'event: error\ndata: {json.dumps({"error": "Read timeout", "status": 504})}\n\n'
+            yield f'event: error\ndata: {json.dumps({"error": "Read timeout", "status": 504, "error_kind": "read_timeout"})}\n\n'
+        except httpx.ProtocolError as e:
+            logger.warning(f"Anthropic stream protocol error from {target_url}: {e}")
+            yield f'event: error\ndata: {json.dumps({"error": "Connection interrupted", "status": 502, "error_kind": "protocol"})}\n\n'
         except httpx.NetworkError:
-            yield f'event: error\ndata: {json.dumps({"error": "Network error", "status": 502})}\n\n'
+            yield f'event: error\ndata: {json.dumps({"error": "Network error", "status": 502, "error_kind": "network"})}\n\n'
         except Exception as e:
             logger.error(f"Anthropic stream error: {e}")
-            yield f'event: error\ndata: {json.dumps({"error": str(e), "status": 502})}\n\n'
+            yield f'event: error\ndata: {json.dumps({"error": str(e), "status": 502, "error_kind": "unknown_exception"})}\n\n'
         return
 
     # ── OpenAI-compatible streaming ──
@@ -2713,6 +2769,26 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
     _harmony_active = False       # sticky: gpt-oss harmony <|channel|> stream detected
     _actual_model = ""
     _actual_model_announced = False
+    # Raw provider finish_reason. Captured as soon as a chunk reports it, but
+    # only ever EMITTED at the two stream-exit points below ([DONE] and
+    # end-of-stream) — after any trailing tool-call assembly (`_emit_tool_calls`)
+    # for that same chunk has already been yielded. A provider can put
+    # finish_reason on the same chunk as its final content/tool-call delta;
+    # deferring emission to the exit points guarantees the terminal event
+    # never races ahead of the content/tool-call state it terminates (see
+    # src/agent/providers/finish_reason.py). Emitted at most once per stream;
+    # emitted as reason=None if the stream ends without ever reporting one.
+    _finish_emitted = [False]
+    _captured_finish_reason = [None]
+
+    def _emit_finish_event(protocol_terminal_seen: bool):
+        # protocol_terminal_seen=True only when the provider's own terminal
+        # signal (here: the literal "data: [DONE]" line) was observed on the
+        # wire — never when this generator's read loop simply ran out of
+        # lines. See src/agent/providers/termination.py.
+        _finish_emitted[0] = True
+        reason = _captured_finish_reason[0]
+        return f'data: {json.dumps({"type": "finish", "reason": reason, "protocol_terminal_seen": protocol_terminal_seen})}\n\n'
 
     def _emit_tool_calls():
         """Build the tool_calls event string if any were accumulated."""
@@ -2778,6 +2854,8 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
                         tc_event = _emit_tool_calls()
                         if tc_event:
                             yield tc_event
+                        if not _finish_emitted[0]:
+                            yield _emit_finish_event(True)
                         yield "data: [DONE]\n\n"
                         return
 
@@ -2833,6 +2911,15 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
                                     _c0 = (j["choices"] or [None])[0]
                                     if _c0 is None:
                                         continue
+                                    # Capture now — a provider can put finish_reason on the
+                                    # same chunk as its final content/tool-call delta — but
+                                    # never emit here. Emission happens only at the stream's
+                                    # exit points below, after all deltas (including trailing
+                                    # tool-call assembly) have been yielded, so the terminal
+                                    # event can never race ahead of the content it terminates.
+                                    _raw_finish_reason = _c0.get("finish_reason")
+                                    if _raw_finish_reason and _captured_finish_reason[0] is None:
+                                        _captured_finish_reason[0] = _raw_finish_reason
                                     delta = _c0.get("delta") or {}
                                     if isinstance(delta, dict):
                                         # Text content
@@ -2988,26 +3075,40 @@ async def _stream_llm_inner(url: str, model: str, messages: List[Dict], temperat
                         logger.error(f"Error parsing stream data: {e}")
                         continue
 
-            # End of stream (no explicit [DONE] received)
+            # End of stream: the HTTP iterator ran out of lines without ever
+            # seeing an explicit "data: [DONE]" sentinel. This can be a
+            # provider that legitimately never sends one, or a raw transport
+            # EOF that cut the stream short — tag protocol_terminal_seen=False
+            # so the agent runtime does not silently accept partial content
+            # as a deliberate final answer (src/agent/providers/termination.py).
             for event in _format_routed_content(_harmony_router.flush()):
                 yield event
             tc_event = _emit_tool_calls()
             if tc_event:
                 yield tc_event
+            if not _finish_emitted[0]:
+                yield _emit_finish_event(False)
             yield "data: [DONE]\n\n"
 
     except (httpx.ConnectError, httpx.ConnectTimeout) as e:
         _cooled = _mark_host_dead(target_url)
         _tail = f" — host cooled for {DEAD_HOST_COOLDOWN:.0f}s" if _cooled else " — transient, will retry"
         logger.warning(f"Stream connect to {target_url} failed: {e}{_tail}")
-        yield f'event: error\ndata: {json.dumps({"error": f"Cannot reach {_host_key(target_url)}", "status": 503})}\n\n'
+        yield f'event: error\ndata: {json.dumps({"error": f"Cannot reach {_host_key(target_url)}", "status": 503, "error_kind": "connect"})}\n\n'
     except httpx.ReadTimeout:
-        yield f'event: error\ndata: {json.dumps({"error": "Read timeout", "status": 504})}\n\n'
+        yield f'event: error\ndata: {json.dumps({"error": "Read timeout", "status": 504, "error_kind": "read_timeout"})}\n\n'
+    except httpx.ProtocolError as e:
+        # Malformed/incomplete chunked body — e.g. "peer closed connection
+        # without sending complete message body". A textbook mid-stream
+        # transport interruption; httpx.ProtocolError is NOT a subclass of
+        # httpx.NetworkError, so it needs its own branch.
+        logger.warning(f"Stream protocol error from {target_url}: {e}")
+        yield f'event: error\ndata: {json.dumps({"error": "Connection interrupted", "status": 502, "error_kind": "protocol"})}\n\n'
     except httpx.NetworkError:
-        yield f'event: error\ndata: {json.dumps({"error": "Network error", "status": 502})}\n\n'
+        yield f'event: error\ndata: {json.dumps({"error": "Network error", "status": 502, "error_kind": "network"})}\n\n'
     except Exception as e:
         logger.error(f"Stream error: {e}")
-        yield f'event: error\ndata: {json.dumps({"error": str(e), "status": 502})}\n\n'
+        yield f'event: error\ndata: {json.dumps({"error": str(e), "status": 502, "error_kind": "unknown_exception"})}\n\n'
 
 
 def _summarize_stream_error(err_chunk: Optional[str]) -> str:

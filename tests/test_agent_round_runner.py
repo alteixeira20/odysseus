@@ -149,6 +149,103 @@ async def test_visible_content_prevents_retry_after_provider_error():
 
 
 @pytest.mark.asyncio
+async def test_substantive_transport_error_is_not_fatal_and_tags_error_kind():
+    # Unlike a hard provider error (test_visible_content_prevents_retry_
+    # after_provider_error above), a transport-shaped failure — read
+    # timeout, connection reset, malformed chunked body — arriving after
+    # partial content must NOT kill the whole run. No tool has executed
+    # yet this round (execution always happens after this generator
+    # returns), so handing the partial text to the truncation-continuation
+    # supervisor is safe by construction.
+    error = _error_chunk(status=502, error="Network error", error_kind="network")
+    factory, calls = _stream_factory(
+        [[_data_chunk({"delta": "partial"}), error]]
+    )
+    accumulator = ProviderRoundAccumulator(
+        requested_model="model",
+        actual_model="model",
+        round_number=1,
+    )
+    runner = ProviderAttemptRunner(
+        _request(),
+        accumulator,
+        factory,
+        sleeper=_no_sleep,
+        clock=lambda: 1,
+    )
+
+    chunks = [chunk async for chunk in runner.stream()]
+
+    assert calls["count"] == 1
+    assert accumulator.text == "partial"
+    assert runner.outcome is not None
+    assert runner.outcome.substantive is True
+    assert runner.outcome.fatal is False
+    assert runner.outcome.error_kind == "network"
+    assert error not in chunks  # the error chunk itself is never forwarded
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error_kind",
+    ["connect", "read_timeout", "network", "protocol", "unknown_exception"],
+)
+async def test_all_transport_error_kinds_are_recognized_as_non_fatal(error_kind):
+    error = _error_chunk(status=502, error_kind=error_kind)
+    factory, _ = _stream_factory([[_data_chunk({"delta": "partial"}), error]])
+    accumulator = ProviderRoundAccumulator(
+        requested_model="model", actual_model="model", round_number=1
+    )
+    runner = ProviderAttemptRunner(
+        _request(), accumulator, factory, sleeper=_no_sleep, clock=lambda: 1
+    )
+
+    await_chunks = [chunk async for chunk in runner.stream()]
+    assert await_chunks is not None
+    assert runner.outcome.fatal is False
+    assert runner.outcome.error_kind == error_kind
+
+
+@pytest.mark.asyncio
+async def test_deadline_exceeded_after_substantive_content_is_flagged():
+    # The round's own generous safety-valve deadline, not a provider- or
+    # transport-reported signal, still must not be silently accepted as a
+    # deliberate finish once content had already streamed.
+    factory, _ = _stream_factory(
+        [[_data_chunk({"delta": f"chunk {i}"}) for i in range(30)]]
+    )
+    accumulator = ProviderRoundAccumulator(
+        requested_model="model", actual_model="model", round_number=1
+    )
+    # A short burst of small ticks (covers every clock() call while the
+    # first couple of chunks establish substantive=True), then jump far
+    # past the round deadline (>= 1200s). 30 chunks give ample margin over
+    # any plausible per-chunk clock()-call count, so the exact threshold
+    # doesn't need to match runner.py's internals precisely, and this never
+    # raises StopIteration even if that call count shifts later.
+    _tick_count = {"n": 0}
+
+    def clock():
+        _tick_count["n"] += 1
+        return 0 if _tick_count["n"] <= 6 else 10_000
+
+    runner = ProviderAttemptRunner(
+        _request(),
+        accumulator,
+        factory,
+        sleeper=_no_sleep,
+        clock=clock,
+    )
+
+    chunks = [chunk async for chunk in runner.stream()]
+    assert chunks is not None
+    assert runner.outcome is not None
+    assert runner.outcome.substantive is True
+    assert runner.outcome.fatal is False
+    assert runner.outcome.deadline_exceeded is True
+
+
+@pytest.mark.asyncio
 async def test_capacity_and_first_byte_timings_are_aggregated():
     factory, _ = _stream_factory(
         [

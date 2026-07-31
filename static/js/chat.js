@@ -2078,6 +2078,13 @@ import {
         if (_textPauseTimer) { clearTimeout(_textPauseTimer); _textPauseTimer = null; }
       };
 
+      // Set by a `truncation_continuation` event, consumed by the very next
+      // `agent_step` (its guaranteed successor on the wire — see
+      // src/agent_loop.py's truncation-continuation branch) to label that
+      // round's spinner distinctly, then cleared. Never carries provider
+      // internals to the user — just "the model kept going", not why.
+      let _pendingTruncationContinuation = false;
+
       // Document streaming state (text-fence detection)
       let _docFenceOpened = false;
       let _docFenceContentStart = -1;
@@ -2367,6 +2374,12 @@ import {
                 continue;
               }
               if (json.type === 'provider_timing' || json.type === 'effective_tools') {
+                continue;
+              }
+              if (json.type === 'truncation_continuation') {
+                // Diagnostic only: agent_step (always its next event on the
+                // wire) reads and clears this to label the round's spinner.
+                _pendingTruncationContinuation = true;
                 continue;
               }
               if (json.type === 'run_state' && json.terminal) {
@@ -3410,10 +3423,13 @@ import {
                 if (spinner && spinner.element) spinner.destroy();
                 // Show spinner while waiting for text (skip for research — has its own progress)
                 if (!_researchingStreamIds.has(streamSessionId)) {
-                  spinner = spinnerModule.create('Generating response', 'right', 'wave');
+                  const _spinnerLabel = _pendingTruncationContinuation
+                    ? 'Continuing response' : 'Generating response';
+                  spinner = spinnerModule.create(_spinnerLabel, 'right', 'wave');
                   newBody.appendChild(spinner.createElement());
                   spinner.start();
                 }
+                _pendingTruncationContinuation = false;
                 if (streamingTTS) window.aiTTSManager._streamSentencesSent = 0;
                 uiModule.scrollHistory();
               } else if (json.type === 'budget_exceeded') {

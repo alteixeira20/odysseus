@@ -1,6 +1,12 @@
 import json
 import logging
 
+from src.agent.planning.service import (
+    PLAN_SERVICE,
+    markdown_checklist_to_steps,
+    steps_to_markdown_checklist,
+)
+
 logger = logging.getLogger(__name__)
 
 class AskUserTool:
@@ -59,10 +65,13 @@ class UpdatePlanTool:
     async def execute(self, content, ctx):
         """
         update_plan: the agent writes back to the active plan — tick an item done
-        or revise steps (e.g. when the user asks to change something). Pure UI
-        marker: returns a `plan_update` payload the agent loop turns into a
-        `plan_update` SSE event; the frontend replaces the stored plan and refreshes
-        the docked plan window. Does NOT end the turn.
+        or revise steps (e.g. when the user asks to change something). Legacy
+        wire-compatible adapter over PlanService (src/agent/planning/service.py):
+        the markdown checklist is parsed into structured steps and persisted
+        through PLAN_SERVICE.replace() — the same canonical, versioned backend
+        `todowrite`/`manage_plan` use — then regenerated from those steps for
+        the `plan_update` SSE payload, so the frontend's markdown-based plan
+        panel keeps working unchanged. Does NOT end the turn.
         """
         raw = (content or "").strip()
         plan = ""
@@ -83,13 +92,25 @@ class UpdatePlanTool:
             }
 
         plan = plan[:8192]
-        done = plan.count("- [x]") + plan.count("- [X]")
-        total = done + plan.count("- [ ]")
+        steps = markdown_checklist_to_steps(plan)
+        owner = ctx.get("owner")
+        session_id = str(ctx.get("session_id") or "current")
+        stored = await PLAN_SERVICE.replace(
+            owner_id=owner, session_id=session_id, steps=steps
+        )
+        # Regenerate from the canonical steps (not the raw input) so the
+        # SSE payload always reflects exactly what was persisted.
+        canonical_plan_md = steps_to_markdown_checklist(stored.steps)
+
+        total = len(stored.steps)
+        done = sum(1 for s in stored.steps if s.status.value == "completed")
         desc = f"update_plan: {done}/{total} done" if total else "update_plan"
         result = {
-            "plan_update": {"plan": plan},
+            "plan_update": {"plan": canonical_plan_md},
             "output": f"Plan updated ({done}/{total} steps complete)." if total else "Plan updated.",
             "exit_code": 0,
+            "plan_id": stored.id,
+            "plan_version": stored.version,
         }
         logger.info("Tool executed: %s", desc)
         return desc, result

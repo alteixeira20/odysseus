@@ -79,6 +79,13 @@ from src.agent.rounds.runner import (
     ProviderAttemptRequest,
     ProviderAttemptRunner,
 )
+from src.agent.providers.finish_reason import (
+    ProviderFinished,
+    ProviderFinishReason,
+)
+from src.agent.providers.termination import classify_stream_termination
+from src.agent.context.budget import ContextBudgetManager
+from src.agent.supervision.continuation import evaluate_truncation_continuation
 from src.agent.routing.classifier import (
     EXPLICIT_CONTINUATION_RE,
     assistant_requested_followup,
@@ -100,6 +107,9 @@ from src.agent.routing.tool_domains import (
 )
 from src.agent.prompting.contexts.uploads import (
     uploaded_files_context_message as _uploaded_files_context_message,
+)
+from src.agent.prompting.contexts.shell_guidance import (
+    shell_guidance_if_available as _shell_guidance_if_available,
 )
 from src.agent.prompting.contexts.skills import skill_index_context
 from src.agent.prompting.contexts.email import (
@@ -548,6 +558,58 @@ def _section_text(name: str, default: str) -> str:
     return _prompt_section_text(name, default, get_builtin_overrides())
 
 
+_CONTEXT_BUDGET_MANAGER = ContextBudgetManager()
+
+
+def _apply_context_budget(
+    messages: list,
+    *,
+    endpoint_url: str,
+    model: str,
+    context_length: int,
+    settings,
+    max_output_tokens: int,
+):
+    """Trim ``messages`` to the adaptive input-token budget.
+
+    Called once at prep time AND again at the top of every round in the
+    agent loop below — the budget must be re-checked before every provider
+    attempt, not only the first, since ``messages`` keeps growing every
+    round (assistant turns, tool calls, tool results) for up to
+    ``max_rounds`` rounds. See src/agent/context/budget.py.
+    """
+    from src.context_budget import DEFAULT_HARD_MAX
+
+    soft_budget = settings.input_token_budget
+    hard_max = settings.input_token_hard_max
+    if hard_max <= 0:
+        hard_max = DEFAULT_HARD_MAX
+    return _CONTEXT_BUDGET_MANAGER.apply(
+        messages,
+        endpoint_url=endpoint_url,
+        model=model,
+        context_length=context_length,
+        soft_budget=soft_budget,
+        hard_max=hard_max,
+        max_output_tokens=max_output_tokens,
+    )
+
+
+def _domain_rules_with_shell_guidance(tool_names: set[str]) -> list[str]:
+    """domain_rules_for_tools, plus the shell-literacy fragment when `bash`
+    is available.
+
+    Lives here (the facade) rather than in src/agent/routing/tool_domains.py
+    itself: routing is a lower architectural layer than prompting (see
+    test_agent_package_respects_dependency_boundaries), so the prompt-text
+    fragment (src/agent/prompting/contexts/shell_guidance.py) must be
+    combined with the pure routing rules at this level, not inside routing.
+    """
+    rules = _domain_rules_for_tools(tool_names)
+    guidance = _shell_guidance_if_available(tool_names)
+    return rules + [guidance] if guidance else rules
+
+
 def _assemble_prompt(tool_names: set, disabled_tools: set = None, compact: bool = False) -> str:
     """Build the system prompt with only the specified tools included."""
     return _assemble_prompt_component(
@@ -559,7 +621,7 @@ def _assemble_prompt(tool_names: set, disabled_tools: set = None, compact: bool 
         agent_rules=_AGENT_RULES,
         api_agent_rules=_API_AGENT_RULES,
         resolve_section=_section_text,
-        domain_rules_for_tools=_domain_rules_for_tools,
+        domain_rules_for_tools=_domain_rules_with_shell_guidance,
     )
 
 
@@ -2013,49 +2075,22 @@ async def stream_agent_loop(
 
     _t3 = time.time()
     try:
-        from src.context_compactor import trim_for_context
-        from src.context_budget import compute_input_token_budget, DEFAULT_HARD_MAX, budget_is_explicit as _budget_is_explicit
-        from src.model_context import budget_context_for_model
-
-        soft_budget = _settings.input_token_budget
-        if soft_budget > 0:
-            before_trim_tokens = estimate_tokens(messages)
-            reserve_tokens = min(max(max_tokens or 1024, 512), 2048)
-            # Ceiling for the auto-derived budget (no effect on an explicit budget;
-            # see #1230). Falls back to DEFAULT_HARD_MAX on missing/malformed values
-            # so misconfig can't zero the budget.
-            hard_max = _settings.input_token_hard_max
-            if hard_max <= 0:
-                hard_max = DEFAULT_HARD_MAX
-            # Default value = auto sentinel (scale to the window); any other value =
-            # explicit cap. Value-based, not presence-based, because the save path
-            # materializes defaults so a persisted default must still read as auto (#4121).
-            budget_is_explicit = _budget_is_explicit(soft_budget)
-            # Scale only off a window we actually discovered, bound to the value it
-            # proves (else 0) — not the passed-in context_length, which can be stale
-            # or unset for some callers (#4122 review).
-            ctx_for_budget = budget_context_for_model(endpoint_url, model, fallback=context_length)
-            effective_budget = compute_input_token_budget(
-                soft_budget,
-                ctx_for_budget,
-                budget_is_explicit,
-                hard_max=hard_max,
+        messages, _budget_report = _apply_context_budget(
+            messages,
+            endpoint_url=endpoint_url,
+            model=model,
+            context_length=context_length,
+            settings=_settings,
+            max_output_tokens=max_tokens,
+        )
+        if _budget_report.compacted_messages:
+            logger.info(
+                "[agent] soft-trimmed context: %s -> %s tokens (budget=%s, reserve=%s)",
+                _budget_report.estimated_before,
+                _budget_report.estimated_after,
+                _budget_report.effective_budget,
+                _budget_report.reserved_output,
             )
-            trimmed_messages = trim_for_context(
-                messages,
-                effective_budget,
-                reserve_tokens=reserve_tokens,
-            )
-            after_trim_tokens = estimate_tokens(trimmed_messages)
-            if after_trim_tokens < before_trim_tokens:
-                logger.info(
-                    "[agent] soft-trimmed context: %s -> %s tokens (budget=%s, reserve=%s)",
-                    before_trim_tokens,
-                    after_trim_tokens,
-                    effective_budget,
-                    reserve_tokens,
-                )
-                messages = trimmed_messages
     except Exception as e:
         logger.warning("[agent] Soft context trim skipped: %s", e)
     prep_timings["context_trim"] = time.time() - _t3
@@ -2116,12 +2151,51 @@ async def stream_agent_loop(
     _intent_nudge_count = 0
     _MAX_INTENT_NUDGES = 2
 
+    # Bounded automatic continuation after a provider truncation (output-limit
+    # cutoff or an incomplete native tool-call) mid tool-free round. Distinct
+    # from the intent-nudge counter above: this fires on provider-reported
+    # truncation metadata, not on text heuristics, and only when no tool ran
+    # this round (so there is nothing that could be duplicated by resuming).
+    _truncation_continuation_count = 0
+    _MAX_TRUNCATION_CONTINUATIONS = 4
+
     # Set when the loop runs out of rounds while the agent was still actively
     # using tools — i.e. it was cut off, not finished. Drives a "Continue" event
     # so the user can resume instead of the turn silently stalling.
     _exhausted_rounds = False
 
     for round_num in range(1, max_rounds + 1):
+        # Re-check the context budget before every round's provider call —
+        # not only once before round 1 — since messages keeps growing every
+        # round (assistant turns, tool calls, tool results). See
+        # src/agent/context/budget.py for why this used to be a single-shot
+        # check that a long multi-round run could silently outgrow.
+        if round_num > 1:
+            try:
+                messages, _round_budget_report = _apply_context_budget(
+                    messages,
+                    endpoint_url=endpoint_url,
+                    model=model,
+                    context_length=context_length,
+                    settings=_settings,
+                    max_output_tokens=max_tokens,
+                )
+                if _round_budget_report.compacted_messages:
+                    logger.info(
+                        "[agent] round %s soft-trimmed context: %s -> %s "
+                        "tokens (budget=%s, reserve=%s)",
+                        round_num,
+                        _round_budget_report.estimated_before,
+                        _round_budget_report.estimated_after,
+                        _round_budget_report.effective_budget,
+                        _round_budget_report.reserved_output,
+                    )
+            except Exception as e:
+                logger.warning(
+                    "[agent] round %s soft context trim skipped: %s",
+                    round_num,
+                    e,
+                )
         _document_stream = DocumentStreamProjector(
             odysseus_create_mode=_ody_doc_stream_create_mode,
         )
@@ -2290,6 +2364,14 @@ async def stream_agent_loop(
         tool_blocks = _resolved_calls.tool_blocks
         used_native = _resolved_calls.used_native
         converted_calls = _resolved_calls.converted_calls
+        _incomplete_native_calls = _resolved_calls.incomplete_native_calls
+        if _incomplete_native_calls:
+            logger.warning(
+                "[agent] round %s incomplete native tool-call JSON (likely "
+                "truncated mid-stream): %s",
+                round_num,
+                _incomplete_native_calls,
+            )
         if _resolved_calls.unknown_calls:
             logger.warning(
                 "[agent] round %s recoverable unknown tools=%s",
@@ -2444,6 +2526,84 @@ async def stream_agent_loop(
             yield f'data: {json.dumps({"delta": cleaned_round})}\n\n'
 
         if not tool_blocks:
+            # ── Truncation-safe continuation ──────────────────────────
+            # A tool-free round is not automatically a deliberate final
+            # answer: the provider may have hit its output-token limit
+            # mid-sentence or mid tool-call. Consult the normalized finish
+            # reason (and whether a native call's JSON never closed) before
+            # accepting this as "done". Safe by construction: nothing
+            # mutating ran this round (tool_blocks is empty), so resuming
+            # here can never duplicate a side effect.
+            _stream_termination = classify_stream_termination(
+                provider_finish_seen=_provider_outcome.finish_event_seen,
+                protocol_done_seen=_round_stream.protocol_terminal_seen,
+                error_kind=_provider_outcome.error_kind,
+                deadline_exceeded=_provider_outcome.deadline_exceeded,
+                normalized_reason_is_known=(
+                    _provider_outcome.normalized_finish_reason
+                    is not ProviderFinishReason.UNKNOWN
+                ),
+                had_visible_text=bool(cleaned_round),
+                had_reasoning=bool(round_reasoning),
+                had_tool_call_fragment=bool(native_tool_calls),
+                had_complete_tool_call=False,
+            )
+            _finish_info = ProviderFinished(
+                raw_reason=_provider_outcome.raw_finish_reason,
+                normalized_reason=_provider_outcome.normalized_finish_reason,
+                had_text=bool(cleaned_round),
+                had_native_tool_call_fragment=bool(native_tool_calls),
+                had_complete_tool_call=False,
+                had_incomplete_native_call=bool(_incomplete_native_calls),
+                finish_event_seen=_provider_outcome.finish_event_seen,
+                had_unclosed_fenced_call=_resolved_calls.fenced_call_unclosed,
+                termination=_stream_termination,
+            )
+            _continuation_decision = evaluate_truncation_continuation(
+                _finish_info,
+                continuation_count=_truncation_continuation_count,
+                force_answer=_force_answer,
+                max_continuations=_MAX_TRUNCATION_CONTINUATIONS,
+            )
+            if _continuation_decision is not None:
+                _truncation_continuation_count = int(
+                    _continuation_decision.metadata["attempt"]
+                )
+                logger.warning(
+                    "[agent] round %s truncated (finish_reason=%s "
+                    "incomplete_native=%s termination_kind=%s) — safe "
+                    "continuation %s/%s",
+                    round_num,
+                    _finish_info.raw_reason,
+                    _incomplete_native_calls,
+                    _stream_termination.kind.value,
+                    _truncation_continuation_count,
+                    _MAX_TRUNCATION_CONTINUATIONS,
+                )
+                yield (
+                    "data: "
+                    + json.dumps({
+                        "type": "truncation_continuation",
+                        "reason": _finish_info.normalized_reason.value,
+                        "round": round_num,
+                        "attempt": _truncation_continuation_count,
+                        "max_attempts": _MAX_TRUNCATION_CONTINUATIONS,
+                        "cause": _continuation_decision.metadata.get("cause"),
+                        "termination_kind": _stream_termination.kind.value,
+                    })
+                    + "\n\n"
+                )
+                if cleaned_round:
+                    messages.append({
+                        "role": "assistant",
+                        "content": cleaned_round,
+                    })
+                messages.append({
+                    "role": "system",
+                    "content": _continuation_decision.instruction,
+                })
+                yield f'data: {json.dumps({"type": "agent_step", "round": round_num + 1})}\n\n'
+                continue
             # ── Completion verifier (mechanism 3a) ────────────────────
             # The model is finishing. If this was an effectful agentic turn,
             # have a fresh-context verifier independently check the work

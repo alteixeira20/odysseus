@@ -747,12 +747,22 @@ class BashTool:
             )
             tmux_session = None
 
+        _raw_stdout_len = len(outcome.stdout or "")
+        _raw_stderr_len = len(outcome.stderr or "")
         stdout = _truncate(outcome.stdout, MAX_OUTPUT_CHARS)
         stderr = _truncate(outcome.stderr, MAX_OUTPUT_CHARS)
         common = {
             "exit_code": outcome.exit_code,
             "stdout": stdout,
             "stderr": stderr,
+            # Structured truncation metadata (src/agent/execution/result_budget.py
+            # field convention) alongside the human-readable notice _truncate
+            # already appends to stdout/stderr — a caller can check these
+            # instead of pattern-matching the notice text.
+            "stdout_truncated": _raw_stdout_len > MAX_OUTPUT_CHARS,
+            "stderr_truncated": _raw_stderr_len > MAX_OUTPUT_CHARS,
+            "stdout_total_chars": _raw_stdout_len,
+            "stderr_total_chars": _raw_stderr_len,
             "completion_state": outcome.state,
             "timed_out": outcome.timed_out,
             "timeout_seconds": outcome.timeout_seconds,

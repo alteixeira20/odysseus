@@ -133,6 +133,7 @@ class EditFileTool:
 class ReadFileTool:
     async def execute(self, content: str, ctx: dict) -> dict:
         from src.tool_execution import _resolve_tool_path, _resolve_search_root, _truncate
+        from src.agent.execution.result_budget import line_read_cursor
         raw_path, offset, limit = content.split("\n", 1)[0].strip(), 0, 0
         _stripped = content.strip()
         if _stripped.startswith("{"):
@@ -152,22 +153,30 @@ class ReadFileTool:
                 if offset > 0 or limit > 0:
                     start = max(offset, 1)
                     out, n, budget = [], 0, MAX_READ_CHARS
+                    last_line = start - 1
+                    hit_char_budget = False
+                    hit_limit = False
+                    hit_eof = False
                     with open(path, "r", encoding="utf-8", errors="replace") as f:
                         for i, line in enumerate(f, 1):
                             if i < start:
                                 continue
                             if limit > 0 and n >= limit:
+                                hit_limit = True
                                 break
                             out.append(line)
                             n += 1
+                            last_line = i
                             budget -= len(line)
                             if budget <= 0:
-                                out.append(f"\n... [truncated at {MAX_READ_CHARS} chars]")
+                                hit_char_budget = True
                                 break
-                    return "".join(out)
+                        else:
+                            hit_eof = True
+                    return "".join(out), last_line, hit_char_budget, hit_limit, hit_eof
                 with open(path, "r", encoding="utf-8", errors="replace") as f:
-                    return f.read(MAX_READ_CHARS + 1)
-            data = await asyncio.to_thread(_read)
+                    return f.read(MAX_READ_CHARS + 1), 0, False, False, False
+            data, last_line, hit_char_budget, hit_limit, hit_eof = await asyncio.to_thread(_read)
         except FileNotFoundError:
             return {"error": f"read_file: {path}: not found", "exit_code": 1}
         except PermissionError:
@@ -176,9 +185,36 @@ class ReadFileTool:
             return {"error": f"read_file: {path}: is a directory (use ls)", "exit_code": 1}
         except OSError as e:
             return {"error": f"read_file: {path}: {e}", "exit_code": 1}
-        if not (offset > 0 or limit > 0) and len(data) > MAX_READ_CHARS:
-            data = data[:MAX_READ_CHARS] + f"\n... [truncated at {MAX_READ_CHARS} chars]"
-        return {"output": data, "exit_code": 0}
+
+        paged = offset > 0 or limit > 0
+        if paged:
+            result = {"output": data, "exit_code": 0}
+            if hit_char_budget:
+                result["output"] += f"\n... [truncated at {MAX_READ_CHARS} chars]"
+            result["truncated"] = hit_char_budget
+            next_offset = line_read_cursor(
+                truncated=hit_char_budget,
+                last_line_read=last_line,
+                limit=limit,
+                hit_eof=hit_eof,
+            )
+            if next_offset is not None:
+                result["next_offset"] = next_offset
+            return result
+
+        # Whole-file read (no offset/limit requested).
+        if len(data) > MAX_READ_CHARS:
+            kept = data[:MAX_READ_CHARS]
+            return {
+                "output": kept + f"\n... [truncated at {MAX_READ_CHARS} chars]",
+                "exit_code": 0,
+                "truncated": True,
+                # Resume point: count of newlines actually kept, so a
+                # follow-up call can pass offset=next_offset to continue
+                # exactly where this read stopped.
+                "next_offset": kept.count("\n") + 1,
+            }
+        return {"output": data, "exit_code": 0, "truncated": False}
 
 class WriteFileTool:
     async def execute(self, content: str, ctx: dict) -> dict:

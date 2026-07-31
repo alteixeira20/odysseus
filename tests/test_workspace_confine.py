@@ -165,9 +165,12 @@ async def test_apply_patch_confined_e2e(ws, admin):
 
 @pytest.mark.asyncio
 async def test_todowrite_persists_session_list(tmp_path, monkeypatch, admin):
-    import src.agent_tools.coding_tools as coding_tools
+    # todowrite holds no state of its own — it's a legacy adapter over the
+    # canonical PlanService (src/agent/planning/service.py). Point the
+    # process-wide singleton at a temp root rather than the real data path.
+    from src.agent.planning.service import PLAN_SERVICE
 
-    monkeypatch.setattr(coding_tools, "_TODO_DIR", str(tmp_path))
+    monkeypatch.setattr(PLAN_SERVICE, "_root", tmp_path / "agent_plans")
     payload = {
         "todos": [
             {"content": "Inspect code", "status": "completed", "priority": "high"},
@@ -182,8 +185,11 @@ async def test_todowrite_persists_session_list(tmp_path, monkeypatch, admin):
     )
     assert r["exit_code"] == 0
     assert "[>] Patch code" in r["output"]
-    saved = json.load(open(tmp_path / "chat_one.json", encoding="utf-8"))
-    assert saved["todos"][1]["status"] == "in_progress"
+
+    plan = await PLAN_SERVICE.read(owner_id="a", session_id="chat/one")
+    assert plan is not None
+    assert plan.steps[1].content == "Patch code"
+    assert plan.steps[1].status.value == "in_progress"
 
 
 @pytest.mark.asyncio

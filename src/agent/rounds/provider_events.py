@@ -4,6 +4,10 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional
 
 from src.agent.events import AgentEvent
+from src.agent.providers.finish_reason import (
+    ProviderFinishReason,
+    normalize_finish_reason,
+)
 from src.agent.rounds.document_stream import (
     DocumentStreamProjector,
     normalize_odysseus_qwen_text,
@@ -48,6 +52,17 @@ class ProviderRoundAccumulator:
     backend_gen_tps: float = 0
     backend_prefill_tps: float = 0
     visible_chars: int = 0
+    raw_finish_reason: Optional[str] = None
+    normalized_finish_reason: ProviderFinishReason = ProviderFinishReason.UNKNOWN
+    finish_event_seen: bool = False
+    # Whether src/llm_core.py observed the provider's own terminal signal
+    # (explicit [DONE], Ollama "done": true, Anthropic message_stop,
+    # response.completed, ...) before emitting this finish event, as
+    # opposed to synthesizing one after its read loop simply ran out of
+    # lines. Defaults True: a source that omits the tag is assumed to have
+    # completed normally, so only branches that explicitly tag it False
+    # (a raw transport EOF) can trigger interruption classification.
+    protocol_terminal_seen: bool = True
 
     def consume(
         self,
@@ -90,6 +105,17 @@ class ProviderRoundAccumulator:
                     first_tool_calls and self.native_tool_calls
                 ),
             )
+
+        if event_type == "finish":
+            self.finish_event_seen = True
+            self.raw_finish_reason = data.get("reason")
+            self.normalized_finish_reason = normalize_finish_reason(
+                self.raw_finish_reason
+            )
+            self.protocol_terminal_seen = bool(
+                data.get("protocol_terminal_seen", True)
+            )
+            return ProviderEventProjection(substantive=substantive)
 
         if event_type == "usage":
             usage = data.get("data", {}) or {}
@@ -192,12 +218,26 @@ class DirectResponseAccumulator:
     text: str = ""
     input_tokens: int = 0
     output_tokens: int = 0
+    raw_finish_reason: Optional[str] = None
+    normalized_finish_reason: ProviderFinishReason = ProviderFinishReason.UNKNOWN
+    finish_event_seen: bool = False
+    protocol_terminal_seen: bool = True
 
     def consume(
         self,
         data: Mapping[str, Any],
     ) -> ProviderEventProjection:
         event_type = data.get("type")
+        if event_type == "finish":
+            self.finish_event_seen = True
+            self.raw_finish_reason = data.get("reason")
+            self.normalized_finish_reason = normalize_finish_reason(
+                self.raw_finish_reason
+            )
+            self.protocol_terminal_seen = bool(
+                data.get("protocol_terminal_seen", True)
+            )
+            return ProviderEventProjection()
         if event_type == "usage":
             usage = data.get("data", {}) or {}
             self.actual_model = usage.get("model") or self.actual_model

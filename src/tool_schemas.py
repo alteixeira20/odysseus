@@ -565,6 +565,52 @@ FUNCTION_TOOL_SCHEMAS = [
     {
         "type": "function",
         "function": {
+            "name": "manage_plan",
+            "description": "Structured plan management: partial updates without resending the whole plan. Same canonical backend as `update_plan`/`todowrite` (one plan per session). Use `add_step`/`update_step`/`complete_step`/`block_step`/`skip_step`/`remove_step` for single-step changes, `reorder` to resequence, `replace` to set the whole step list at once, `read` to check current state, `clear` to empty it, `archive` to close it out. Pass `expected_version` (from a prior read/response) to detect concurrent edits; on conflict you get the latest version back — re-read and retry.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": [
+                            "create", "read", "replace", "add_step", "update_step",
+                            "complete_step", "block_step", "skip_step", "remove_step",
+                            "reorder", "clear", "archive"
+                        ],
+                        "description": "The plan action to perform."
+                    },
+                    "title": {"type": "string", "description": "Plan title (create/replace)."},
+                    "summary": {"type": "string", "description": "Plan summary (create/replace)."},
+                    "steps": {
+                        "type": "array",
+                        "description": "Full step list (create/replace only).",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "content": {"type": "string"},
+                                "status": {"type": "string", "enum": ["pending", "in_progress", "blocked", "completed", "skipped"]},
+                                "priority": {"type": "string", "enum": ["low", "medium", "high", "critical"]}
+                            }
+                        }
+                    },
+                    "step_id": {"type": "string", "description": "Target step id (update_step/complete_step/block_step/skip_step/remove_step)."},
+                    "content": {"type": "string", "description": "Step text (add_step, or update_step to revise wording)."},
+                    "status": {"type": "string", "enum": ["pending", "in_progress", "blocked", "completed", "skipped"], "description": "New step status (update_step)."},
+                    "priority": {"type": "string", "enum": ["low", "medium", "high", "critical"], "description": "Step priority (add_step/update_step)."},
+                    "acceptance_criteria": {"type": "string", "description": "What proves this step is actually done (add_step/update_step)."},
+                    "notes": {"type": "string", "description": "Free-text notes, e.g. why a step is blocked/skipped."},
+                    "depends_on": {"type": "array", "items": {"type": "string"}, "description": "Step ids this step depends on."},
+                    "evidence": {"type": "object", "description": "Proof of completion for complete_step: e.g. tool invocation ids, changed file paths, test result."},
+                    "step_ids": {"type": "array", "items": {"type": "string"}, "description": "Full ordered id list (reorder)."},
+                    "expected_version": {"type": "integer", "description": "The plan version you last saw — omit only if you don't have one yet."}
+                },
+                "required": ["action"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "manage_tasks",
             "description": "Manage scheduled/automated tasks: list, create, edit, delete, pause, resume, or run tasks. Use this for ANY recurring/scheduled request ('every morning…', 'each day at 7:30', 'daily summarize…') — create a task rather than doing it once. Task types: llm (AI runs a prompt), research (runs the deep-research pipeline on a question), or action (built-in automation). Triggers can be time-based or event-based.",
             "parameters": {

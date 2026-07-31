@@ -1,20 +1,21 @@
 import json
-import os
-import re
 from typing import Any, Dict, List
 
-from src.constants import DATA_DIR
-
-
-_TODO_DIR = os.path.join(DATA_DIR, "agent_todos")
-
-
-def _safe_session_id(value: str) -> str:
-    value = value or "current"
-    return re.sub(r"[^A-Za-z0-9_.-]+", "_", value)[:120] or "current"
+from src.agent.planning.service import PLAN_SERVICE
 
 
 class TodoWriteTool:
+    """Legacy wire-compatible adapter over PlanService.
+
+    Root cause: this tool used to persist its own independent JSON file per
+    session (src/agent/planning/service.py's module docstring has the full
+    history). It now holds no state of its own — every call replaces the
+    canonical plan's steps via PLAN_SERVICE.replace(), which is the same
+    backend `update_plan`/`manage_plan` use. The input/output shape (args,
+    validation errors, output text format) is unchanged so existing callers
+    and prompts keep working.
+    """
+
     async def execute(self, content: str, ctx: dict) -> dict:
         try:
             args = json.loads(content) if (content or "").strip().startswith("{") else {"todos": []}
@@ -50,18 +51,20 @@ class TodoWriteTool:
         if active_count > 1:
             return {"error": "todowrite: only one todo can be in_progress", "exit_code": 1}
 
-        session_id = _safe_session_id(str(ctx.get("session_id") or args.get("session_id") or "current"))
-        os.makedirs(_TODO_DIR, exist_ok=True)
-        path = os.path.join(_TODO_DIR, f"{session_id}.json")
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump({"todos": normalized}, f, ensure_ascii=False, indent=2)
+        owner = ctx.get("owner")
+        session_id = str(ctx.get("session_id") or args.get("session_id") or "current")
+        plan = await PLAN_SERVICE.replace(
+            owner_id=owner, session_id=session_id, steps=normalized
+        )
 
         lines = []
-        for item in normalized:
-            marker = {"pending": " ", "in_progress": ">", "completed": "x"}[item["status"]]
-            lines.append(f"[{marker}] {item['content']} ({item['priority']})")
+        for step in plan.steps:
+            marker = {"pending": " ", "in_progress": ">", "completed": "x"}[step.status.value]
+            lines.append(f"[{marker}] {step.content} ({step.priority.value})")
         return {
             "output": "Updated todo list:\n" + ("\n".join(lines) if lines else "(empty)"),
             "exit_code": 0,
             "todos": normalized,
+            "plan_id": plan.id,
+            "plan_version": plan.version,
         }

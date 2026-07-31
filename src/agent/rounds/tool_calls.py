@@ -7,7 +7,33 @@ import logging
 import re
 from typing import Any
 
+from src.agent_tools import TOOL_TAGS
+
 logger = logging.getLogger(__name__)
+
+_FENCE_MARKER_RE = re.compile(r"```")
+_FENCE_OPEN_TAG_RE = re.compile(
+    r"```(" + "|".join(re.escape(t) for t in sorted(TOOL_TAGS)) + r")(?![\w-])",
+    re.IGNORECASE,
+)
+
+
+def _has_unclosed_tool_fence(text: str) -> bool:
+    """True when a recognized tool-call fence was opened but never closed.
+
+    A stream cut off mid tool call leaves the opening ```<tag> in the text
+    with no matching closing ```. An odd number of ``` markers means the
+    last one has no partner; only treat that as a truncated TOOL call (not
+    an ordinary unbalanced code fence in prose) when it is tagged with a
+    name from the recognized tool vocabulary.
+    """
+    if not text:
+        return False
+    positions = [m.start() for m in _FENCE_MARKER_RE.finditer(text)]
+    if len(positions) % 2 == 0:
+        return False
+    tail = text[positions[-1]:]
+    return bool(_FENCE_OPEN_TAG_RE.match(tail))
 
 
 @dataclass(frozen=True)
@@ -24,6 +50,17 @@ class ResolvedToolCalls:
     used_native: bool
     converted_calls: list
     unknown_calls: tuple[UnknownToolCall, ...] = ()
+    # Native call names whose argument JSON failed to parse — the strongest
+    # available signal that the provider's stream was cut off mid tool-call
+    # (see src/agent/providers/finish_reason.py). Distinct from unknown_calls,
+    # which covers calls to tool names the runtime doesn't recognize.
+    incomplete_native_calls: tuple[str, ...] = ()
+    # True when the round's raw text opens a recognized fenced tool call
+    # (```bash, ```read_file, ...) that never closes. parse_tool_blocks()
+    # only returns complete blocks, so this never executes — it exists so
+    # the truncation classifier can tell "cut off mid fenced call" apart
+    # from "deliberately finished with no tool call".
+    fenced_call_unclosed: bool = False
 
 
 @dataclass(frozen=True)
@@ -126,11 +163,17 @@ def resolve_round_tool_calls(
     used_native = False
     converted_calls = []
     unknown_calls: list[UnknownToolCall] = []
+    incomplete_native_calls: list[str] = []
     if native_tool_calls:
         tool_blocks = []
         for tool_call in native_tool_calls:
             tool_name = tool_call.get("name", "")
             arguments = tool_call.get("arguments", "{}")
+            if isinstance(arguments, str) and arguments.strip():
+                try:
+                    json.loads(arguments)
+                except json.JSONDecodeError:
+                    incomplete_native_calls.append(tool_name)
             block = function_call_to_tool_block(tool_name, arguments)
             if block:
                 tool_blocks.append(block)
@@ -194,16 +237,25 @@ def resolve_round_tool_calls(
                     )
         if tool_blocks:
             used_native = True
+    fenced_call_unclosed = False
     if not used_native:
+        _skip_fenced = is_api_model and not allow_fenced_for_api
         tool_blocks = parse_tool_blocks(
             round_response,
-            skip_fenced=(is_api_model and not allow_fenced_for_api),
+            skip_fenced=_skip_fenced,
         )
         if tool_blocks:
             logger.info(
                 "Agent round %s: %s fenced tool block(s) detected",
                 round_num,
                 len(tool_blocks),
+            )
+        elif not _skip_fenced and _has_unclosed_tool_fence(round_response):
+            fenced_call_unclosed = True
+            logger.warning(
+                "[agent] round %s unclosed fenced tool call detected "
+                "(likely truncated mid-stream)",
+                round_num,
             )
 
     response_preview = (
@@ -225,6 +277,8 @@ def resolve_round_tool_calls(
         used_native=used_native,
         converted_calls=converted_calls,
         unknown_calls=tuple(unknown_calls),
+        incomplete_native_calls=tuple(incomplete_native_calls),
+        fenced_call_unclosed=fenced_call_unclosed,
     )
 
 

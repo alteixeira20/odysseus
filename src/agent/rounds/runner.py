@@ -13,6 +13,8 @@ from src.agent.providers.errors import (
     is_transient_error,
     stream_error_details,
 )
+from src.agent.providers.finish_reason import ProviderFinishReason
+from src.agent.providers.termination import error_kind_to_termination_kind
 from src.agent.rounds.provider_events import ProviderRoundAccumulator
 from src.agent.rounds.stream_consumer import stream_with_idle_status
 
@@ -49,6 +51,18 @@ class ProviderAttemptOutcome:
     provider_capacity_wait: float
     first_event_seen: bool
     first_delta_seen: bool
+    raw_finish_reason: Optional[str]
+    normalized_finish_reason: ProviderFinishReason
+    finish_event_seen: bool
+    # Raw ingredients for src/agent/providers/termination.py classification.
+    # error_kind is the tag from the last `event: error` chunk's JSON body
+    # (e.g. "read_timeout", "network", "protocol"); None when no error chunk
+    # was seen, or when the round ended via a non-transport error path.
+    error_kind: Optional[str] = None
+    # True when this attempt was cut short by the round's own generous
+    # safety-valve deadline (not a provider- or transport-reported signal)
+    # while content had already streamed.
+    deadline_exceeded: bool = False
 
 
 class ProviderAttemptRunner:
@@ -104,6 +118,8 @@ class ProviderAttemptRunner:
         first_visible_elapsed: Optional[float] = None
         first_tool_call_elapsed: Optional[float] = None
         provider_capacity_wait = 0.0
+        error_kind: Optional[str] = None
+        deadline_exceeded = False
 
         while (
             attempt < request.max_attempts
@@ -135,17 +151,26 @@ class ProviderAttemptRunner:
                         ),
                     )
                 if self.clock() > deadline:
+                    if substantive:
+                        # The round's own generous safety-valve fired after
+                        # content had already streamed — a genuine timeout,
+                        # not a deliberate stop. Never silently accept this
+                        # as a finished answer (see termination.py); the
+                        # tool-free continuation path re-checks this.
+                        deadline_exceeded = True
                     logger.warning(
                         "[agent-timing] round_deadline round=%s "
-                        "elapsed=%.3fs deadline_s=%s",
+                        "elapsed=%.3fs deadline_s=%s substantive=%s",
                         request.round_number,
                         self.clock() - request.round_started_at,
                         max(request.timeout_seconds * 4, 1200),
+                        substantive,
                     )
                     break
                 if chunk.startswith("event: error"):
                     attempt_error_chunk = chunk
                     terminal_error_chunk = chunk
+                    error_kind = self.error_details(chunk).get("error_kind")
                     if (
                         not substantive
                         and self.transient_error(chunk)
@@ -159,6 +184,30 @@ class ProviderAttemptRunner:
                             request.max_attempts,
                             self.clock() - request.round_started_at,
                             chunk[:300],
+                        )
+                        break
+                    if (
+                        substantive
+                        and error_kind_to_termination_kind(error_kind)
+                        is not None
+                    ):
+                        # Content already streamed this attempt and the
+                        # failure is transport-shaped (read timeout,
+                        # connection reset, malformed chunked body, ...).
+                        # Do not fatally kill the whole run — no tool has
+                        # executed yet this round (execution happens after
+                        # this generator returns), so handing the partial
+                        # text to the truncation-continuation supervisor is
+                        # safe by construction.
+                        logger.warning(
+                            "[agent-timing] transport_interrupted round=%s "
+                            "attempt=%s elapsed=%.3fs error_kind=%s "
+                            "substantive=True; deferring to continuation "
+                            "supervisor instead of fatal error",
+                            request.round_number,
+                            attempt,
+                            self.clock() - request.round_started_at,
+                            error_kind,
                         )
                         break
                     fatal = True
@@ -383,4 +432,9 @@ class ProviderAttemptRunner:
             provider_capacity_wait=provider_capacity_wait,
             first_event_seen=first_event_seen,
             first_delta_seen=first_delta_seen,
+            raw_finish_reason=self.accumulator.raw_finish_reason,
+            normalized_finish_reason=self.accumulator.normalized_finish_reason,
+            finish_event_seen=self.accumulator.finish_event_seen,
+            error_kind=error_kind,
+            deadline_exceeded=deadline_exceeded,
         )
