@@ -16,6 +16,9 @@ class RuntimeEvent:
     version: int
     event_id: str
     run_id: str
+    conversation_id: Optional[str]
+    turn_id: Optional[str]
+    candidate_id: Optional[str]
     sequence: int
     timestamp: str
     type: str
@@ -27,6 +30,9 @@ class RuntimeEvent:
             "version": self.version,
             "event_id": self.event_id,
             "run_id": self.run_id,
+            "conversation_id": self.conversation_id,
+            "turn_id": self.turn_id,
+            "candidate_id": self.candidate_id,
             "sequence": self.sequence,
             "timestamp": self.timestamp,
             "type": self.type,
@@ -38,8 +44,17 @@ class RuntimeEvent:
 class RuntimeEventFactory:
     """Run-scoped monotonic event sequence; safe for progress callbacks."""
 
-    def __init__(self, run_id: str):
+    def __init__(
+        self,
+        run_id: str,
+        *,
+        conversation_id: Optional[str] = None,
+        turn_id: Optional[str] = None,
+    ):
         self.run_id = str(run_id)
+        self.conversation_id = str(conversation_id) if conversation_id else None
+        self.turn_id = str(turn_id) if turn_id else None
+        self._candidate_id: Optional[str] = None
         self._sequence = 0
         self._lock = threading.Lock()
 
@@ -62,12 +77,19 @@ class RuntimeEventFactory:
             version=2,
             event_id=secrets.token_urlsafe(18),
             run_id=self.run_id,
+            conversation_id=self.conversation_id,
+            turn_id=self.turn_id,
+            candidate_id=self._candidate_id,
             sequence=sequence,
             timestamp=datetime.now(timezone.utc).isoformat(),
             type=str(event_type),
             caused_by=str(caused_by) if caused_by else None,
             payload=MappingProxyType(dict(payload or {})),
         )
+
+    def select_candidate(self, candidate_id: Optional[str]) -> None:
+        with self._lock:
+            self._candidate_id = str(candidate_id) if candidate_id else None
 
 
 def encode_runtime_sse(event: RuntimeEvent) -> str:
@@ -99,6 +121,21 @@ def runtime_event_from_payload(payload: Mapping[str, Any]) -> Optional[RuntimeEv
         version=2,
         event_id=str(payload["event_id"]),
         run_id=str(payload["run_id"]),
+        conversation_id=(
+            str(payload["conversation_id"])
+            if payload.get("conversation_id") is not None
+            else None
+        ),
+        turn_id=(
+            str(payload["turn_id"])
+            if payload.get("turn_id") is not None
+            else None
+        ),
+        candidate_id=(
+            str(payload["candidate_id"])
+            if payload.get("candidate_id") is not None
+            else None
+        ),
         sequence=sequence,
         timestamp=str(payload["timestamp"]),
         type=str(payload["type"]),

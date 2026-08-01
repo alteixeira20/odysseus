@@ -10,6 +10,8 @@ from typing import Any
 
 from src.agent.tools.bootstrap import TOOL_REGISTRY
 from src.agent.runtime_v2.contracts import AgentExecutionContext, NormalizedToolCall
+from src.agent.runtime_v2.ownership import RUN_OWNERSHIP
+from src.agent.runtime_v2.workspace_service import WORKSPACE_SERVICE
 
 TOOL_TAGS = TOOL_REGISTRY.accepted_names()
 
@@ -85,6 +87,7 @@ def normalize_tool_calls(
     *,
     execution_context: AgentExecutionContext,
     provider_name: str,
+    provider_round: int = 0,
 ) -> tuple[NormalizedToolCall, ...]:
     """Collapse parsed/native/alias forms into the executor's only call type."""
 
@@ -133,6 +136,18 @@ def normalize_tool_calls(
                 arguments=arguments,
                 provider_name=str(provider_name or "unknown"),
                 raw_name=raw_name,
+                run_id=execution_context.run_id,
+                conversation_id=execution_context.conversation_id,
+                turn_id=execution_context.turn_id,
+                candidate_id=execution_context.candidate_id,
+                provider_round=int(provider_round),
+                authority_revision=execution_context.authority_grant.revision,
+                workspace_revision=WORKSPACE_SERVICE.revision(
+                    execution_context.execution_root.path
+                ),
+                tool_contract_revision=RUN_OWNERSHIP.tool_contract_revision(
+                    execution_context
+                ),
                 legacy_content=str(block.content or ""),
                 normalization_error=normalization_error,
             )

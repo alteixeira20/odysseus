@@ -1,6 +1,6 @@
 """Behavioral authority, effect-policy, registry, and alias contracts."""
 
-from dataclasses import FrozenInstanceError, replace
+from dataclasses import FrozenInstanceError
 import inspect
 
 import pytest
@@ -29,7 +29,15 @@ from src.execution_policy import ExecutionMode
 from src.tool_execution import execute_tool_block
 
 
-def context(tmp_path, *, mode="disabled", owner="owner", session="session", disabled=()):
+def context(
+    tmp_path,
+    *,
+    mode="disabled",
+    owner="owner",
+    session="session",
+    disabled=(),
+    workspace_write=True,
+):
     token = None
     if mode == "host":
         token = HOST_AUTHORIZATIONS.issue(
@@ -44,6 +52,7 @@ def context(tmp_path, *, mode="disabled", owner="owner", session="session", disa
         budgets=RunBudgets(),
         tool_catalog_revision=TOOL_REGISTRY.revision,
         host_authorization_token=token,
+        workspace_write=workspace_write,
         disabled_tools=TOOL_REGISTRY.canonicalize_names(disabled, None),
     )
     assert reason == "requested"
@@ -275,12 +284,19 @@ async def test_structured_delete_waits_for_exact_effect_approval(tmp_path):
         if effect["kind"] == "filesystem.delete"
     )
 
-    approved_grant = replace(
-        prepared.authority_grant,
-        approved_effects=frozenset({delete_effect["key"]}),
+    from src.agent.runtime_v2.approvals import EFFECT_APPROVALS
+
+    approval_id = waiting.data["approval"]["approval_id"]
+    EFFECT_APPROVALS.decide(
+        approval_id,
+        owner_id=prepared.owner_id,
+        decision="allow",
     )
-    approved_context = replace(prepared, authority_grant=approved_grant)
-    committed = await execute_normalized_tool_call(call, approved_context)
+    committed = await execute_normalized_tool_call(
+        call,
+        prepared,
+        approval_id=approval_id,
+    )
     assert committed.status is ToolResultStatus.SUCCESS
     assert not target.exists()
     assert any(effect.kind == "filesystem.delete" for effect in committed.committed_effects)
@@ -310,6 +326,8 @@ async def test_legacy_read_alias_enters_v2_without_ambient_workspace(tmp_path, m
 
 def test_background_job_captures_the_exact_immutable_authority_snapshot(tmp_path, monkeypatch):
     prepared = context(tmp_path, mode="host", session="background")
+    from src.agent.runtime_v2.workspace_service import WORKSPACE_SERVICE
+
     jobs_dir = tmp_path / "jobs"
     saved = {}
 
@@ -322,6 +340,11 @@ def test_background_job_captures_the_exact_immutable_authority_snapshot(tmp_path
     monkeypatch.setattr(bg_jobs, "_save", lambda jobs: saved.update(jobs))
     monkeypatch.setattr(bg_jobs, "find_bash", lambda: "/bin/bash")
     monkeypatch.setattr(bg_jobs, "detached_popen_kwargs", lambda: {})
+    monkeypatch.setattr(
+        WORKSPACE_SERVICE,
+        "revision",
+        lambda root: prepared.execution_root.workspace_revision,
+    )
     monkeypatch.setattr(bg_jobs.subprocess, "Popen", lambda *args, **kwargs: Process())
 
     record = bg_jobs.launch(

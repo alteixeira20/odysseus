@@ -680,11 +680,13 @@ async def execute_tool_block(
     owner: Optional[str] = None,
     progress_cb: Optional[Callable[[Dict], Awaitable[None]]] = None,
     workspace: Optional[str] = None,
+    workspace_write: bool = False,
     execution_mode: Optional[str] = None,
     tool_policy: Optional[Any] = None,
     allowed_tools: Optional[set] = None,
     invocation_id: Optional[str] = None,
     execution_context: Optional[Any] = None,
+    normalized_call: Optional[Any] = None,
 ) -> Tuple[str, Dict]:
     """Execute a single tool block. Returns (description, result_dict).
 
@@ -693,16 +695,166 @@ async def execute_tool_block(
     compatibility tools still use the context-local wrapper below.
     """
     from src.agent.tools.bootstrap import TOOL_REGISTRY
+    from src.agent.runtime_v2.ownership import OwnershipError, RUN_OWNERSHIP
 
     raw_name = str(getattr(block, "tool_type", "") or "")
-    bound_workspace = vet_workspace(workspace) if workspace else None
-    if workspace and not bound_workspace:
-        return "workspace: BLOCKED", {
-            "error": "The requested workspace is invalid or outside the allowed execution boundary.",
-            "error_type": "invalid_workspace",
-            "exit_code": 1,
-        }
+    provided_execution_context = execution_context is not None
+    if execution_context is not None:
+        try:
+            if normalized_call is None:
+                from src.agent.rounds.tool_calls import normalize_tool_calls
+
+                normalized_call = normalize_tool_calls(
+                    [block],
+                    [],
+                    execution_context=execution_context,
+                    provider_name="direct_runtime_adapter",
+                )[0]
+            RUN_OWNERSHIP.validate_call_identity(
+                execution_context,
+                normalized_call,
+            )
+        except OwnershipError as exc:
+            return f"{raw_name}: STALE", {
+                "error": str(exc),
+                "error_type": "stale_or_unauthorized_call",
+                "exit_code": 1,
+            }
+        expected_root = execution_context.execution_root.path
+        posted_root = vet_workspace(workspace) if workspace else expected_root
+        if posted_root != expected_root:
+            return "workspace: BLOCKED", {
+                "error": "Tool dispatch root does not match the immutable run authority.",
+                "error_type": "stale_or_unauthorized_call",
+                "exit_code": 1,
+            }
+        if session_id is not None and str(session_id) != execution_context.session_id:
+            return f"{raw_name}: STALE", {
+                "error": "Tool dispatch session does not match the immutable run authority.",
+                "error_type": "stale_or_unauthorized_call",
+                "exit_code": 1,
+            }
+        if owner is not None and str(owner or "") != execution_context.owner_id:
+            return f"{raw_name}: STALE", {
+                "error": "Tool dispatch owner does not match the immutable run authority.",
+                "error_type": "stale_or_unauthorized_call",
+                "exit_code": 1,
+            }
+        bound_workspace = expected_root
+        session_id = execution_context.session_id
+        owner = execution_context.owner_id
+        execution_mode = execution_context.execution_mode.value
+        disabled_tools = set(disabled_tools or ()) | set(
+            execution_context.authority_grant.disabled_tools
+        )
+        allowed_tools = set(RUN_OWNERSHIP.effective_tools(execution_context))
+    else:
+        bound_workspace = vet_workspace(workspace) if workspace else None
+        if workspace and not bound_workspace:
+            return "workspace: BLOCKED", {
+                "error": "The requested workspace is invalid or outside the allowed execution boundary.",
+                "error_type": "invalid_workspace",
+                "exit_code": 1,
+            }
     definition = TOOL_REGISTRY.resolve(raw_name, execution_context)
+    if execution_context is not None and normalized_call is not None:
+        dispatch_name = definition.name if definition is not None else raw_name
+        unknown_marker = bool(
+            normalized_call.arguments.get("__unknown_native_tool__") is True
+        )
+        if normalized_call.canonical_name != dispatch_name and not unknown_marker:
+            return f"{raw_name}: STALE", {
+                "error": "Normalized call does not match the tool being dispatched.",
+                "error_type": "stale_or_unauthorized_call",
+                "exit_code": 1,
+            }
+    if (
+        execution_context is not None
+        and (definition is None or not definition.runtime_v2)
+    ):
+        canonical = definition.name if definition is not None else raw_name
+        if canonical not in RUN_OWNERSHIP.effective_tools(execution_context):
+            if (
+                definition is None
+                and normalized_call is not None
+                and normalized_call.arguments.get("__unknown_native_tool__")
+                is True
+            ):
+                requested = str(
+                    normalized_call.arguments.get("requested_tool")
+                    or raw_name
+                    or "unknown"
+                )
+                suggestions = [
+                    str(item)
+                    for item in normalized_call.arguments.get("suggestions", ())
+                    if item
+                ]
+                return f"unknown: {requested}", {
+                    "error": f"Unknown tool: {requested}.",
+                    "error_type": "unknown_tool",
+                    "requested_tool": requested,
+                    "suggestions": suggestions,
+                    "retryable": True,
+                    "exit_code": 1,
+                }
+            return f"{canonical}: UNAVAILABLE", {
+                "error": f"Tool '{canonical}' is outside the effective contract for this round.",
+                "error_type": "tool_not_available",
+                "exit_code": 1,
+            }
+    if raw_name.startswith("mcp__"):
+        mcp_policy_names = email_tool_policy_names(raw_name)
+        if disabled_tools and not mcp_policy_names.isdisjoint(disabled_tools):
+            return f"{raw_name}: BLOCKED", {
+                "error": f"Tool '{raw_name}' is disabled by user.",
+                "exit_code": 1,
+            }
+        if tool_policy and any(
+            tool_policy.blocks(name) for name in mcp_policy_names
+        ):
+            return f"{raw_name}: BLOCKED", {
+                "error": (
+                    f"Execution of tool '{raw_name}' is forbidden by the "
+                    "active tool policy."
+                ),
+                "exit_code": 1,
+            }
+        if is_public_blocked_tool(raw_name) and not _owner_is_admin(owner):
+            return f"{raw_name}: BLOCKED", {
+                "error": (
+                    f"Tool '{raw_name}' is restricted to admin users on this "
+                    "deployment. Ask an admin to perform this action or grant "
+                    "the needed permission."
+                ),
+                "exit_code": 1,
+            }
+        trusted_read_contracts = {
+            "mcp__builtin_browser__browser_navigate",
+            "mcp__builtin_browser__browser_snapshot",
+            "mcp__builtin_browser__browser_take_screenshot",
+            "mcp__builtin_browser__browser_wait_for",
+            "mcp__builtin_browser__browser_navigate_back",
+            "mcp__builtin_browser__browser_close",
+            # These are the exact read-only contracts from the built-in email
+            # server.  Mutating and unknown email tools remain denied until
+            # they are migrated to Runtime V2 effects and exact approvals.
+            "mcp__email__list_email_accounts",
+            "mcp__email__list_emails",
+            "mcp__email__read_email",
+            "mcp__email__search_emails",
+            "mcp__email__scan_email_unsubscribes",
+        }
+        if raw_name not in trusted_read_contracts:
+            return f"{raw_name}: DENIED", {
+                "error": (
+                    "This MCP tool has no trusted effect contract. Unknown MCP "
+                    "effects are denied until the server supplies an audited "
+                    "capability/effect classification."
+                ),
+                "error_type": "mcp_effect_contract_missing",
+                "exit_code": 1,
+            }
     if definition is not None and definition.runtime_v2:
         from src.agent.rounds.tool_calls import normalize_tool_calls
         from src.agent.runtime_v2.authority import prepare_execution_context
@@ -725,17 +877,18 @@ async def execute_tool_block(
                 selected_workspace=bound_workspace,
                 budgets=RunBudgets(max_rounds=1, max_tool_calls=1),
                 tool_catalog_revision=TOOL_REGISTRY.revision,
+                workspace_write=bool(workspace_write),
                 disabled_tools=TOOL_REGISTRY.canonicalize_names(disabled, None),
             )
             definition = TOOL_REGISTRY.resolve(raw_name, context)
 
-        normalized = normalize_tool_calls(
+        normalized = normalized_call or normalize_tool_calls(
             [block],
             [],
             execution_context=context,
             provider_name="legacy_adapter",
         )[0]
-        if allowed_tools is not None:
+        if allowed_tools is not None and not provided_execution_context:
             allowed = TOOL_REGISTRY.canonicalize_names(allowed_tools, context)
             if normalized.canonical_name not in allowed:
                 return f"{normalized.canonical_name}: UNAVAILABLE", {
@@ -763,8 +916,10 @@ async def execute_tool_block(
                     )
             elif raw_name == "get_workspace":
                 projected["output"] = (
-                    f"{result.data.get('path')} is the only writable workspace "
-                    f"for this run ({result.data.get('source')})."
+                    f"{result.data.get('path')} is the confined execution "
+                    f"workspace for this run ({result.data.get('source')}); "
+                    f"workspace_write_granted="
+                    f"{str(bool(result.data.get('workspace_write_granted'))).lower()}."
                 )
             elif raw_name == "todowrite":
                 plan = result.data.get("plan") or {}

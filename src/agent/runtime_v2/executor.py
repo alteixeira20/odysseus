@@ -18,6 +18,8 @@ from .contracts import (
     ToolResultStatus,
 )
 from .effect_policy import EFFECT_POLICY
+from .ownership import OwnershipError, RUN_OWNERSHIP
+from .approvals import EFFECT_APPROVALS, EffectApprovalError
 
 
 def _tool_error(
@@ -45,11 +47,23 @@ async def execute_normalized_tool_call(
     execution_context: AgentExecutionContext,
     *,
     progress_cb=None,
+    approval_id: Optional[str] = None,
 ) -> ToolResult:
     """Resolve -> validate -> effects -> policy -> handler -> result validation."""
 
     started = time.perf_counter()
-    execution_context.cancellation_token.raise_if_cancelled()
+    try:
+        execution_context.cancellation_token.raise_if_cancelled()
+        RUN_OWNERSHIP.validate_call_identity(execution_context, call)
+    except OwnershipError as exc:
+        if approval_id:
+            EFFECT_APPROVALS.invalidate(approval_id)
+        return _tool_error(
+            call,
+            status=ToolResultStatus.DENIED,
+            code="stale_or_unauthorized_call",
+            message=str(exc),
+        )
     definition = TOOL_REGISTRY.resolve(call.canonical_name, execution_context)
     if definition is None or not definition.runtime_v2:
         return _tool_error(
@@ -78,6 +92,18 @@ async def execute_normalized_tool_call(
             status=ToolResultStatus.DENIED,
             code="tool_not_exposed",
             message=f"{definition.name} is not exposed for this authority snapshot",
+        )
+    try:
+        RUN_OWNERSHIP.validate_effective_tool(
+            execution_context,
+            definition.name,
+        )
+    except OwnershipError as exc:
+        return _tool_error(
+            call,
+            status=ToolResultStatus.DENIED,
+            code="tool_not_available",
+            message=str(exc),
         )
     if call.normalization_error:
         return _tool_error(
@@ -144,14 +170,55 @@ async def execute_normalized_tool_call(
             duration_ms=(time.perf_counter() - started) * 1000,
         )
     if outcome.decision is ApprovalDecision.REQUIRE_APPROVAL:
-        return _tool_error(
-            call,
-            status=ToolResultStatus.APPROVAL_REQUIRED,
-            code="effect_approval_required",
-            message=outcome.reason,
-            data=effect_data,
-            duration_ms=(time.perf_counter() - started) * 1000,
-        )
+        if approval_id:
+            try:
+                EFFECT_APPROVALS.consume(
+                    approval_id,
+                    call=call,
+                    context=execution_context,
+                    effects=effects,
+                )
+            except EffectApprovalError as exc:
+                return _tool_error(
+                    call,
+                    status=ToolResultStatus.DENIED,
+                    code="effect_approval_invalid",
+                    message=str(exc),
+                    data=effect_data,
+                    duration_ms=(time.perf_counter() - started) * 1000,
+                )
+        else:
+            try:
+                request = EFFECT_APPROVALS.request(
+                    call=call,
+                    context=execution_context,
+                    effects=effects,
+                )
+            except EffectApprovalError as exc:
+                return _tool_error(
+                    call,
+                    status=ToolResultStatus.DENIED,
+                    code="approval_snapshot_unavailable",
+                    message=str(exc),
+                    data=effect_data,
+                    duration_ms=(time.perf_counter() - started) * 1000,
+                )
+            effect_data["approval"] = {
+                "approval_id": request.approval_id,
+                "expires_at": request.expires_at,
+                "call_id": request.call_id,
+                "canonical_name": request.canonical_name,
+                "effects_digest": request.effects_digest,
+                "one_use": True,
+            }
+            return _tool_error(
+                call,
+                status=ToolResultStatus.APPROVAL_REQUIRED,
+                code="effect_approval_required",
+                message=outcome.reason,
+                data=effect_data,
+                duration_ms=(time.perf_counter() - started) * 1000,
+            )
     if execution_context.cancellation_token.cancelled:
         return _tool_error(
             call,

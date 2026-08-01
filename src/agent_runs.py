@@ -20,6 +20,8 @@ import json
 import logging
 import math
 import os
+import re
+import sys
 import time
 from typing import AsyncGenerator, Dict, Optional
 
@@ -30,6 +32,7 @@ from src.agent.runtime_v2.events import (
     runtime_event_from_payload,
 )
 from src.agent.runtime_v2.state import RunState, RunStateMachine
+from src.agent.runtime_v2.ownership import OwnershipError, RUN_OWNERSHIP, TurnLease
 
 
 logger = logging.getLogger(__name__)
@@ -132,6 +135,35 @@ _MAX_RUN_WALL_CLOCK_S = _positive_env_number(
 _MAX_RUN_IDLE_S = _positive_env_number(
     "ODYSSEUS_AGENT_RUN_IDLE_SECONDS", 180.0, float
 )
+
+
+def enforce_single_runtime_worker() -> None:
+    """Fail startup when process-local run durability would be split."""
+
+    configured: list[int] = []
+    for name in ("WEB_CONCURRENCY", "UVICORN_WORKERS"):
+        raw = os.getenv(name)
+        if raw:
+            try:
+                configured.append(int(raw))
+            except ValueError:
+                raise RuntimeError(f"{name} must be an integer") from None
+    gunicorn = os.getenv("GUNICORN_CMD_ARGS", "")
+    match = re.search(r"(?:--workers|-w)\s+(\d+)", gunicorn)
+    if match:
+        configured.append(int(match.group(1)))
+    argv = " ".join(str(item) for item in sys.argv[1:])
+    for expression in (
+        r"(?:^|\s)--workers(?:=|\s+)(\d+)(?:\s|$)",
+        r"(?:^|\s)-w\s+(\d+)(?:\s|$)",
+    ):
+        match = re.search(expression, argv)
+        if match:
+            configured.append(int(match.group(1)))
+    if any(count != 1 for count in configured):
+        raise RuntimeError(
+            "Odysseus agent runs and approvals are process-local; configure exactly one runtime worker"
+        )
 
 
 def _publish(run: _Run, event: str) -> None:
@@ -424,6 +456,8 @@ def _commit_terminal(
         _publish(run, runtime_wire)
     _publish(run, _terminal_event(terminal))
     _publish(run, "data: [DONE]\n\n")
+    if run.execution_context is not None:
+        RUN_OWNERSHIP.end_run(run.execution_context)
 
 
 async def _drain(
@@ -438,7 +472,7 @@ async def _drain(
         return
     if prev_task is not None and not prev_task.done():
         try:
-            await asyncio.wait({prev_task})
+            await asyncio.wait({prev_task}, timeout=1.0)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -487,15 +521,42 @@ async def _drain(
                     session_id,
                 )
                 continue
+            if run.execution_context is not None:
+                try:
+                    RUN_OWNERSHIP.validate_context(run.execution_context)
+                except OwnershipError:
+                    # A newer user turn owns this conversation.  Do not commit
+                    # late text/events from the old producer; tool dispatch has
+                    # the same independent ownership check.
+                    try:
+                        await agen.aclose()
+                    except Exception:
+                        pass
+                    run.status = "stopped"
+                    break
             if event.startswith("event: error"):
                 stream_error_seen = True
             runtime_event = _parse_runtime_wire(event)
+            if runtime_event is not None and run.execution_context is not None:
+                try:
+                    RUN_OWNERSHIP.validate_event(
+                        run.execution_context,
+                        runtime_event,
+                    )
+                except OwnershipError:
+                    logger.warning(
+                        "[agent-run] rejected stale runtime event for %s",
+                        session_id,
+                    )
+                    continue
             runtime_terminal = _terminal_from_runtime(runtime_event)
             if runtime_terminal is not None:
-                pending_terminal = _prefer_terminal(
+                chosen_terminal = _prefer_terminal(
                     pending_terminal, runtime_terminal
                 )
-                pending_runtime_wire = event
+                if chosen_terminal is runtime_terminal:
+                    pending_runtime_wire = event
+                pending_terminal = chosen_terminal
                 continue
             if runtime_event is not None and runtime_event.type == "run_state":
                 try:
@@ -641,6 +702,8 @@ def start(
 
     if not isinstance(mode, RunMode):
         mode = RunMode(str(mode))
+    if execution_context is not None:
+        RUN_OWNERSHIP.validate_context(execution_context)
     previous = _RUNS.get(session_id)
     active_other_runs = [
         candidate
@@ -700,6 +763,20 @@ def start(
 
     run.task.add_done_callback(_ensure_terminal)
     return run
+
+
+def begin_turn(*, session_id: str, owner: Optional[str]) -> TurnLease:
+    """Supersede unfinished work as soon as a newer user message is accepted."""
+
+    previous = _RUNS.get(str(session_id))
+    if previous and previous.task and not previous.task.done():
+        if previous.execution_context is not None:
+            previous.execution_context.cancellation_token.cancel()
+        previous.task.cancel()
+    return RUN_OWNERSHIP.claim_turn(
+        owner_id=str(owner or ""),
+        conversation_id=str(session_id),
+    )
 
 
 async def subscribe(session_id: str) -> AsyncGenerator[str, None]:
@@ -778,7 +855,9 @@ __all__ = [
     "RunMode",
     "RunCapacityError",
     "RunTerminal",
+    "begin_turn",
     "get_status",
+    "enforce_single_runtime_worker",
     "is_active",
     "list_runs",
     "start",

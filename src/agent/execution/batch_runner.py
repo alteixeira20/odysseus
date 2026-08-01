@@ -28,6 +28,11 @@ from src.agent.runtime_v2.contracts import (
 )
 from src.agent.runtime_v2.events import encode_runtime_sse
 from src.agent.runtime_v2.executor import execute_normalized_tool_call
+from src.agent.runtime_v2.approvals import (
+    ApprovalRecordState,
+    EFFECT_APPROVALS,
+)
+from src.agent.runtime_v2.state import RunState
 from src.agent.tools.bootstrap import TOOL_REGISTRY
 
 
@@ -260,6 +265,8 @@ class ToolBatchRunner:
                         workspace=request.workspace,
                         execution_mode=request.execution_mode,
                         invocation_id=call_id,
+                        execution_context=request.execution_context,
+                        normalized_call=normalized_call,
                     )
 
                 async with self.execution_handle(run_tool) as execution:
@@ -293,7 +300,82 @@ class ToolBatchRunner:
                         )
                     )
                     if runtime_result.status is ToolResultStatus.APPROVAL_REQUIRED:
-                        awaiting_approval = True
+                        approval = runtime_result.data.get("approval") or {}
+                        approval_id = str(approval.get("approval_id") or "")
+                        if not approval_id:
+                            awaiting_approval = True
+                        else:
+                            yield encode_runtime_sse(
+                                request.execution_context.event_factory.create(
+                                    "run_state",
+                                    {
+                                        "state": RunState.WAITING_APPROVAL.value,
+                                        "reason": "waiting_for_exact_effect_approval",
+                                        "resumable": True,
+                                        "terminal": False,
+                                        "approval_id": approval_id,
+                                        "call_id": call_id,
+                                        "canonical_name": canonical_tool_name,
+                                        "effects": list(
+                                            runtime_result.data.get("effects") or []
+                                        ),
+                                    },
+                                    caused_by=call_id,
+                                )
+                            )
+                            decision = await EFFECT_APPROVALS.wait(
+                                approval_id,
+                                context=request.execution_context,
+                            )
+                            yield encode_runtime_sse(
+                                request.execution_context.event_factory.create(
+                                    "run_state",
+                                    {
+                                        "state": RunState.RUNNING.value,
+                                        "reason": f"effect_approval_{decision.value}",
+                                        "resumable": False,
+                                        "terminal": False,
+                                        "approval_id": approval_id,
+                                        "call_id": call_id,
+                                        "canonical_name": canonical_tool_name,
+                                    },
+                                    caused_by=call_id,
+                                )
+                            )
+                            if decision is ApprovalRecordState.GRANTED:
+                                yield encode_runtime_sse(
+                                    request.execution_context.event_factory.create(
+                                        "tool_resumed",
+                                        {
+                                            "call_id": call_id,
+                                            "canonical_name": canonical_tool_name,
+                                            "approval_id": approval_id,
+                                            "round": request.round_number,
+                                        },
+                                        caused_by=call_id,
+                                    )
+                                )
+                            runtime_result = await execute_normalized_tool_call(
+                                normalized_call,
+                                request.execution_context,
+                                approval_id=approval_id,
+                            )
+                            description = (
+                                f"{canonical_tool_name}: {runtime_result.status.value}"
+                            )
+                            result = runtime_result.legacy_projection()
+                            yield encode_runtime_sse(
+                                request.execution_context.event_factory.create(
+                                    "tool_result",
+                                    {
+                                        "result": runtime_result.as_dict(),
+                                        "round": request.round_number,
+                                        "command": command,
+                                        "approval_id": approval_id,
+                                    },
+                                    caused_by=call_id,
+                                )
+                            )
 
             if request.observation_ledger is not None:
                 observation_notice = request.observation_ledger.note_tool_result(

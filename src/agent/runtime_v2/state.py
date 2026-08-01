@@ -23,7 +23,6 @@ class RunState(str, Enum):
     @property
     def terminal(self) -> bool:
         return self in {
-            RunState.WAITING_APPROVAL,
             RunState.WAITING_USER,
             RunState.INCOMPLETE,
             RunState.COMPLETED,
@@ -65,7 +64,14 @@ _TRANSITIONS: dict[RunState, frozenset[RunState]] = {
             RunState.FAILED,
         }
     ),
-    RunState.WAITING_APPROVAL: frozenset(),
+    RunState.WAITING_APPROVAL: frozenset(
+        {
+            RunState.RUNNING,
+            RunState.INCOMPLETE,
+            RunState.CANCELLED,
+            RunState.FAILED,
+        }
+    ),
     RunState.WAITING_USER: frozenset(),
     RunState.INCOMPLETE: frozenset(),
     RunState.COMPLETED: frozenset({RunState.CANCELLED, RunState.FAILED}),

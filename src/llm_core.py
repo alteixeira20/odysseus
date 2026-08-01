@@ -8,6 +8,7 @@ import hashlib
 import threading
 import re
 import os
+import secrets
 from contextlib import asynccontextmanager
 from fastapi import HTTPException
 from typing import Optional, Dict, List, Tuple
@@ -3129,7 +3130,12 @@ def _summarize_stream_error(err_chunk: Optional[str]) -> str:
     return "primary model failed"
 
 
-async def stream_llm_with_fallback(candidates, messages, **kwargs):
+async def stream_llm_with_fallback(
+    candidates,
+    messages,
+    _runtime_candidate_tracking=False,
+    **kwargs,
+):
     """Wrap stream_llm with an ordered fallback chain.
 
     `candidates` is a list of (url, model, headers). Each is tried in order,
@@ -3155,6 +3161,7 @@ async def stream_llm_with_fallback(candidates, messages, **kwargs):
         emitted = False
         retried = False
         pending_metadata = []
+        candidate_id = secrets.token_urlsafe(18)
         async for chunk in stream_llm(url, model, messages, headers=headers, **kwargs):
             if chunk.startswith("event: error"):
                 if not emitted and not is_last:
@@ -3201,6 +3208,23 @@ async def stream_llm_with_fallback(candidates, messages, **kwargs):
             )
 
             if substantive and not emitted:
+                # This internal event commits exactly one provider candidate
+                # before any of its text/tool deltas are accepted by the agent
+                # round. It is consumed by the runtime and never shown as
+                # assistant prose.
+                if _runtime_candidate_tracking:
+                    yield (
+                        "data: "
+                        + json.dumps(
+                            {
+                                "type": "candidate_selected",
+                                "candidate_id": candidate_id,
+                                "candidate_index": i,
+                                "model": model,
+                            }
+                        )
+                        + "\n\n"
+                    )
                 # First real output from a NON-primary candidate: tell the client
                 # the selected model failed and another answered. Without this the
                 # fallback is invisible — a misconfigured provider looks like it
@@ -3235,5 +3259,5 @@ async def stream_llm_with_fallback(candidates, messages, **kwargs):
             tag = "primary" if i == 0 else "candidate"
             logger.warning(f"[fallback] {tag} {model} returned no substantive output; trying next")
             continue
-        yield f'event: error\ndata: {json.dumps({"error": "All model candidates returned no substantive output", "status": 502})}\n\n'
+        yield f'event: error\ndata: {json.dumps({"error": "All model candidates returned no substantive output", "status": 502, "error_kind": "empty_candidates", "retryable": True})}\n\n'
         return

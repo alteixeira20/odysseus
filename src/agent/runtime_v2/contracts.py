@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import os
 from dataclasses import dataclass, field, replace
 from enum import Enum
@@ -116,6 +118,9 @@ class AgentExecutionContext:
     run_id: str
     owner_id: str
     session_id: str
+    conversation_id: str
+    turn_id: str
+    candidate_id: str
     execution_mode: ExecutionMode
     execution_root: ExecutionRoot
     authority_grant: AuthorityGrant
@@ -126,8 +131,10 @@ class AgentExecutionContext:
     event_factory: Any = field(compare=False, repr=False)
 
     def __post_init__(self) -> None:
-        if not self.run_id or not self.session_id:
-            raise ValueError("execution context requires run_id and session_id")
+        if not all((self.run_id, self.session_id, self.conversation_id, self.turn_id)):
+            raise ValueError(
+                "execution context requires run, session, conversation, and turn identities"
+            )
         if not isinstance(self.execution_mode, ExecutionMode):
             raise TypeError("execution_mode must be an ExecutionMode")
 
@@ -167,6 +174,14 @@ class NormalizedToolCall:
     arguments: Mapping[str, Any]
     provider_name: str
     raw_name: str
+    run_id: str = "legacy"
+    conversation_id: str = "legacy"
+    turn_id: str = "legacy"
+    candidate_id: str = "legacy"
+    provider_round: int = 0
+    authority_revision: str = "legacy"
+    workspace_revision: str = "legacy"
+    tool_contract_revision: str = "legacy"
     legacy_content: Optional[str] = None
     normalization_error: Optional[str] = None
 
@@ -174,6 +189,16 @@ class NormalizedToolCall:
         if not self.call_id or not self.canonical_name or not self.raw_name:
             raise ValueError("normalized tool calls require id, canonical name, and raw name")
         object.__setattr__(self, "arguments", immutable_mapping(self.arguments))
+
+    @property
+    def arguments_digest(self) -> str:
+        raw = json.dumps(
+            dict(self.arguments),
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+        return hashlib.sha256(raw).hexdigest()
 
 
 class ToolResultStatus(str, Enum):

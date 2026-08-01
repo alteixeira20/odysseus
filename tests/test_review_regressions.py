@@ -993,7 +993,7 @@ async def test_write_file_inline_json_args(monkeypatch, tmp_path):
     )
     assert len(blocks) == 1
     desc, result = await execute_tool_block(
-        blocks[0], owner="admin", workspace=str(tmp_path)
+        blocks[0], owner="admin", workspace=str(tmp_path), workspace_write=True
     )
 
     assert desc == "patch_workspace: success"

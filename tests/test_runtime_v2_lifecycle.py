@@ -54,7 +54,7 @@ def parsed_runtime_events(events):
 
 
 @pytest.mark.asyncio
-async def test_approval_waiting_is_terminal_but_never_completed(tmp_path):
+async def test_approval_waiting_without_a_decision_becomes_resumable_incomplete(tmp_path):
     session = "runtime-v2-approval"
     prepared = context(tmp_path, session)
 
@@ -65,7 +65,7 @@ async def test_approval_waiting_is_terminal_but_never_completed(tmp_path):
             prepared,
             "waiting_approval",
             disposition="awaiting_approval",
-            terminal=True,
+            terminal=False,
             reason="sensitive_effect",
         )
         yield "data: [DONE]\n\n"
@@ -79,9 +79,9 @@ async def test_approval_waiting_is_terminal_but_never_completed(tmp_path):
     )
     events = [event async for event in agent_runs.subscribe(session)]
     await run.task
-    assert agent_runs.get_status(session) == "awaiting_approval"
-    assert run.state_machine.state is RunState.WAITING_APPROVAL
-    assert run.terminal.disposition.value == "awaiting_approval"
+    assert agent_runs.get_status(session) == "incomplete"
+    assert run.state_machine.state is RunState.INCOMPLETE
+    assert run.terminal.disposition.value == "incomplete"
     assert events[-1] == "data: [DONE]\n\n"
 
 

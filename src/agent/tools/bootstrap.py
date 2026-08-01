@@ -253,3 +253,4 @@ def build_default_registry() -> ToolRegistry:
 
 
 TOOL_REGISTRY = build_default_registry()
+TOOL_REGISTRY.validate_or_raise()

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+import copy
 import hashlib
 import json
 from typing import Any, Callable, Mapping, Optional
@@ -145,7 +146,12 @@ class ToolDefinition:
     def validate_arguments(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(arguments, Mapping):
             raise ValueError(f"{self.name} arguments must be an object")
-        value = dict(arguments)
+        # Detach the executable arguments from the normalized call before an
+        # approval is consumed.  Nested lists/dicts in a model call are
+        # otherwise mutable even though the top-level mapping is read-only;
+        # a concurrent mutation could change what the handler sees after the
+        # exact arguments digest was checked.
+        value = copy.deepcopy(dict(arguments))
         if self.input_schema:
             try:
                 jsonschema.Draft202012Validator(self.input_schema).validate(value)

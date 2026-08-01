@@ -89,6 +89,25 @@ async def _run_followup(rec: dict) -> bool:
         logger.info("bg-followup: session %s gone for job %s — skipping", rec.get("session_id"), rec.get("id"))
         return True
 
+    # A detached completion is linked to the exact turn that launched it. A
+    # newer accepted user message supersedes the auto-continuation even when
+    # the old process happened to finish successfully afterward.
+    if rec.get("run_id") and rec.get("turn_id"):
+        from src.agent.runtime_v2.ownership import RUN_OWNERSHIP
+
+        if not RUN_OWNERSHIP.snapshot_is_current(
+            owner_id=str(rec.get("owner") or ""),
+            conversation_id=str(rec.get("conversation_id") or rec.get("session_id") or ""),
+            turn_id=str(rec.get("turn_id") or ""),
+            run_id=str(rec.get("run_id") or ""),
+        ):
+            logger.info(
+                "bg-followup: suppressed superseded job %s for session %s",
+                rec.get("id"),
+                rec.get("session_id"),
+            )
+            return True
+
     # Don't write into a session that's mid-stream. The followup appends to
     # history + save_sessions(); a concurrent live turn does the same, and with
     # no per-session lock the two interleave (reordered/clobbered messages).

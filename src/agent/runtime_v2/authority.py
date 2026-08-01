@@ -25,6 +25,7 @@ from .contracts import (
     RunBudgets,
 )
 from .events import RuntimeEventFactory
+from .ownership import RUN_OWNERSHIP, TurnLease
 from .workspace_service import WORKSPACE_SERVICE, WorkspacePathError
 
 
@@ -178,9 +179,14 @@ def _authority_capabilities(
     mode: ExecutionMode,
     root: ExecutionRoot,
     plan_mode: bool,
+    workspace_write: bool,
 ) -> frozenset[Capability]:
     capabilities = {Capability.WORKSPACE_READ, Capability.VCS_READ}
-    if root.writable and not plan_mode:
+    # Host filesystem permissions are an implementation fact, not agent
+    # authority.  Mutation is granted only by a separate authenticated request
+    # decision and is still impossible when the bound root is physically
+    # read-only.
+    if workspace_write and root.writable and not plan_mode:
         capabilities.update({Capability.WORKSPACE_WRITE, Capability.VCS_WRITE})
     if mode is ExecutionMode.SANDBOXED and not plan_mode:
         capabilities.add(Capability.PROCESS_SANDBOX)
@@ -211,6 +217,9 @@ def prepare_execution_context(
     sandbox_default: Optional[str] = None,
     host_default: Optional[str] = None,
     run_id: Optional[str] = None,
+    conversation_id: Optional[str] = None,
+    turn_lease: Optional[TurnLease] = None,
+    workspace_write: bool = False,
     disabled_tools: frozenset[str] = frozenset(),
 ) -> tuple[AgentExecutionContext, str]:
     owner = str(owner_id or "")
@@ -247,6 +256,7 @@ def prepare_execution_context(
         mode=mode,
         root=execution_root,
         plan_mode=plan_mode,
+        workspace_write=bool(workspace_write),
     )
     revision_material = json.dumps(
         {
@@ -257,6 +267,7 @@ def prepare_execution_context(
             "workspace_revision": execution_root.workspace_revision,
             "disabled_tools": sorted(str(item) for item in disabled_tools),
             "plan_mode": bool(plan_mode),
+            "workspace_write": bool(workspace_write),
         },
         sort_keys=True,
         separators=(",", ":"),
@@ -268,10 +279,25 @@ def prepare_execution_context(
         disabled_tools=frozenset(disabled_tools),
     )
     actual_run_id = str(run_id or secrets.token_urlsafe(18))
+    conversation = str(conversation_id or session)
+    lease = turn_lease or RUN_OWNERSHIP.claim_turn(
+        owner_id=owner,
+        conversation_id=conversation,
+    )
+    if lease.conversation_id != conversation:
+        raise ValueError("turn lease belongs to a different conversation")
+    event_factory = RuntimeEventFactory(
+        actual_run_id,
+        conversation_id=conversation,
+        turn_id=lease.turn_id,
+    )
     context = AgentExecutionContext(
         run_id=actual_run_id,
         owner_id=owner,
         session_id=session,
+        conversation_id=conversation,
+        turn_id=lease.turn_id,
+        candidate_id="bootstrap",
         execution_mode=mode,
         execution_root=execution_root,
         authority_grant=authority,
@@ -279,6 +305,43 @@ def prepare_execution_context(
         cancellation_token=CancellationToken(secrets.token_urlsafe(18)),
         tool_catalog_revision=str(tool_catalog_revision),
         observation_ledger=ObservationLedger(),
-        event_factory=RuntimeEventFactory(actual_run_id),
+        event_factory=event_factory,
+    )
+    RUN_OWNERSHIP.bind_run(
+        owner_id=owner,
+        conversation_id=conversation,
+        turn_id=lease.turn_id,
+        run_id=actual_run_id,
+    )
+    # Direct internal callers historically receive an immediately usable
+    # context.  Bind the widest registry-derived contract here, then the real
+    # agent round narrows it exactly once before provider schemas or dispatch.
+    # No request/model argument can add a name after that narrowing.
+    from src.agent.tools.bootstrap import TOOL_REGISTRY
+
+    initial_tools = frozenset(
+        definition.name
+        for definition in TOOL_REGISTRY
+        if definition.exposed(context)
+        and definition.name not in authority.disabled_tools
+    )
+    contract_material = json.dumps(
+        {
+            "authority": authority.revision,
+            "catalog": str(tool_catalog_revision),
+            "names": sorted(initial_tools),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    RUN_OWNERSHIP.bind_effective_tools(
+        context,
+        names=initial_tools,
+        revision=hashlib.sha256(contract_material).hexdigest(),
+    )
+    RUN_OWNERSHIP.select_candidate(
+        context,
+        round_number=0,
+        candidate_id=context.candidate_id,
     )
     return context, reason

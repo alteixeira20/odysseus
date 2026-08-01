@@ -65,6 +65,7 @@ class ProviderAttemptOutcome:
     # safety-valve deadline (not a provider- or transport-reported signal)
     # while content had already streamed.
     deadline_exceeded: bool = False
+    diagnostics: tuple[Mapping[str, Any], ...] = ()
 
 
 class ProviderAttemptRunner:
@@ -122,6 +123,7 @@ class ProviderAttemptRunner:
         provider_capacity_wait = 0.0
         error_kind: Optional[str] = None
         deadline_exceeded = False
+        diagnostics: list[Mapping[str, Any]] = []
 
         while (
             attempt < request.max_attempts
@@ -142,6 +144,8 @@ class ProviderAttemptRunner:
             )
             self.accumulator.finish_event_seen = False
             self.accumulator.protocol_terminal_seen = True
+            self.accumulator.candidate_id = None
+            self.accumulator.candidate_index = None
             yield run_status_event(
                 "contacting_provider",
                 "Contacting provider",
@@ -395,6 +399,29 @@ class ProviderAttemptRunner:
                 or attempt >= request.max_attempts
                 or not attempt_error_chunk
             )
+            if substantive:
+                retry_decision = "selected"
+            elif fatal:
+                retry_decision = "terminal_error"
+            elif attempt_error_chunk and attempt < request.max_attempts:
+                retry_decision = "retry"
+            elif attempt_error_chunk:
+                retry_decision = "recovery_exhausted"
+            elif attempt < request.max_attempts:
+                retry_decision = "retry_empty"
+            else:
+                retry_decision = "recovery_exhausted"
+            diagnostics.append(
+                {
+                    "attempt": attempt,
+                    "finish_reason": self.accumulator.raw_finish_reason,
+                    "normalized_finish_reason": self.accumulator.normalized_finish_reason.value,
+                    "finish_event_seen": self.accumulator.finish_event_seen,
+                    "substantive": substantive,
+                    "error_kind": attempt_error_kind,
+                    "retry_decision": retry_decision,
+                }
+            )
             if selected_attempt:
                 error_kind = attempt_error_kind
                 deadline_exceeded = attempt_deadline_exceeded
@@ -447,6 +474,15 @@ class ProviderAttemptRunner:
                 )
                 await self.sleeper(backoff)
 
+        if not substantive and not fatal:
+            fatal = True
+            error_kind = error_kind or "empty_candidates"
+            if diagnostics:
+                last = dict(diagnostics[-1])
+                last["error_kind"] = error_kind
+                last["retry_decision"] = "recovery_exhausted"
+                diagnostics[-1] = last
+
         self.outcome = ProviderAttemptOutcome(
             attempts=attempt,
             substantive=substantive,
@@ -465,4 +501,5 @@ class ProviderAttemptRunner:
             finish_event_seen=self.accumulator.finish_event_seen,
             error_kind=error_kind,
             deadline_exceeded=deadline_exceeded,
+            diagnostics=tuple(diagnostics),
         )

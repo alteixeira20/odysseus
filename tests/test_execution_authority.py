@@ -203,7 +203,11 @@ async def test_host_authority_survives_tool_continuation_rounds(tmp_path, monkey
     ]
 
     assert rounds == 2
-    assert dispatched_contexts == [context]
+    assert len(dispatched_contexts) == 1
+    assert dispatched_contexts[0].run_id == context.run_id
+    assert dispatched_contexts[0].authority_grant == context.authority_grant
+    assert dispatched_contexts[0].execution_root == context.execution_root
+    assert dispatched_contexts[0].candidate_id != context.candidate_id
     diagnostic = next(
         __import__("json").loads(event[6:])
         for event in events

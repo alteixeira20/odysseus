@@ -63,6 +63,8 @@ class ProviderRoundAccumulator:
     # completed normally, so only branches that explicitly tag it False
     # (a raw transport EOF) can trigger interruption classification.
     protocol_terminal_seen: bool = True
+    candidate_id: Optional[str] = None
+    candidate_index: Optional[int] = None
 
     def consume(
         self,
@@ -77,6 +79,20 @@ class ProviderRoundAccumulator:
             or event_type in ("tool_call_delta", "tool_calls")
         )
         document_events: tuple[AgentEvent, ...] = ()
+
+        if event_type == "candidate_selected":
+            candidate = str(data.get("candidate_id") or "")
+            if not candidate:
+                return ProviderEventProjection()
+            if self.candidate_id is not None and self.candidate_id != candidate:
+                raise ValueError("provider round attempted to select multiple candidates")
+            self.candidate_id = candidate
+            try:
+                self.candidate_index = int(data.get("candidate_index"))
+            except (TypeError, ValueError):
+                self.candidate_index = None
+            self.actual_model = str(data.get("model") or self.actual_model)
+            return ProviderEventProjection()
 
         if event_type == "tool_call_delta":
             if tool_call_blocked:
@@ -222,12 +238,17 @@ class DirectResponseAccumulator:
     normalized_finish_reason: ProviderFinishReason = ProviderFinishReason.UNKNOWN
     finish_event_seen: bool = False
     protocol_terminal_seen: bool = True
+    candidate_id: Optional[str] = None
 
     def consume(
         self,
         data: Mapping[str, Any],
     ) -> ProviderEventProjection:
         event_type = data.get("type")
+        if event_type == "candidate_selected":
+            self.candidate_id = str(data.get("candidate_id") or "") or None
+            self.actual_model = str(data.get("model") or self.actual_model)
+            return ProviderEventProjection()
         if event_type == "finish":
             self.finish_event_seen = True
             self.raw_finish_reason = data.get("reason")

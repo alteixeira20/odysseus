@@ -7,12 +7,14 @@ The LLM decides when to use tools by writing fenced code blocks.
 """
 
 import asyncio
+import hashlib
 import json
 import random
 import re
 import secrets
 import time
 import logging
+from dataclasses import replace
 from typing import Any, AsyncGenerator, List, Dict, Optional, Set
 
 from src.llm_core import (
@@ -206,10 +208,12 @@ from src.agent.tools.bootstrap import TOOL_REGISTRY
 from src.agent.runtime_v2.authority import prepare_execution_context
 from src.agent.runtime_v2.contracts import (
     AgentExecutionContext,
+    Capability,
     RunBudgets,
 )
 from src.agent.runtime_v2.events import encode_runtime_sse
 from src.agent.runtime_v2.state import RunState
+from src.agent.runtime_v2.ownership import RUN_OWNERSHIP
 
 # Compatibility modules are bootstrap inputs only. Runtime provider schemas
 # and recognized local names come from the validated typed registry.
@@ -2192,6 +2196,20 @@ async def stream_agent_loop(
             else None
         ),
     )
+    _tool_contract_material = json.dumps(
+        {
+            "authority": execution_context.authority_grant.revision,
+            "catalog": execution_context.tool_catalog_revision,
+            "names": sorted(_effective_tools.names),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    RUN_OWNERSHIP.bind_effective_tools(
+        execution_context,
+        names=frozenset(_effective_tools.names),
+        revision=hashlib.sha256(_tool_contract_material).hexdigest(),
+    )
     _relevant_tools = set(_effective_tools.names)
     logger.info(
         "[effective-tools] session=%s model=%s count=%s names=%s excluded_foundational=%s",
@@ -2209,9 +2227,19 @@ async def stream_agent_loop(
         "execution_root": {
             "path": execution_context.execution_root.path,
             "source": execution_context.execution_root.source.value,
-            "writable": execution_context.execution_root.writable,
+            "writable": execution_context.authority_grant.allows(
+                Capability.WORKSPACE_WRITE
+            ),
+            "host_writable": execution_context.execution_root.writable,
+            "workspace_write_granted": execution_context.authority_grant.allows(
+                Capability.WORKSPACE_WRITE
+            ),
             "workspace_revision": execution_context.execution_root.workspace_revision,
         },
+        "capabilities": sorted(
+            capability.value
+            for capability in execution_context.authority_grant.capabilities
+        ),
         "authority_revision": execution_context.authority_grant.revision,
         "tool_catalog_revision": execution_context.tool_catalog_revision,
     })
@@ -2346,6 +2374,7 @@ async def stream_agent_loop(
     first_tool_call_s = None
     visible_chars = 0
     provider_capacity_wait_s = 0.0
+    _provider_attempt_diagnostics: list[dict[str, Any]] = []
     provider_ttfb_s = None
     tool_events = []   # Persist tool executions for history reload
     round_texts = []   # Cleaned text per round for history reload
@@ -2470,6 +2499,36 @@ async def stream_agent_loop(
             mcp_explicit_activation=_mcp_activation.explicit,
         )
         all_tool_schemas = _prepared_schemas.as_provider_list()
+        if _force_answer:
+            _round_effective_names = frozenset()
+        elif _is_api_model and not (
+            _ody_doc_finetune_mode
+            or _ody_notes_finetune_mode
+            or _ody_qwen_finetune_model
+        ):
+            _round_effective_names = frozenset(
+                str(name) for name in _prepared_schemas.names if name
+            )
+        else:
+            # Text/fenced providers receive the canonical catalogue in their
+            # prompt rather than as native schemas. Their executable contract
+            # is still the same exact, authority-filtered set.
+            _round_effective_names = frozenset(_effective_tools.names)
+        _round_contract_material = json.dumps(
+            {
+                "round": round_num,
+                "authority": execution_context.authority_grant.revision,
+                "catalog": execution_context.tool_catalog_revision,
+                "names": sorted(_round_effective_names),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        RUN_OWNERSHIP.bind_effective_tools(
+            execution_context,
+            names=_round_effective_names,
+            revision=hashlib.sha256(_round_contract_material).hexdigest(),
+        )
         agent_stream_timeout = _settings.stream_timeout_seconds
 
         _tool_names_sent = list(_prepared_schemas.names)
@@ -2506,6 +2565,7 @@ async def stream_agent_loop(
                 timeout=agent_stream_timeout,
                 session_id=session_id,
                 workload=workload,
+                _runtime_candidate_tracking=True,
             )
 
         _provider_runner = ProviderAttemptRunner(
@@ -2550,6 +2610,24 @@ async def stream_agent_loop(
             raise RuntimeError("provider attempt runner produced no outcome")
         _provider_requests += _provider_outcome.attempts
 
+        if _provider_outcome.substantive:
+            _selected_candidate_id = (
+                _round_stream.candidate_id
+                or "adapter-" + secrets.token_urlsafe(18)
+            )
+            RUN_OWNERSHIP.select_candidate(
+                execution_context,
+                round_number=round_num,
+                candidate_id=_selected_candidate_id,
+            )
+            execution_context = replace(
+                execution_context,
+                candidate_id=_selected_candidate_id,
+            )
+            execution_context.event_factory.select_candidate(
+                _selected_candidate_id
+            )
+
         provider_capacity_wait_s += (
             _provider_outcome.provider_capacity_wait
         )
@@ -2585,6 +2663,40 @@ async def stream_agent_loop(
                 round_num,
                 _provider_outcome.substantive,
             )
+            _attempt_diagnostic = {
+                "round": round_num,
+                "attempts": [dict(item) for item in _provider_outcome.diagnostics],
+                "valid_tool_call_count": 0,
+                "malformed_tool_call_count": 0,
+                "selected_candidate_id": _round_stream.candidate_id,
+                "selected_candidate_index": _round_stream.candidate_index,
+                "final_disposition": (
+                    "incomplete_resumable"
+                    if _provider_outcome.error_kind == "empty_candidates"
+                    else "fatal_error"
+                ),
+            }
+            _provider_attempt_diagnostics.append(_attempt_diagnostic)
+            yield encode_runtime_sse(
+                execution_context.event_factory.create(
+                    "provider_attempts",
+                    _attempt_diagnostic,
+                )
+            )
+            if _provider_outcome.error_kind == "empty_candidates":
+                yield _runtime_run_state_sse(
+                    execution_context,
+                    RunDisposition.INCOMPLETE,
+                    reason="provider_empty_recovery_exhausted",
+                    resumable=True,
+                )
+                yield _run_state_event(
+                    RunDisposition.INCOMPLETE,
+                    reason="provider_empty_recovery_exhausted",
+                    resumable=True,
+                )
+                yield "data: [DONE]\n\n"
+                return
             if _provider_outcome.terminal_error_chunk:
                 yield _provider_outcome.terminal_error_chunk
             yield _runtime_run_state_sse(
@@ -2646,6 +2758,24 @@ async def stream_agent_loop(
                     for call in _resolved_calls.unknown_calls
                 ],
             )
+        _attempt_diagnostic = {
+            "round": round_num,
+            "attempts": [dict(item) for item in _provider_outcome.diagnostics],
+            "valid_tool_call_count": len(tool_blocks),
+            "malformed_tool_call_count": len(_incomplete_native_calls),
+            "selected_candidate_id": _round_stream.candidate_id,
+            "selected_candidate_index": _round_stream.candidate_index,
+            "final_disposition": (
+                "tool_calls_selected" if tool_blocks else "text_selected"
+            ),
+        }
+        _provider_attempt_diagnostics.append(_attempt_diagnostic)
+        yield encode_runtime_sse(
+            execution_context.event_factory.create(
+                "provider_attempts",
+                _attempt_diagnostic,
+            )
+        )
         if tool_blocks and first_tool_call_s is None:
             first_tool_call_s = time.time() - total_start
         if _ody_doc_stream_create_mode and tool_blocks:
@@ -3085,6 +3215,7 @@ async def stream_agent_loop(
             converted_calls,
             execution_context=execution_context,
             provider_name=actual_model or model,
+            provider_round=round_num,
         )
 
         _batch_state = ToolBatchState(
@@ -3111,7 +3242,7 @@ async def stream_agent_loop(
                 normalized_calls=_normalized_calls,
                 execution_context=execution_context,
                 disabled_tools=set(disabled_tools or set()),
-                allowed_tools=set(_effective_tools.names),
+                allowed_tools=set(_round_effective_names),
                 tool_policy=tool_policy,
                 odysseus_qwen_finetune=_ody_qwen_finetune_model,
                 odysseus_notes_finetune=_ody_notes_finetune_mode,
@@ -3255,6 +3386,7 @@ async def stream_agent_loop(
         "native_schema_count": len(_tool_names_sent),
         "native_schema_bytes": _schema_bytes,
         "effective_tool_count": len(_effective_tools.names),
+        "provider_attempt_diagnostics": _provider_attempt_diagnostics,
         "provider_requests": _provider_requests,
         "provider_request_limit": _max_provider_requests,
         "tool_call_limit": _effective_max_tool_calls,
