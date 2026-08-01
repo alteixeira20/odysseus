@@ -2,6 +2,7 @@
 
 import json
 import os
+from pathlib import Path
 import shutil
 
 import pytest
@@ -184,12 +185,7 @@ def test_prepared_crash_journal_is_recovered_before_next_revision(tmp_path):
     target.write_text("before", encoding="utf-8")
     before_revision = WORKSPACE_SERVICE.revision(str(tmp_path))
     transaction_id = "prepared-crash"
-    journal = (
-        tmp_path
-        / WORKSPACE_SERVICE.INTERNAL_DIRECTORY
-        / "transactions"
-        / transaction_id
-    )
+    journal = Path(WORKSPACE_SERVICE.transaction_parent(str(tmp_path))) / transaction_id
     backups = journal / "backups"
     backups.mkdir(parents=True)
     (backups / "0.bin").write_text("before", encoding="utf-8")

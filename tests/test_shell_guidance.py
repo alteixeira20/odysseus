@@ -45,7 +45,9 @@ def test_guidance_describes_the_enforced_process_sandbox():
     assert "isolated Linux namespace" in SANDBOX_SHELL_AUTHORITY
     assert "no network" in SANDBOX_SHELL_AUTHORITY
     assert "read-only host root" in SANDBOX_SHELL_AUTHORITY
-    assert "only writable root" in SANDBOX_SHELL_AUTHORITY
+    assert "workspace_write_granted: true" in SANDBOX_SHELL_AUTHORITY
+    assert "common workspace secrets masked" in SANDBOX_SHELL_AUTHORITY
+    assert "no host fallback" in SANDBOX_SHELL_AUTHORITY
 
 
 def test_authority_guidance_distinguishes_host_from_sandbox():
@@ -53,7 +55,8 @@ def test_authority_guidance_distinguishes_host_from_sandbox():
     assert execution_authority_guidance("host") == HOST_SHELL_AUTHORITY
     assert execution_authority_guidance("disabled") is None
     assert "exact ExecutionRoot" in HOST_SHELL_AUTHORITY
-    assert "not a sandbox" in HOST_SHELL_AUTHORITY
+    assert "not a confidentiality sandbox" in HOST_SHELL_AUTHORITY
+    assert "does not grant workspace mutation" in HOST_SHELL_AUTHORITY
 
 
 def test_guidance_states_action_commitment_rule():

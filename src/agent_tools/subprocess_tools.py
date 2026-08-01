@@ -19,7 +19,12 @@ from pathlib import Path
 from typing import Optional, Callable, Awaitable, Tuple, Dict
 from src.constants import MAX_OUTPUT_CHARS
 from src.execution_policy import ExecutionMode, normalize_execution_mode
-from src.process_sandbox import SandboxUnavailable, sandbox_command
+from src.process_sandbox import (
+    SandboxUnavailable,
+    host_command_boundary,
+    redact_sensitive_output,
+    sandbox_command,
+)
 from core.platform_compat import find_bash, git_bash_path, kill_process_tree
 
 DEFAULT_BASH_TIMEOUT = 120
@@ -544,9 +549,12 @@ async def _run_subprocess_streaming(
         while True:
             if progress_cb:
                 try:
+                    bounded_tail, _ = redact_sensitive_output(
+                        "\n".join(list(tail))
+                    )
                     await progress_cb({
                         "elapsed_s": round(time.time() - started, 1),
-                        "tail": "\n".join(list(tail)),
+                        "tail": bounded_tail,
                     })
                 except Exception:
                     pass
@@ -564,10 +572,13 @@ async def _run_subprocess_streaming(
         timed_out = True
         if progress_cb:
             try:
+                bounded_tail, _ = redact_sensitive_output(
+                    "\n".join(list(tail))
+                )
                 await progress_cb({
                     "elapsed_s": round(time.time() - started, 1),
                     "timeout_seconds": timeout,
-                    "tail": "\n".join(list(tail)),
+                    "tail": bounded_tail,
                     "state": "timing_out",
                 })
             except Exception:
@@ -636,6 +647,7 @@ async def _run_direct_bash(
     invocation_id: str,
     execution_mode: ExecutionMode = ExecutionMode.SANDBOXED,
     preserve_logical_cwd: bool = True,
+    workspace_writable: bool = True,
 ) -> BashExecutionResult:
     canonical = os.path.realpath(cwd)
     state_key = (
@@ -685,17 +697,20 @@ async def _run_direct_bash(
                     runtime_environment[key] = git_bash_path(
                         Path(runtime_environment[key])
                     )
-            sandbox_argv = [
+            direct_argv = [
                 bash_executable,
                 "--noprofile",
                 "--norc",
                 "-c",
                 _isolated_shell_script(),
             ]
-            child_env = os.environ.copy()
-            child_env.update({
-                key: str(value) for key, value in runtime_environment.items()
-            })
+            sandbox_argv, child_env = host_command_boundary(
+                direct_argv,
+                cwd=run_cwd,
+                workspace_writable=workspace_writable,
+                environment=os.environ.copy(),
+                runtime_environment=runtime_environment,
+            )
         else:
             sandbox_argv, child_env = sandbox_command(
                 [
@@ -706,7 +721,11 @@ async def _run_direct_bash(
                     _isolated_shell_script(),
                 ],
                 cwd=run_cwd,
-                writable_paths=(canonical, temp_dir),
+                writable_paths=(
+                    (canonical, temp_dir)
+                    if workspace_writable
+                    else (temp_dir,)
+                ),
                 environment=env,
                 runtime_environment=runtime_environment,
                 timeout_seconds=timeout,

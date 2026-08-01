@@ -20,12 +20,12 @@ from __future__ import annotations
 
 SANDBOX_SHELL_AUTHORITY = """\
 ## Process authority: sandboxed workspace shell
-The user granted the safe workspace shell for this run. `run_sandbox_command` and `run_python` execute in an isolated Linux namespace with no network, a read-only host root, a minimal secret-free environment, and resource limits. The immutable ExecutionRoot is the only writable root; without a selection it is an explicitly configured default or an ephemeral workspace, never the server process directory or Odysseus checkout. Network, credential helpers, Docker, host services, keyrings, SSH agents, and writes outside that root are unavailable. There is no host fallback."""
+The user granted the safe workspace shell for this run. `run_sandbox_command` and `run_python` execute in an isolated Linux namespace with no network, a read-only host root, a minimal secret-free environment, common workspace secrets masked, output redaction, and resource limits. The immutable ExecutionRoot is read-only unless runtime diagnostics separately say `workspace_write_granted: true`; selecting a repository never grants mutation. Without a selection the root is an explicitly configured default or an ephemeral workspace, never the server process directory or Odysseus checkout. Network, credential helpers, Docker, host services, keyrings, SSH agents, and writes outside an independently granted root are unavailable. There is no host fallback."""
 
 
 HOST_SHELL_AUTHORITY = """\
 ## Process authority: full host shell
-The user explicitly granted Full host shell for this run. `run_host_command` and `run_python` use the exact ExecutionRoot disclosed in runtime diagnostics. This is powerful authority, not a sandbox, but it is not automatic approval for destructive filesystem actions, Git remote writes, privilege escalation, package installation, service/container mutation, credential access, or consequential network writes; those effects require a separate approval decision. Never print credentials, and never infer a command is read-only when its effects are opaque."""
+The user explicitly granted Full host shell for this run. `run_host_command` and `run_python` use the exact ExecutionRoot disclosed in runtime diagnostics. Host process authority does not grant workspace mutation: unless diagnostics separately say `workspace_write_granted: true`, the runtime overlays that root read-only. This is powerful host authority, not a confidentiality sandbox, but it is not automatic approval for destructive filesystem actions, Git remote writes, privilege escalation, package installation, service/container mutation, credential access, or consequential network writes; those effects require a separate approval decision. Never print credentials, and never infer a command is read-only when its effects are opaque."""
 
 
 SHELL_GUIDANCE = """\

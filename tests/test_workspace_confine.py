@@ -97,7 +97,10 @@ def test_no_binding_uses_default_roots():
 
 @pytest.mark.asyncio
 async def test_read_write_edit_confined_e2e(ws, admin):
-    _, r = await execute_tool_block(_block("write_file", "note.txt\nhello"), owner="a", workspace=ws)
+    _, r = await execute_tool_block(
+        _block("write_file", "note.txt\nhello"),
+        owner="a", workspace=ws, workspace_write=True,
+    )
     assert r["exit_code"] == 0 and os.path.isfile(os.path.join(ws, "note.txt"))
     _, r = await execute_tool_block(_block("read_file", "note.txt"), owner="a", workspace=ws)
     assert r["exit_code"] == 0 and r["output"] == "hello"
@@ -106,7 +109,7 @@ async def test_read_write_edit_confined_e2e(ws, admin):
         f.write("foo bar")
     _, r = await execute_tool_block(
         _block("edit_file", json.dumps({"path": "f.txt", "old_string": "foo", "new_string": "baz"})),
-        owner="a", workspace=ws,
+        owner="a", workspace=ws, workspace_write=True,
     )
     assert r["exit_code"] == 0
     with open(os.path.join(ws, "f.txt")) as f:
@@ -120,7 +123,10 @@ async def test_read_write_edit_confined_e2e(ws, admin):
     _, r = await execute_tool_block(_block("read_file", of), owner="a", workspace=ws)
     assert r["exit_code"] == 1 and "outside the execution root" in r["error"]
     escape = os.path.join(outside, "_esc.txt")
-    _, r = await execute_tool_block(_block("write_file", f"{escape}\nx"), owner="a", workspace=ws)
+    _, r = await execute_tool_block(
+        _block("write_file", f"{escape}\nx"),
+        owner="a", workspace=ws, workspace_write=True,
+    )
     assert r["exit_code"] == 1 and "outside the execution root" in r["error"]
     assert not os.path.exists(escape)
 
@@ -139,7 +145,10 @@ async def test_apply_patch_confined_e2e(ws, admin):
 *** Add File: added.txt
 +new file
 *** End Patch"""
-    _, r = await execute_tool_block(_block("apply_patch", patch), owner="a", workspace=ws)
+    _, r = await execute_tool_block(
+        _block("apply_patch", patch),
+        owner="a", workspace=ws, workspace_write=True,
+    )
     assert r["exit_code"] == 0
     assert r["diff"]["added"] >= 2
     with open(os.path.join(ws, "patchme.txt")) as f:
@@ -157,7 +166,10 @@ async def test_apply_patch_confined_e2e(ws, admin):
 -x
 +y
 *** End Patch"""
-    _, r = await execute_tool_block(_block("apply_patch", escape_patch), owner="a", workspace=ws)
+    _, r = await execute_tool_block(
+        _block("apply_patch", escape_patch),
+        owner="a", workspace=ws, workspace_write=True,
+    )
     assert r["exit_code"] == 1 and "outside the execution root" in r["error"]
     with open(outside_file) as f:
         assert f.read() == "x\n"
@@ -299,7 +311,8 @@ async def test_local_bash_dispatch_starts_in_selected_workspace_e2e(ws, admin):
 async def test_get_workspace_tool(ws, admin):
     _, r = await execute_tool_block(_block("get_workspace", ""), owner="a", workspace=ws)
     assert r["exit_code"] == 0 and r["output"].startswith(ws)
-    assert "only writable workspace" in r["output"]
+    assert "confined execution workspace" in r["output"]
+    assert "workspace_write_granted=false" in r["output"]
     _, r = await execute_tool_block(_block("get_workspace", ""), owner="a")  # none active
     assert r["exit_code"] == 0
     assert r["source"] == "ephemeral_workspace"
@@ -320,7 +333,10 @@ async def test_binding_does_not_leak(ws, admin):
 # must still surface the file tools, otherwise the agent says it has no file
 # access (the bug this guards against).
 
-def _sent_tool_names(monkeypatch, *, workspace, message="look at the local project", force_keyword_fallback=False):
+def _sent_tool_names(
+    monkeypatch, *, workspace, message="look at the local project",
+    force_keyword_fallback=False, workspace_write=False,
+):
     import asyncio
     import src.agent_loop as al
 
@@ -347,10 +363,26 @@ def _sent_tool_names(monkeypatch, *, workspace, message="look at the local proje
     monkeypatch.setattr(al, "stream_llm_with_fallback", _fake_stream, raising=False)
 
     async def _run():
+        execution_context = None
+        if workspace_write:
+            from src.agent.runtime_v2.authority import prepare_execution_context
+            from src.agent.runtime_v2.contracts import RunBudgets
+            from src.agent.tools.bootstrap import TOOL_REGISTRY
+
+            execution_context, _ = prepare_execution_context(
+                owner_id="admin",
+                session_id="workspace-tool-selection",
+                requested_mode="disabled",
+                selected_workspace=workspace,
+                budgets=RunBudgets(max_rounds=1, max_tool_calls=8),
+                tool_catalog_revision=TOOL_REGISTRY.revision,
+                workspace_write=True,
+            )
         gen = al.stream_agent_loop(
             "https://api.openai.com/v1", "gpt-test",
             [{"role": "user", "content": message}],
             max_rounds=1, relevant_tools=None, owner="admin", workspace=workspace,
+            execution_context=execution_context,
         )
         return [c async for c in gen]
 
@@ -377,6 +409,7 @@ def test_workspace_coding_request_surfaces_edit_and_verify_tools(monkeypatch):
         workspace="/tmp",
         message="fix the failing frontend test in this repo",
         force_keyword_fallback=True,
+        workspace_write=True,
     )
     assert "workspace_context" in names
     assert "read_files" in names

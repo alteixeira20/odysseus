@@ -41,7 +41,12 @@ from core.platform_compat import (
 
 from src.constants import BG_JOBS_DIR, BG_JOBS_FILE
 from src.execution_policy import ExecutionMode, normalize_execution_mode
-from src.process_sandbox import minimal_environment, sandbox_command
+from src.process_sandbox import (
+    host_command_boundary,
+    minimal_environment,
+    redact_sensitive_output,
+    sandbox_command,
+)
 
 _JOBS_DIR = Path(BG_JOBS_DIR)
 _STORE = Path(BG_JOBS_FILE)
@@ -101,7 +106,11 @@ def launch(
     outlives the request/stream that started it.
     """
     context_snapshot: Dict[str, Any] = {}
+    workspace_write_granted = False
     if execution_context is not None:
+        from src.agent.runtime_v2.contracts import Capability
+        from src.agent.runtime_v2.workspace_service import WORKSPACE_SERVICE
+
         if str(session_id) != str(execution_context.session_id):
             raise ValueError("background session does not match execution context")
         if str(owner or "") != str(execution_context.owner_id):
@@ -110,6 +119,9 @@ def launch(
         if canonical_cwd != execution_context.execution_root.path:
             raise ValueError("background root does not match execution context")
         mode = execution_context.execution_mode
+        workspace_write_granted = execution_context.authority_grant.allows(
+            Capability.WORKSPACE_WRITE
+        )
         max_runtime_s = max(
             1,
             min(
@@ -119,10 +131,16 @@ def launch(
         )
         context_snapshot = {
             "run_id": execution_context.run_id,
+            "conversation_id": execution_context.conversation_id,
+            "turn_id": execution_context.turn_id,
+            "candidate_id": execution_context.candidate_id,
             "execution_target": mode.value,
             "execution_root": execution_context.execution_root.path,
-            "workspace_revision": execution_context.execution_root.workspace_revision,
+            "workspace_revision": WORKSPACE_SERVICE.revision(
+                execution_context.execution_root.path
+            ),
             "authority_revision": execution_context.authority_grant.revision,
+            "workspace_write_granted": workspace_write_granted,
             "resource_limits": {
                 "wall_clock_seconds": execution_context.budgets.wall_clock_seconds,
                 "idle_seconds": execution_context.budgets.idle_seconds,
@@ -171,6 +189,11 @@ def launch(
             environment={},
             runtime_environment={"ODY_COMMAND_B64": encoded},
             timeout_seconds=max_runtime_s,
+            writable_paths=(
+                (os.path.realpath(cwd),)
+                if workspace_write_granted
+                else ()
+            ),
         )
         lp, xp = (shlex.quote(git_bash_path(p)) for p in (log_path, exit_path))
         script_path = _JOBS_DIR / f"{job_id}.sh"
@@ -199,11 +222,15 @@ def launch(
             'eval "$(printf "%s" "$ODY_COMMAND_B64" | base64 -d)"\n',
             encoding="utf-8",
         )
-        argv = [bash, str(script_path)]
+        argv, child_environment = host_command_boundary(
+            [bash, str(script_path)],
+            cwd=os.path.realpath(cwd),
+            workspace_writable=workspace_write_granted,
+            environment=os.environ.copy(),
+        )
         log_handle = log_path.open("ab")
         popen_stdout = log_handle
         popen_stderr = subprocess.STDOUT
-        child_environment = os.environ.copy()
     else:
         raise RuntimeError(
             "Safe workspace background shell requires Linux Bubblewrap; "
@@ -230,7 +257,7 @@ def launch(
         "session_id": session_id,
         "owner": owner,
         "execution_mode": mode.value,
-        "command": command,
+        "command": redact_sensitive_output(command)[0],
         "status": "running",       # running | done | failed
         "pid": proc.pid,
         "started_at": started_at,
@@ -254,6 +281,7 @@ def _read_output(rec: Dict[str, Any]) -> str:
         txt = Path(rec["log_path"]).read_text(encoding="utf-8", errors="replace")
     except Exception:
         return ""
+    txt, _ = redact_sensitive_output(txt)
     if len(txt) > _MAX_OUTPUT_CHARS:
         # Keep head + tail — the interesting bits are usually at both ends.
         head = txt[: _MAX_OUTPUT_CHARS // 2]
@@ -288,6 +316,7 @@ def refresh() -> Dict[str, Dict[str, Any]]:
         if rec.get("status") != "running":
             continue
         exit_path = Path(rec.get("exit_path", ""))
+        completed_now = False
         if exit_path.exists():
             try:
                 code = int(exit_path.read_text(encoding="utf-8", errors="replace").strip() or "1")
@@ -297,6 +326,7 @@ def refresh() -> Dict[str, Dict[str, Any]]:
             rec["status"] = "done" if code == 0 else "failed"
             rec["ended_at"] = now
             changed = True
+            completed_now = True
         elif (now - rec.get("started_at", now)) > rec.get("max_runtime_s", DEFAULT_MAX_RUNTIME_S):
             # Runaway / stuck — reap it but STILL surface a follow-up.
             _kill(rec.get("pid"))
@@ -305,6 +335,7 @@ def refresh() -> Dict[str, Dict[str, Any]]:
             rec["ended_at"] = now
             rec["timed_out"] = True
             changed = True
+            completed_now = True
         elif not _pid_alive(rec.get("pid")) and not exit_path.exists():
             # Process vanished without writing an exit code (killed, OOM,
             # crash). Don't leave it "running" forever.
@@ -313,6 +344,23 @@ def refresh() -> Dict[str, Dict[str, Any]]:
             rec["ended_at"] = now
             rec["died"] = True
             changed = True
+            completed_now = True
+        if completed_now and rec.get("execution_root") and rec.get("workspace_revision"):
+            try:
+                from src.agent.runtime_v2.workspace_service import WORKSPACE_SERVICE
+
+                observed = WORKSPACE_SERVICE.revision(rec["execution_root"])
+                if observed != rec["workspace_revision"]:
+                    rec["workspace_revision_after"] = WORKSPACE_SERVICE.note_external_mutation(
+                        rec["execution_root"]
+                    )
+                    rec["workspace_mutated"] = True
+                    if not rec.get("workspace_write_granted"):
+                        rec["status"] = "failed"
+                        rec["boundary_violation"] = True
+                        rec["exit_code"] = -1
+            except Exception:
+                rec["workspace_revision_unavailable"] = True
     if _prune(jobs, now):
         changed = True
     if changed:

@@ -434,17 +434,31 @@ async def _plan(arguments: Mapping[str, Any], context: AgentExecutionContext) ->
 
 
 async def _workspace_context(arguments: Mapping[str, Any], context: AgentExecutionContext) -> ToolResult:
+    workspace_write_granted = context.authority_grant.allows(
+        Capability.WORKSPACE_WRITE
+    )
     return _success(
         "workspace_context",
         {
             "path": context.execution_root.path,
             "source": context.execution_root.source.value,
-            "writable": context.execution_root.writable,
+            "writable": workspace_write_granted,
+            "host_writable": context.execution_root.writable,
+            "workspace_write_granted": workspace_write_granted,
+            "capabilities": sorted(
+                capability.value
+                for capability in context.authority_grant.capabilities
+            ),
             "workspace_revision": WORKSPACE_SERVICE.revision(context.execution_root.path),
+            "workspace_snapshot_policy": (
+                "git_head_status_with_bounded_dirty_and_untracked_content; "
+                "ignored_dependency_artifacts_are_visible_but_outside_the_revision"
+            ),
             "execution_mode": context.execution_mode.value,
             "text": (
                 f"Execution root: {context.execution_root.path} "
-                f"({context.execution_root.source.value}, {context.execution_mode.value})"
+                f"({context.execution_root.source.value}, {context.execution_mode.value}, "
+                f"workspace_write={'granted' if workspace_write_granted else 'denied'})"
             ),
         },
         backend="workspace_service",
@@ -667,6 +681,12 @@ def _expose_sandbox(context: Optional[AgentExecutionContext]) -> bool:
     )
 
 
+def _expose_workspace_write(context: Optional[AgentExecutionContext]) -> bool:
+    return context is None or bool(
+        context.authority_grant.allows(Capability.WORKSPACE_WRITE)
+    )
+
+
 def _expose_host(context: Optional[AgentExecutionContext]) -> bool:
     return bool(
         context is not None
@@ -753,6 +773,9 @@ def build_runtime_v2_definitions() -> dict[str, ToolDefinition]:
         "continuation": {"type": "string"},
         "offset": {"type": "integer", "minimum": 0, "description": "Deprecated alias pagination offset"},
         "expected_workspace_revision": {"type": "string"},
+        "max_scan_entries": {"type": "integer", "minimum": 1, "maximum": 100000},
+        "scan_timeout_seconds": {"type": "number", "minimum": 0.05, "maximum": 10},
+        "max_scan_bytes": {"type": "integer", "minimum": 65536, "maximum": 4194304},
     }
     command_schema = object_schema(
         {
@@ -875,7 +898,8 @@ def build_runtime_v2_definitions() -> dict[str, ToolDefinition]:
             }, ("operations",)), handler=_patch_workspace, category=ToolCategory.EDITING, risk=ToolRisk.LOCAL_WRITE,
             aliases=("write_file", "edit_file", "apply_patch"),
             required={Capability.WORKSPACE_WRITE}, effects=resolve_workspace_patch_effects,
-            approval=DefinitionApprovalPolicy.SENSITIVE_EFFECTS, adapter=_adapt_patch,
+            approval=DefinitionApprovalPolicy.SENSITIVE_EFFECTS,
+            exposure=_expose_workspace_write, adapter=_adapt_patch,
             mutates=True,
         ),
         _definition(

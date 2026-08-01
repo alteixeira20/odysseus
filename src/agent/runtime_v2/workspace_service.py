@@ -8,8 +8,11 @@ import hashlib
 import json
 import os
 import shutil
+import stat
+import subprocess
 import tempfile
 import threading
+import time
 import uuid
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Optional, Sequence
@@ -72,12 +75,48 @@ class WorkspaceService:
             "id_ecdsa",
             "known_hosts",
             "credentials",
+            "credentials.json",
+            "service-account.json",
+            ".npmrc",
+            ".pypirc",
+            ".git-credentials",
+            ".envrc",
+            "secrets.json",
+            "secrets.yaml",
+            "secrets.yml",
         }
     )
+    _SENSITIVE_SEARCH_FILENAMES = frozenset({".env"})
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._revisions: dict[str, int] = {}
+        self._root_locks: dict[str, threading.RLock] = {}
+        configured_journal_base = os.environ.get("ODYSSEUS_RUNTIME_JOURNAL_DIR")
+        if configured_journal_base:
+            self._journal_bases = (
+                os.path.realpath(configured_journal_base),
+            )
+        else:
+            # A workspace may legitimately be rooted at /tmp (for example a
+            # disposable checkout).  Keep several process-external candidates
+            # so such a workspace can never forge its own recovery journal.
+            xdg_state = os.environ.get("XDG_STATE_HOME") or os.path.join(
+                os.path.expanduser("~"), ".local", "state"
+            )
+            self._journal_bases = tuple(
+                dict.fromkeys(
+                    os.path.realpath(path)
+                    for path in (
+                        os.path.join(xdg_state, "odysseus-runtime-v2-journals"),
+                        "/var/tmp/odysseus-runtime-v2-journals",
+                        os.path.join(
+                            tempfile.gettempdir(),
+                            "odysseus-runtime-v2-journals",
+                        ),
+                    )
+                )
+            )
 
     @staticmethod
     def _root(root: str | os.PathLike[str]) -> str:
@@ -91,7 +130,162 @@ class WorkspaceService:
         with self._lock:
             number = self._revisions.setdefault(canonical, 1)
         root_id = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
-        return f"{root_id}.{number}"
+        fingerprint, stable = self._workspace_fingerprint(canonical)
+        strength = "strong" if stable else "partial"
+        return f"{root_id}.{number}.{strength}.{fingerprint[:20]}"
+
+    @staticmethod
+    def revision_is_strong(revision: str) -> bool:
+        return ".strong." in str(revision or "")
+
+    def _root_lock(self, root: str) -> threading.RLock:
+        canonical = self._root(root)
+        with self._lock:
+            return self._root_locks.setdefault(canonical, threading.RLock())
+
+    def note_external_mutation(self, root: str) -> str:
+        """Advance the process generation after a granted shell changed files."""
+
+        canonical = self._root(root)
+        return self._bump_revision(canonical)
+
+    def _workspace_fingerprint(self, root: str) -> tuple[str, bool]:
+        """Hash Git identity plus dirty-file content; bounded metadata fallback."""
+
+        material = hashlib.sha256()
+        try:
+            completed = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    root,
+                    "status",
+                    "--porcelain=v1",
+                    "-z",
+                    "--untracked-files=all",
+                    "--ignored=no",
+                    "--",
+                    ".",
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=2,
+                check=False,
+                env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LC_ALL": "C"},
+            )
+        except (OSError, subprocess.SubprocessError):
+            completed = None
+        if completed is not None and completed.returncode == 0:
+            status_bytes = completed.stdout
+            material.update(b"git\0")
+            material.update(status_bytes)
+            try:
+                head = subprocess.run(
+                    ["git", "-C", root, "rev-parse", "HEAD"],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    timeout=1,
+                    check=False,
+                    env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LC_ALL": "C"},
+                )
+            except (OSError, subprocess.SubprocessError):
+                return material.hexdigest(), False
+            material.update(head.stdout.strip())
+            records = [item for item in status_bytes.split(b"\0") if item]
+            if len(records) > 20_000 or len(status_bytes) > 4 * 1024 * 1024:
+                return material.hexdigest(), False
+            content_bytes = 0
+            content_budget = 16 * 1024 * 1024
+            for raw in records:
+                text = raw.decode("utf-8", errors="surrogateescape")
+                relative = text[3:] if len(text) > 3 else ""
+                if not relative:
+                    continue
+                path = os.path.realpath(os.path.join(root, relative))
+                try:
+                    if os.path.commonpath((root, path)) != root:
+                        continue
+                    info = os.stat(path, follow_symlinks=False)
+                except (OSError, ValueError):
+                    material.update(relative.encode("utf-8", errors="surrogateescape"))
+                    material.update(b"\0missing")
+                    continue
+                material.update(relative.encode("utf-8", errors="surrogateescape"))
+                material.update(
+                    f"\0{info.st_mode}:{info.st_size}:{info.st_mtime_ns}:{info.st_ino}".encode()
+                )
+                if stat.S_ISREG(info.st_mode):
+                    sample_bytes = (
+                        info.st_size
+                        if info.st_size <= 4 * 1024 * 1024
+                        else 128 * 1024
+                    )
+                    if content_bytes + sample_bytes > content_budget:
+                        return material.hexdigest(), False
+                    try:
+                        with open(path, "rb") as handle:
+                            if info.st_size <= 4 * 1024 * 1024:
+                                material.update(handle.read())
+                            else:
+                                material.update(handle.read(64 * 1024))
+                                handle.seek(max(info.st_size - 64 * 1024, 0))
+                                material.update(handle.read(64 * 1024))
+                        content_bytes += sample_bytes
+                    except OSError:
+                        return material.hexdigest(), False
+            return material.hexdigest(), True
+
+        examined = 0
+        content_bytes = 0
+        content_budget = 8 * 1024 * 1024
+        for current, directories, files in os.walk(root, followlinks=False):
+            directories[:] = sorted(
+                item
+                for item in directories
+                if item.casefold() not in self.SKIP_DIRECTORIES
+                and item != self.INTERNAL_DIRECTORY
+            )
+            for name in sorted(directories + files):
+                examined += 1
+                if examined > 20_000:
+                    return material.hexdigest(), False
+                path = os.path.join(current, name)
+                try:
+                    info = os.stat(path, follow_symlinks=False)
+                except OSError:
+                    continue
+                relative = os.path.relpath(path, root).replace(os.sep, "/")
+                material.update(
+                    f"{relative}\0{info.st_mode}:{info.st_size}:{info.st_mtime_ns}:{info.st_ino}\0".encode(
+                        "utf-8", errors="surrogateescape"
+                    )
+                )
+                if stat.S_ISREG(info.st_mode):
+                    if content_bytes + info.st_size > content_budget:
+                        return material.hexdigest(), False
+                    try:
+                        with open(path, "rb") as handle:
+                            material.update(handle.read())
+                        content_bytes += info.st_size
+                    except OSError:
+                        return material.hexdigest(), False
+        return material.hexdigest(), True
+
+    def transaction_parent(self, root: str) -> str:
+        canonical = self._root(root)
+        root_id = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        for journal_base in self._journal_bases:
+            try:
+                if os.path.commonpath((canonical, journal_base)) == canonical:
+                    continue
+            except ValueError:
+                pass
+            return os.path.join(journal_base, root_id, "transactions")
+        raise WorkspacePathError(
+            "no recovery-journal location is outside the selected workspace"
+        )
 
     def _bump_revision(self, root: str) -> str:
         with self._lock:
@@ -122,6 +316,8 @@ class WorkspaceService:
             filename in cls.SENSITIVE_BASENAMES
             or filename == ".env"
             or filename.startswith(".env.")
+            or filename.endswith((".pem", ".key", ".p12", ".pfx"))
+            or ("private" in filename and "key" in filename)
         )
 
     @classmethod
@@ -171,6 +367,25 @@ class WorkspaceService:
 
     def relative(self, root: str, path: str) -> str:
         return os.path.relpath(path, self._root(root)).replace(os.sep, "/")
+
+    def _assert_target_still_confined(self, root: str, path: str) -> None:
+        """Recheck canonical identity immediately before a filesystem effect."""
+
+        canonical_root = self._root(root)
+        resolved = os.path.realpath(path)
+        try:
+            inside = os.path.commonpath((canonical_root, resolved)) == canonical_root
+        except ValueError:
+            inside = False
+        if not inside or resolved != path:
+            raise WorkspacePathError(
+                "workspace target changed identity during the transaction"
+            )
+        relative = self.relative(canonical_root, path)
+        if self._is_sensitive_relative(relative):
+            raise WorkspacePathError(
+                f"workspace target became sensitive during the transaction: {relative}"
+            )
 
     @staticmethod
     def sha256_bytes(data: bytes) -> str:
@@ -265,6 +480,8 @@ class WorkspaceService:
         arguments: Mapping[str, Any],
         offset: int,
         total: int,
+        cursor: Optional[str] = None,
+        remaining: Optional[int] = None,
     ) -> Optional[dict[str, Any]]:
         if offset >= total:
             return None
@@ -274,9 +491,73 @@ class WorkspaceService:
                 "revision": revision,
                 "query": self._query_identity(kind, arguments),
                 "offset": offset,
+                "cursor": cursor,
             }
         )
-        return {"token": token, "offset": offset, "remaining": total - offset}
+        return {
+            "token": token,
+            "offset": offset,
+            "remaining": total - offset if remaining is None else remaining,
+        }
+
+    def _continuation_cursor(
+        self,
+        *,
+        kind: str,
+        revision: str,
+        arguments: Mapping[str, Any],
+    ) -> Optional[str]:
+        token = arguments.get("continuation")
+        if not token:
+            return None
+        decoded = self._decode_token(str(token))
+        if (
+            decoded.get("kind") != kind
+            or decoded.get("revision") != revision
+            or decoded.get("query") != self._query_identity(kind, arguments)
+        ):
+            raise WorkspaceConflict(
+                f"continuation no longer matches stable {kind} query or workspace revision"
+            )
+        cursor = decoded.get("cursor")
+        return str(cursor) if cursor else None
+
+    def _iter_workspace_entries(self, base: str):
+        """Yield a bounded-consumer-friendly lexical depth-first view.
+
+        Directories are yielded before their children so callers can charge
+        traversal work to a scan budget without first materializing the tree.
+        """
+
+        def entries(path: str):
+            try:
+                return iter(sorted(os.scandir(path), key=lambda item: item.name))
+            except OSError:
+                return iter(())
+
+        stack = [entries(base)]
+        while stack:
+            try:
+                entry = next(stack[-1])
+            except StopIteration:
+                stack.pop()
+                continue
+            path = entry.path
+            try:
+                is_symlink = entry.is_symlink()
+                is_directory = entry.is_dir(follow_symlinks=False)
+                is_file = entry.is_file(follow_symlinks=False)
+            except OSError:
+                yield path, False
+                continue
+            yield path, bool(is_file and not is_symlink)
+            if (
+                is_directory
+                and not is_symlink
+                and entry.name.casefold() not in self.SKIP_DIRECTORIES
+                and entry.name != self.INTERNAL_DIRECTORY
+            ):
+                stack.append(entries(path))
 
     def find_files(self, root: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
         canonical_root = self._root(root)
@@ -292,60 +573,98 @@ class WorkspaceService:
         excludes = arguments.get("exclude") or []
         if isinstance(excludes, str):
             excludes = [excludes]
-        files: list[dict[str, Any]] = []
-        for current, directories, names in os.walk(base, followlinks=False):
-            directories[:] = sorted(
-                directory
-                for directory in directories
-                if directory.casefold() not in self.SKIP_DIRECTORIES
-                and directory != self.INTERNAL_DIRECTORY
-                and not os.path.islink(os.path.join(current, directory))
-            )
-            for name in sorted(names):
-                path = os.path.join(current, name)
-                if os.path.islink(path) or not os.path.isfile(path):
-                    continue
-                relative = self.relative(canonical_root, path)
-                base_relative = self.relative(base, path)
-                if self._is_sensitive_relative(relative):
-                    continue
-                if not any(
-                    self._path_matches(relative, pattern)
-                    or self._path_matches(base_relative, pattern)
-                    for pattern in patterns
-                ):
-                    continue
-                if any(self._path_matches(relative, pattern) for pattern in excludes):
-                    continue
-                stat = os.stat(path, follow_symlinks=False)
-                files.append(
-                    {
-                        "path": relative,
-                        "size": stat.st_size,
-                        "sha256": self.file_sha256(path),
-                    }
-                )
-        files.sort(key=lambda item: item["path"])
         offset = self._continuation_offset(
             kind="find_files",
             root=canonical_root,
             revision=revision,
             arguments=arguments,
         )
-        limit = max(1, min(int(arguments.get("max_results") or 200), 500))
-        page = files[offset : offset + limit]
-        continuation = self._next_continuation(
+        cursor = self._continuation_cursor(
             kind="find_files",
             revision=revision,
             arguments=arguments,
-            offset=offset + len(page),
-            total=len(files),
         )
+        limit = max(1, min(int(arguments.get("max_results") or 200), 500))
+        scan_budget = max(
+            1,
+            min(int(arguments.get("max_scan_entries") or 20_000), 100_000),
+        )
+        time_budget = max(
+            0.05,
+            min(float(arguments.get("scan_timeout_seconds") or 2.0), 10.0),
+        )
+        started = time.monotonic()
+        files: list[dict[str, Any]] = []
+        scanned = 0
+        matched = offset if cursor else 0
+        budget_exhausted = False
+        has_more = False
+        last_cursor = cursor
+        stop = False
+        for path, is_file in self._iter_workspace_entries(base):
+            relative = self.relative(canonical_root, path)
+            if cursor and relative <= cursor:
+                continue
+            if scanned >= scan_budget or time.monotonic() - started > time_budget:
+                budget_exhausted = True
+                stop = True
+                break
+            scanned += 1
+            if not is_file:
+                last_cursor = relative
+                continue
+            base_relative = self.relative(base, path)
+            if self._is_sensitive_relative(relative):
+                last_cursor = relative
+                continue
+            if not any(
+                self._path_matches(relative, pattern)
+                or self._path_matches(base_relative, pattern)
+                for pattern in patterns
+            ):
+                last_cursor = relative
+                continue
+            if any(self._path_matches(relative, pattern) for pattern in excludes):
+                last_cursor = relative
+                continue
+            if not cursor and matched < offset:
+                matched += 1
+                last_cursor = relative
+                continue
+            if len(files) >= limit:
+                has_more = True
+                stop = True
+                break
+            file_stat = os.stat(path, follow_symlinks=False)
+            files.append(
+                {
+                    "path": relative,
+                    "size": file_stat.st_size,
+                    "sha256": self.file_sha256(path),
+                }
+            )
+            last_cursor = relative
+        scan_complete = not stop
+        continuation = None
+        if has_more or budget_exhausted:
+            continuation = self._next_continuation(
+                kind="find_files",
+                revision=revision,
+                arguments=arguments,
+                offset=offset + len(files),
+                total=offset + len(files) + (1 if has_more else 0),
+                cursor=last_cursor,
+                remaining=None if budget_exhausted else 1,
+            )
         return {
-            "files": page,
+            "files": files,
             "workspace_revision": revision,
             "continuation": continuation,
             "backend": "python_walk",
+            "scan_complete": scan_complete,
+            "budget_exhausted": budget_exhausted,
+            "scanned_entries": scanned,
+            "scan_budget_entries": scan_budget,
         }
 
     @staticmethod
@@ -357,7 +676,7 @@ class WorkspaceService:
         root: str,
         arguments: Mapping[str, Any],
         max_results: int,
-    ) -> list[dict[str, Any]]:
+    ) -> tuple[list[dict[str, Any]], bool, bool, Optional[int], int]:
         rg = self._rg_available()
         if not rg:
             raise FileNotFoundError("ripgrep unavailable")
@@ -366,8 +685,6 @@ class WorkspaceService:
             rg,
             "--json",
             "--no-messages",
-            "--sort",
-            "path",
             "--max-columns",
             "4096",
             "--max-columns-preview",
@@ -394,6 +711,25 @@ class WorkspaceService:
         for directory in sorted(self.SKIP_DIRECTORIES):
             argv.extend(("--glob", f"!{directory}/**"))
             argv.extend(("--glob", f"!**/{directory}/**"))
+        sensitive_names = set(self.SENSITIVE_BASENAMES) | set(
+            self._SENSITIVE_SEARCH_FILENAMES
+        )
+        for filename in sorted(sensitive_names):
+            argv.extend(("--glob", f"!{filename}"))
+            argv.extend(("--glob", f"!**/{filename}"))
+        for pattern in (
+            ".env.*",
+            "**/.env.*",
+            "*.pem",
+            "**/*.pem",
+            "*.key",
+            "**/*.key",
+            "*.p12",
+            "**/*.p12",
+            "*.pfx",
+            "**/*.pfx",
+        ):
+            argv.extend(("--glob", f"!{pattern}"))
         search_path = self.resolve(root, str(arguments.get("path") or "."), allow_missing=False)
         argv.append(search_path)
         from .process_service import PROCESS_SERVICE
@@ -401,9 +737,18 @@ class WorkspaceService:
         completed = PROCESS_SERVICE.run_workspace_search(
             argv,
             root=root,
-            timeout_seconds=30,
+            timeout_seconds=min(
+                float(arguments.get("scan_timeout_seconds") or 2.0),
+                10.0,
+            ),
+            max_output_bytes=min(
+                max(int(arguments.get("max_scan_bytes") or 1_048_576), 65_536),
+                4_194_304,
+            ),
         )
-        if completed["returncode"] not in (0, 1):
+        if completed["returncode"] not in (0, 1) and not (
+            completed.get("budget_exhausted") or completed.get("timed_out")
+        ):
             detail = completed["stderr"].decode("utf-8", errors="replace")[:500]
             raise WorkspaceError(
                 f"ripgrep failed: {detail or completed['returncode']}"
@@ -427,6 +772,9 @@ class WorkspaceService:
             except WorkspaceError:
                 continue
             line_text = str((data.get("lines") or {}).get("text") or "").rstrip("\r\n")
+            from src.process_sandbox import redact_sensitive_output
+
+            line_text, _ = redact_sensitive_output(line_text)
             submatches = data.get("submatches") or []
             column = int(submatches[0].get("start", 0)) + 1 if submatches else 1
             matches.append(
@@ -438,14 +786,20 @@ class WorkspaceService:
                     "kind": event_type,
                 }
             )
-        return matches
+        return (
+            matches,
+            bool(completed.get("budget_exhausted")),
+            bool(completed.get("timed_out")),
+            None,
+            len(completed["stdout"]),
+        )
 
     def _python_search_matches(
         self,
         root: str,
         arguments: Mapping[str, Any],
         max_results: int,
-    ) -> list[dict[str, Any]]:
+    ) -> tuple[list[dict[str, Any]], bool, bool, int, int]:
         import re
 
         pattern = str(arguments.get("pattern") or "")
@@ -463,21 +817,43 @@ class WorkspaceService:
             min(int(arguments.get("context_lines") or 0), 20),
         )
         matches: list[dict[str, Any]] = []
-        paths: list[str]
+        scan_budget = max(
+            1,
+            min(int(arguments.get("max_scan_entries") or 20_000), 100_000),
+        )
+        timeout = min(float(arguments.get("scan_timeout_seconds") or 2.0), 10.0)
+        started = time.monotonic()
+        scanned = 0
+        scanned_bytes = 0
+        byte_budget = min(
+            max(int(arguments.get("max_scan_bytes") or 1_048_576), 65_536),
+            4_194_304,
+        )
+        budget_exhausted = False
+        paths: Any
         if os.path.isfile(search_path):
-            paths = [search_path]
+            paths = iter((search_path,))
         else:
-            paths = []
-            for current, directories, names in os.walk(search_path, followlinks=False):
-                directories[:] = sorted(
-                    directory
-                    for directory in directories
-                    if directory.casefold() not in self.SKIP_DIRECTORIES
-                    and directory != self.INTERNAL_DIRECTORY
-                    and not os.path.islink(os.path.join(current, directory))
-                )
-                paths.extend(os.path.join(current, name) for name in sorted(names))
+            def iter_paths():
+                for current, directories, names in os.walk(
+                    search_path, followlinks=False
+                ):
+                    directories[:] = sorted(
+                        directory
+                        for directory in directories
+                        if directory.casefold() not in self.SKIP_DIRECTORIES
+                        and directory != self.INTERNAL_DIRECTORY
+                        and not os.path.islink(os.path.join(current, directory))
+                    )
+                    for name in sorted(names):
+                        yield os.path.join(current, name)
+
+            paths = iter_paths()
         for path in paths:
+            if scanned >= scan_budget or time.monotonic() - started > timeout:
+                budget_exhausted = True
+                break
+            scanned += 1
             if os.path.islink(path) or not os.path.isfile(path):
                 continue
             relative = self.relative(root, path)
@@ -491,8 +867,16 @@ class WorkspaceService:
             if any(self._path_matches(relative, item) for item in excludes):
                 continue
             try:
-                with open(path, "r", encoding="utf-8", errors="replace") as handle:
-                    lines = handle.read().splitlines()
+                remaining_bytes = byte_budget - scanned_bytes
+                if remaining_bytes <= 0:
+                    budget_exhausted = True
+                    break
+                with open(path, "rb") as handle:
+                    raw = handle.read(remaining_bytes + 1)
+                truncated_file = len(raw) > remaining_bytes
+                raw = raw[:remaining_bytes]
+                scanned_bytes += len(raw)
+                lines = raw.decode("utf-8", errors="replace").splitlines()
                 matched = {
                     index: expression.search(line)
                     for index, line in enumerate(lines)
@@ -520,10 +904,23 @@ class WorkspaceService:
                             "text": lines[current][:4096],
                             "kind": "match" if is_match else "context",
                         }
+                from src.process_sandbox import redact_sensitive_output
+
+                for item in emitted.values():
+                    item["text"], _ = redact_sensitive_output(item["text"])
                 matches.extend(emitted[index] for index in sorted(emitted))
+                if truncated_file:
+                    budget_exhausted = True
+                    break
             except OSError:
                 continue
-        return matches
+        return (
+            matches,
+            budget_exhausted,
+            time.monotonic() - started > timeout,
+            scanned,
+            scanned_bytes,
+        )
 
     def search_text(self, root: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
         canonical_root = self._root(root)
@@ -532,10 +929,28 @@ class WorkspaceService:
         )
         max_results = max(1, min(int(arguments.get("max_results") or 200), 500))
         try:
-            matches = self._ripgrep_matches(canonical_root, arguments, max_results)
+            if arguments.get("max_scan_entries") is not None:
+                raise FileNotFoundError("entry budget requires bounded walker")
+            (
+                matches,
+                byte_budget_exhausted,
+                timed_out,
+                scanned_entries,
+                scanned_bytes,
+            ) = self._ripgrep_matches(
+                canonical_root, arguments, max_results
+            )
             backend = "ripgrep"
         except FileNotFoundError:
-            matches = self._python_search_matches(canonical_root, arguments, max_results)
+            (
+                matches,
+                byte_budget_exhausted,
+                timed_out,
+                scanned_entries,
+                scanned_bytes,
+            ) = self._python_search_matches(
+                canonical_root, arguments, max_results
+            )
             backend = "python_fallback"
         matches.sort(
             key=lambda item: (
@@ -552,18 +967,30 @@ class WorkspaceService:
             arguments=arguments,
         )
         page = matches[offset : offset + max_results]
-        continuation = self._next_continuation(
-            kind="search_text",
-            revision=revision,
-            arguments=arguments,
-            offset=offset + len(page),
-            total=len(matches),
-        )
+        incomplete_scan = bool(byte_budget_exhausted or timed_out)
+        continuation = None
+        if offset + len(page) < len(matches):
+            continuation = self._next_continuation(
+                kind="search_text",
+                revision=revision,
+                arguments=arguments,
+                offset=offset + len(page),
+                total=max(len(matches), offset + len(page) + 1),
+            )
         return {
             "matches": page,
             "workspace_revision": revision,
             "continuation": continuation,
             "backend": backend,
+            "scan_complete": not incomplete_scan,
+            "budget_exhausted": bool(byte_budget_exhausted),
+            "timed_out": bool(timed_out),
+            "scanned_entries": scanned_entries,
+            "scanned_bytes": scanned_bytes,
+            "scan_output_budget_bytes": min(
+                max(int(arguments.get("max_scan_bytes") or 1_048_576), 65_536),
+                4_194_304,
+            ),
         }
 
     def read_files(self, root: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
@@ -710,7 +1137,13 @@ class WorkspaceService:
         root: str,
         operations: Sequence[Mapping[str, Any]],
         expected_hashes: Mapping[str, str],
-    ) -> tuple[dict[str, Optional[bytes]], list[dict[str, Any]]]:
+    ) -> tuple[
+        dict[str, Optional[bytes]],
+        dict[str, int],
+        dict[str, str],
+        dict[str, Optional[str]],
+        list[dict[str, Any]],
+    ]:
         expanded: list[Mapping[str, Any]] = []
         for operation in operations:
             if operation.get("type") == "structured_patch":
@@ -720,6 +1153,10 @@ class WorkspaceService:
             else:
                 expanded.append(operation)
         changes: dict[str, Optional[bytes]] = {}
+        modes: dict[str, int] = {}
+        before_hashes: dict[str, str] = {}
+        metadata_sources: dict[str, Optional[str]] = {}
+        claimed_targets: set[str] = set()
         summaries: list[dict[str, Any]] = []
         for operation in expanded:
             kind = str(operation.get("type") or "")
@@ -729,8 +1166,22 @@ class WorkspaceService:
                 destination_raw = str(operation.get("destination") or "")
                 source = self.resolve(root, source_raw, allow_missing=False)
                 destination = self.resolve(root, destination_raw)
+                for target, label in (
+                    (source, source_raw),
+                    (destination, destination_raw),
+                ):
+                    canonical_target = os.path.realpath(target)
+                    if canonical_target in claimed_targets:
+                        raise WorkspaceConflict(
+                            f"patch contains duplicate target: {label}"
+                        )
+                    claimed_targets.add(canonical_target)
                 if not os.path.isfile(source):
                     raise WorkspacePathError(f"move source is not a file: {source_raw}")
+                if os.path.exists(destination):
+                    raise WorkspaceConflict(
+                        f"move destination already exists: {destination_raw}"
+                    )
                 self._check_hash(
                     source,
                     str(operation.get("expected_sha256") or expected_hashes.get(source_raw))
@@ -742,11 +1193,24 @@ class WorkspaceService:
                     data = handle.read()
                 changes[source] = None
                 changes[destination] = data
+                before_hashes[source] = self.file_sha256(source)
+                before_hashes[destination] = "missing"
+                metadata_sources[source] = source
+                metadata_sources[destination] = source
+                modes[destination] = stat.S_IMODE(
+                    os.stat(source, follow_symlinks=False).st_mode
+                )
                 summaries.append(
                     {"type": "move", "source": source_raw, "destination": destination_raw}
                 )
                 continue
             path = self.resolve(root, raw_path, allow_missing=kind in {"create", "write"})
+            canonical_target = os.path.realpath(path)
+            if canonical_target in claimed_targets:
+                raise WorkspaceConflict(
+                    f"patch contains duplicate target: {raw_path}"
+                )
+            claimed_targets.add(canonical_target)
             expected = operation.get("expected_sha256") or expected_hashes.get(raw_path)
             self._check_hash(path, str(expected) if expected is not None else None, raw_path)
             exists = os.path.exists(path)
@@ -784,6 +1248,14 @@ class WorkspaceService:
             else:
                 raise WorkspaceError(f"unsupported patch operation: {kind}")
             changes[path] = new
+            before_hashes[path] = self.sha256_bytes(old) if exists else "missing"
+            metadata_sources[path] = path if exists else None
+            if new is not None:
+                modes[path] = (
+                    stat.S_IMODE(os.stat(path, follow_symlinks=False).st_mode)
+                    if exists
+                    else 0o644
+                )
             summaries.append(
                 {
                     "type": kind,
@@ -793,7 +1265,7 @@ class WorkspaceService:
                     "diff": self._diff(raw_path, old, new or b""),
                 }
             )
-        return changes, summaries
+        return changes, modes, before_hashes, metadata_sources, summaries
 
     @staticmethod
     def _fsync_directory(path: str) -> None:
@@ -807,6 +1279,11 @@ class WorkspaceService:
             os.close(descriptor)
 
     def recover_transactions(self, root: str) -> list[dict[str, Any]]:
+        canonical_root = self._root(root)
+        with self._root_lock(canonical_root):
+            return self._recover_transactions_locked(canonical_root)
+
+    def _recover_transactions_locked(self, root: str) -> list[dict[str, Any]]:
         """Recover prepared journals and clean completed journals.
 
         A manifest is fsynced before the first target replacement. If the
@@ -817,9 +1294,7 @@ class WorkspaceService:
         """
 
         canonical_root = self._root(root)
-        transaction_parent = os.path.join(
-            canonical_root, self.INTERNAL_DIRECTORY, "transactions"
-        )
+        transaction_parent = self.transaction_parent(canonical_root)
         if not os.path.isdir(transaction_parent):
             return []
         recovered: list[dict[str, Any]] = []
@@ -891,7 +1366,10 @@ class WorkspaceService:
                         ):
                             raise WorkspaceError("journal backup is missing or invalid")
                         os.makedirs(os.path.dirname(target), exist_ok=True)
-                        shutil.copyfile(backup, target)
+                        shutil.copy2(backup, target)
+                        stored_mode = change.get("mode")
+                        if stored_mode is not None:
+                            os.chmod(target, int(stored_mode))
                     elif os.path.exists(target):
                         if not os.path.isfile(target) and not os.path.islink(target):
                             raise WorkspaceError("recovery target is not a file")
@@ -933,22 +1411,39 @@ class WorkspaceService:
 
     def patch_workspace(self, root: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
         canonical_root = self._root(root)
+        with self._root_lock(canonical_root):
+            return self._patch_workspace_locked(canonical_root, arguments)
+
+    def _patch_workspace_locked(
+        self,
+        root: str,
+        arguments: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        canonical_root = self._root(root)
         before_revision = self.require_revision(
             canonical_root, arguments.get("expected_workspace_revision")
         )
+        if not self.revision_is_strong(before_revision):
+            raise WorkspaceRevisionConflict(
+                "workspace identity exceeded its safety budget; narrow or clean the workspace before mutation"
+            )
         operations = arguments.get("operations") or []
         if not isinstance(operations, Sequence) or isinstance(operations, (str, bytes)):
             raise WorkspaceError("patch_workspace operations must be an array")
         expected_hashes = arguments.get("expected_sha256") or {}
         if not isinstance(expected_hashes, Mapping):
             raise WorkspaceError("expected_sha256 must be a path-to-hash object")
-        changes, summaries = self._plan_patch(
+        (
+            changes,
+            planned_modes,
+            before_hashes,
+            metadata_sources,
+            summaries,
+        ) = self._plan_patch(
             canonical_root,
             [item for item in operations if isinstance(item, Mapping)],
             {str(key): str(value) for key, value in expected_hashes.items()},
         )
-        if len(changes) != len({os.path.realpath(path) for path in changes}):
-            raise WorkspaceConflict("patch contains overlapping canonical targets")
         if arguments.get("dry_run"):
             return {
                 "summary": "Dry-run preview; no files were changed.",
@@ -958,9 +1453,22 @@ class WorkspaceService:
                 "transaction": "preview_only",
                 "backend": "workspace_service",
             }
+        for path, expected in before_hashes.items():
+            self._check_hash(path, expected, self.relative(canonical_root, path))
         transaction_id = uuid.uuid4().hex
+        transaction_parent = self.transaction_parent(canonical_root)
+        os.makedirs(transaction_parent, mode=0o700, exist_ok=True)
+        for protected_directory in (
+            os.path.dirname(os.path.dirname(transaction_parent)),
+            os.path.dirname(transaction_parent),
+            transaction_parent,
+        ):
+            try:
+                os.chmod(protected_directory, 0o700)
+            except OSError:
+                pass
         journal_root = os.path.join(
-            canonical_root, self.INTERNAL_DIRECTORY, "transactions", transaction_id
+            transaction_parent, transaction_id
         )
         backups = os.path.join(journal_root, "backups")
         os.makedirs(backups, mode=0o700, exist_ok=False)
@@ -977,11 +1485,13 @@ class WorkspaceService:
         try:
             for index, (path, new) in enumerate(changes.items()):
                 relative = self.relative(canonical_root, path)
+                self._assert_target_still_confined(canonical_root, path)
+                self._check_hash(path, before_hashes[path], relative)
                 existed = os.path.exists(path)
                 backup = None
                 if existed:
                     backup = os.path.join(backups, f"{index}.bin")
-                    shutil.copyfile(path, backup)
+                    shutil.copy2(path, backup)
                     with open(backup, "rb") as handle:
                         os.fsync(handle.fileno())
                 originals[path] = backup
@@ -995,6 +1505,14 @@ class WorkspaceService:
                         handle.write(new)
                         handle.flush()
                         os.fsync(handle.fileno())
+                    metadata_source = metadata_sources.get(path)
+                    if metadata_source and os.path.exists(metadata_source):
+                        shutil.copystat(
+                            metadata_source,
+                            staged_path,
+                            follow_symlinks=False,
+                        )
+                    os.chmod(staged_path, planned_modes.get(path, 0o644))
                     staged[path] = staged_path
                 manifest["changes"].append(
                     {
@@ -1002,6 +1520,13 @@ class WorkspaceService:
                         "existed": existed,
                         "backup": os.path.relpath(backup, journal_root) if backup else None,
                         "delete": new is None,
+                        "mode": (
+                            stat.S_IMODE(
+                                os.stat(path, follow_symlinks=False).st_mode
+                            )
+                            if existed
+                            else None
+                        ),
                     }
                 )
             with open(manifest_path, "w", encoding="utf-8") as handle:
@@ -1012,13 +1537,19 @@ class WorkspaceService:
             committed: list[str] = []
             try:
                 for path, new in changes.items():
+                    self._assert_target_still_confined(canonical_root, path)
+                    self._check_hash(
+                        path,
+                        before_hashes[path],
+                        self.relative(canonical_root, path),
+                    )
                     if new is None:
                         os.unlink(path)
                     else:
                         os.replace(staged[path], path)
                         staged.pop(path, None)
-                    self._fsync_directory(os.path.dirname(path))
                     committed.append(path)
+                    self._fsync_directory(os.path.dirname(path))
                 manifest["state"] = "committed"
                 with open(manifest_path, "w", encoding="utf-8") as handle:
                     json.dump(manifest, handle, sort_keys=True)
@@ -1029,12 +1560,13 @@ class WorkspaceService:
                 for path in reversed(committed):
                     backup = originals[path]
                     try:
+                        self._assert_target_still_confined(canonical_root, path)
                         if backup:
-                            shutil.copyfile(backup, path)
+                            shutil.copy2(backup, path)
                         elif os.path.exists(path):
                             os.unlink(path)
                         self._fsync_directory(os.path.dirname(path))
-                    except OSError as rollback_error:
+                    except (OSError, WorkspaceError) as rollback_error:
                         rollback_errors.append(f"{self.relative(canonical_root, path)}: {rollback_error}")
                 manifest["state"] = "recovery_required" if rollback_errors else "rolled_back"
                 manifest["rollback_errors"] = rollback_errors
@@ -1042,10 +1574,11 @@ class WorkspaceService:
                     json.dump(manifest, handle, sort_keys=True)
                     handle.flush()
                     os.fsync(handle.fileno())
+                self._fsync_directory(journal_root)
                 if not rollback_errors:
                     shutil.rmtree(journal_root, ignore_errors=True)
                 detail = (
-                    f"; recovery journal retained at {self.relative(canonical_root, journal_root)}"
+                    f"; external recovery journal retained for transaction {transaction_id}"
                     if rollback_errors
                     else "; originals restored"
                 )
@@ -1058,6 +1591,7 @@ class WorkspaceService:
                     pass
         after_revision = self._bump_revision(canonical_root)
         shutil.rmtree(journal_root, ignore_errors=True)
+        self._fsync_directory(os.path.dirname(journal_root))
         transaction_parent = os.path.dirname(journal_root)
         runtime_parent = os.path.dirname(transaction_parent)
         for directory in (transaction_parent, runtime_parent):

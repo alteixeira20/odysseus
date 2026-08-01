@@ -249,7 +249,7 @@ async def test_read_file_dispatch_blocks_etc_shadow(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_write_file_dispatch_blocks_authorized_keys(monkeypatch):
+async def test_write_file_dispatch_blocks_authorized_keys(monkeypatch, tmp_path):
     """End-to-end: write_file dispatch must reject ~/.ssh/authorized_keys."""
     auth_mod = sys.modules.get("core.auth")
     if auth_mod is None:
@@ -269,8 +269,10 @@ async def test_write_file_dispatch_blocks_authorized_keys(monkeypatch):
 
     from src.tool_execution import execute_tool_block
     desc, result = await execute_tool_block(
-        _make_block("write_file", "~/.ssh/authorized_keys\nssh-rsa AAAAB3..."),
+        _make_block("write_file", ".ssh/authorized_keys\nssh-rsa AAAAB3..."),
         owner="admin-user",
+        workspace=str(tmp_path),
+        workspace_write=True,
     )
     assert result.get("error_type") == "effect_resolution_error"
     assert "sensitive or excluded" in (result.get("error") or "")
@@ -278,7 +280,7 @@ async def test_write_file_dispatch_blocks_authorized_keys(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_write_file_dispatch_blocks_cron(monkeypatch):
+async def test_write_file_dispatch_blocks_cron(monkeypatch, tmp_path):
     """End-to-end: write_file to /etc/cron.d must be rejected."""
     auth_mod = sys.modules.get("core.auth")
     if auth_mod is None:
@@ -300,6 +302,8 @@ async def test_write_file_dispatch_blocks_cron(monkeypatch):
     desc, result = await execute_tool_block(
         _make_block("write_file", "/etc/cron.d/agent-payload\n* * * * * root /tmp/p\n"),
         owner="admin-user",
+        workspace=str(tmp_path),
+        workspace_write=True,
     )
     assert result.get("error_type") == "effect_resolution_error"
     assert "outside the execution root" in (result.get("error") or "")

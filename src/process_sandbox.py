@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -93,6 +94,156 @@ _SAFE_ENV_KEYS = frozenset({
 })
 _FIXED_PATH = "/usr/local/bin:/usr/bin:/bin"
 _SANDBOX_HOME = "/tmp/odysseus-home"
+_SENSITIVE_DIRECTORIES = frozenset(
+    {
+        ".ssh",
+        ".gnupg",
+        ".aws",
+        ".azure",
+        ".kube",
+        ".docker",
+        ".terraform.d",
+        ".password-store",
+        ".config/gh",
+        ".config/gcloud",
+        ".config/hub",
+        ".local/share/keyrings",
+    }
+)
+_SENSITIVE_FILENAMES = frozenset(
+    {
+        ".env",
+        ".netrc",
+        ".npmrc",
+        ".pypirc",
+        ".git-credentials",
+        ".envrc",
+        "credentials",
+        "credentials.json",
+        "secrets.json",
+        "secrets.yaml",
+        "secrets.yml",
+        "id_rsa",
+        "id_ed25519",
+        "id_ecdsa",
+        "service-account.json",
+    }
+)
+_SECRET_SUFFIXES = (".pem", ".key", ".p12", ".pfx")
+_SCAN_SKIP_DIRECTORIES = frozenset(
+    {"node_modules", ".venv", "venv", "vendor", "target", "dist", "build", "__pycache__"}
+)
+
+
+def _workspace_secret_mounts(
+    root: str,
+    *,
+    excluded_roots: Iterable[str] = (),
+    max_entries: int = 50_000,
+) -> tuple[list[str], list[str]]:
+    """Return common credential directories/files to mask inside Bubblewrap.
+
+    Ignored and untracked project files remain visible but read-only; this is
+    deliberate so tests can use local fixtures and dependency trees. Common
+    credential material is masked regardless of Git tracking state.
+    """
+
+    secret_directories: list[str] = []
+    secret_files: list[str] = []
+    excluded = {
+        os.path.realpath(path)
+        for path in excluded_roots
+        if path and os.path.isdir(os.path.realpath(path))
+    }
+    examined = 0
+    for current, directories, files in os.walk(root, followlinks=False):
+        kept: list[str] = []
+        for directory in directories:
+            examined += 1
+            absolute = os.path.join(current, directory)
+            canonical_absolute = os.path.realpath(absolute)
+            if any(
+                canonical_absolute == excluded_root
+                or os.path.commonpath((canonical_absolute, excluded_root))
+                == excluded_root
+                for excluded_root in excluded
+            ):
+                continue
+            relative = os.path.relpath(absolute, root).replace(os.sep, "/").casefold()
+            if directory.casefold() in _SENSITIVE_DIRECTORIES or relative in _SENSITIVE_DIRECTORIES:
+                secret_directories.append(absolute)
+                continue
+            if directory.casefold() in _SCAN_SKIP_DIRECTORIES or directory == ".git":
+                continue
+            if not os.path.islink(absolute):
+                kept.append(directory)
+        directories[:] = kept
+        for filename in files:
+            examined += 1
+            lowered = filename.casefold()
+            if (
+                lowered in _SENSITIVE_FILENAMES
+                or lowered.startswith(".env.")
+                or lowered.endswith(_SECRET_SUFFIXES)
+                or ("private" in lowered and "key" in lowered)
+            ):
+                secret_files.append(os.path.join(current, filename))
+        if examined > max_entries:
+            raise SandboxUnavailable(
+                "safe workspace secret scan exceeded its entry budget; narrow the workspace"
+            )
+    git_config = os.path.join(root, ".git", "config")
+    if os.path.isfile(git_config):
+        secret_files.append(git_config)
+    return secret_directories, secret_files
+
+
+_ASSIGNMENT_SECRET_RE = re.compile(
+    r"(?i)\b(api[_-]?key|access[_-]?token|refresh[_-]?token|secret|password|passwd|authorization|cookie)"
+    r"(\s*[:=]\s*)([^,;\r\n]+)"
+)
+_JSON_SECRET_RE = re.compile(
+    r'''(?i)(["'](?:api[_-]?key|access[_-]?token|refresh[_-]?token|secret|password|passwd|authorization|cookie)["']\s*:\s*)'''
+    r'''(?P<quote>["'])(.*?)(?P=quote)'''
+)
+_PEM_SECRET_RE = re.compile(
+    r"-----BEGIN [^-]*(?:PRIVATE KEY|CERTIFICATE)-----.*?-----END [^-]+-----",
+    re.DOTALL,
+)
+_AWS_KEY_RE = re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b")
+_JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b")
+_SERVICE_TOKEN_RE = re.compile(
+    r"\b(?:sk|rk|pk)-[A-Za-z0-9_-]{16,}\b"
+    r"|\bgh[pousr]_[A-Za-z0-9]{20,}\b"
+    r"|\bAIza[A-Za-z0-9_-]{24,}\b"
+    r"|\bxox(?:a|b|p|r|s)-[A-Za-z0-9-]{16,}\b"
+)
+
+
+def redact_sensitive_output(value: str) -> tuple[str, int]:
+    """Redact recognizable credentials before process output reaches a model."""
+
+    text = str(value or "")
+    count = 0
+
+    def json_assignment(match: re.Match[str]) -> str:
+        nonlocal count
+        count += 1
+        quote = match.group("quote")
+        return f"{match.group(1)}{quote}<redacted>{quote}"
+
+    text = _JSON_SECRET_RE.sub(json_assignment, text)
+
+    def assignment(match: re.Match[str]) -> str:
+        nonlocal count
+        count += 1
+        return f"{match.group(1)}{match.group(2)}<redacted>"
+
+    text = _ASSIGNMENT_SECRET_RE.sub(assignment, text)
+    for expression in (_PEM_SECRET_RE, _AWS_KEY_RE, _JWT_RE, _SERVICE_TOKEN_RE):
+        text, replaced = expression.subn("<redacted-sensitive-output>", text)
+        count += replaced
+    return text, count
 
 
 def minimal_environment(
@@ -192,7 +343,7 @@ def sandbox_command(
     canonical_cwd = os.path.realpath(os.fspath(cwd))
     if not os.path.isdir(canonical_cwd):
         raise SandboxUnavailable(f"sandbox working directory does not exist: {canonical_cwd}")
-    writable = _canonical_writable_directories((canonical_cwd, *writable_paths))
+    writable = _canonical_writable_directories(writable_paths)
     clean_env = minimal_environment(environment, runtime=runtime_environment)
 
     argv = [
@@ -214,6 +365,34 @@ def sandbox_command(
         "--dir", _SANDBOX_HOME,
         "--clearenv",
     ]
+    # A read-only host root is not a confidentiality boundary: service users
+    # can often read application configuration below /etc or /var, and mounted
+    # media can contain credentials. Replace those trees with empty ephemeral
+    # views, then restore only the small system files needed for ordinary
+    # language runtimes and certificate verification.
+    for host_tree in ("/etc", "/var", "/srv", "/mnt", "/media"):
+        if os.path.isdir(host_tree):
+            argv.extend(("--tmpfs", host_tree))
+    safe_system_paths = (
+        "/etc/alternatives",
+        "/etc/ssl/certs",
+        "/etc/ca-certificates",
+        "/etc/ld.so.cache",
+        "/etc/ld.so.conf",
+        "/etc/ld.so.conf.d",
+        "/etc/localtime",
+        "/etc/timezone",
+        "/etc/passwd",
+        "/etc/group",
+        "/etc/nsswitch.conf",
+        "/etc/hosts",
+        "/etc/resolv.conf",
+    )
+    for safe_path in safe_system_paths:
+        if not os.path.exists(safe_path):
+            continue
+        argv.extend(_mkdir_targets(os.path.dirname(safe_path)))
+        argv.extend(("--ro-bind", safe_path, safe_path))
     for key in sorted(clean_env):
         argv.extend(("--setenv", key, clean_env[key]))
 
@@ -238,9 +417,43 @@ def sandbox_command(
     except (ImportError, OSError, ValueError):
         data_directory = ""
 
+    service_root = os.path.realpath(os.getcwd())
+    service_mask_before_workspace = False
+    service_mask_after_workspace = False
+    if (
+        service_root != os.path.sep
+        and os.path.isdir(service_root)
+        and service_root != canonical_cwd
+        and not service_root.startswith(("/usr/", "/etc/", "/var/"))
+    ):
+        try:
+            workspace_inside_service = (
+                os.path.commonpath((canonical_cwd, service_root)) == service_root
+            )
+            service_inside_workspace = (
+                os.path.commonpath((canonical_cwd, service_root)) == canonical_cwd
+            )
+            service_mask_before_workspace = workspace_inside_service
+            service_mask_after_workspace = service_inside_workspace
+            if not workspace_inside_service and not service_inside_workspace:
+                service_mask_before_workspace = True
+        except ValueError:
+            service_mask_before_workspace = True
+
     if data_mask_before_workspace:
         argv.extend(_mkdir_targets(data_directory))
         argv.extend(("--tmpfs", data_directory))
+    if service_mask_before_workspace:
+        argv.extend(_mkdir_targets(service_root))
+        argv.extend(("--tmpfs", service_root))
+    cwd_writable = any(
+        canonical_cwd == directory
+        or os.path.commonpath((canonical_cwd, directory)) == directory
+        for directory in writable
+    )
+    if not cwd_writable:
+        argv.extend(_mkdir_targets(canonical_cwd))
+        argv.extend(("--ro-bind", canonical_cwd, canonical_cwd))
     for directory in writable:
         argv.extend(_mkdir_targets(directory))
         argv.extend(("--bind", directory, directory))
@@ -254,6 +467,18 @@ def sandbox_command(
     if data_mask_after_workspace:
         argv.extend(_mkdir_targets(data_directory))
         argv.extend(("--tmpfs", data_directory))
+    if service_mask_after_workspace:
+        argv.extend(_mkdir_targets(service_root))
+        argv.extend(("--tmpfs", service_root))
+
+    secret_directories, secret_files = _workspace_secret_mounts(
+        canonical_cwd,
+        excluded_roots=(data_directory, service_root if service_mask_after_workspace else ""),
+    )
+    for directory in secret_directories:
+        argv.extend(("--tmpfs", directory))
+    for path in secret_files:
+        argv.extend(("--ro-bind", "/dev/null", path))
 
     cpu_limit = max(1, int(math.ceil(float(timeout_seconds))) + 5)
     argv.extend((
@@ -271,10 +496,62 @@ def sandbox_command(
     return argv, clean_env
 
 
+def host_command_boundary(
+    command: Sequence[str],
+    *,
+    cwd: str | os.PathLike[str],
+    workspace_writable: bool,
+    environment: Mapping[str, object],
+    runtime_environment: Mapping[str, object] | None = None,
+) -> tuple[list[str], dict[str, str]]:
+    """Expose the host while independently overlaying the workspace read-only."""
+
+    child_environment = {str(key): str(value) for key, value in environment.items()}
+    child_environment.update(
+        {str(key): str(value) for key, value in (runtime_environment or {}).items()}
+    )
+    if workspace_writable:
+        return [str(part) for part in command], child_environment
+    bwrap = shutil.which("bwrap")
+    canonical_cwd = os.path.realpath(os.fspath(cwd))
+    if not bwrap or os.name != "posix" or not os.path.isdir(canonical_cwd):
+        raise SandboxUnavailable(
+            "read-only host execution requires Bubblewrap; host fallback is disabled"
+        )
+    argv = [
+        bwrap,
+        "--die-with-parent",
+        "--new-session",
+        "--unshare-user",
+        "--unshare-pid",
+        "--unshare-uts",
+        "--unshare-ipc",
+        "--share-net",
+        "--bind",
+        "/",
+        "/",
+        "--ro-bind",
+        canonical_cwd,
+        canonical_cwd,
+        "--proc",
+        "/proc",
+        "--dev-bind",
+        "/dev",
+        "/dev",
+        "--chdir",
+        canonical_cwd,
+        "--",
+        *[str(part) for part in command],
+    ]
+    return argv, child_environment
+
+
 __all__ = [
     "SandboxCapability",
     "SandboxUnavailable",
     "minimal_environment",
+    "host_command_boundary",
+    "redact_sensitive_output",
     "sandbox_capability",
     "sandbox_command",
 ]
