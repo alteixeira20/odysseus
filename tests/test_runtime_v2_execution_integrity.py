@@ -523,6 +523,17 @@ async def test_process_approval_invalidates_when_default_git_hook_changes(tmp_pa
     assert EFFECT_APPROVALS.state(approval_id) is ApprovalRecordState.INVALIDATED
 
 
+def test_project_scale_workspace_can_establish_strong_process_identity(tmp_path):
+    artifact = tmp_path / "project-artifact.bin"
+    with artifact.open("wb") as handle:
+        handle.seek(12 * 1024 * 1024 - 1)
+        handle.write(b"\0")
+
+    revision = WORKSPACE_SERVICE.revision(str(tmp_path))
+
+    assert WORKSPACE_SERVICE.revision_is_strong(revision)
+
+
 def test_patch_write_and_process_write_authorities_are_independent(tmp_path):
     patch_only = _context(
         tmp_path,

@@ -44,6 +44,8 @@ class WorkspaceService:
     """All migrated filesystem handlers enter through this service."""
 
     INTERNAL_DIRECTORY = ".odysseus-runtime"
+    _MAX_REVISION_ENTRIES = 100_000
+    _MAX_REVISION_CONTENT_BYTES = 256 * 1024 * 1024
     _MAX_SEARCH_LINE_BYTES = 4 * 1024 * 1024
     SKIP_DIRECTORIES = frozenset(
         {
@@ -161,7 +163,7 @@ class WorkspaceService:
         material.update(git_identity.digest.encode("ascii"))
         examined = 0
         content_bytes = 0
-        content_budget = 8 * 1024 * 1024
+        content_budget = self._MAX_REVISION_CONTENT_BYTES
         for current, directories, files in os.walk(root, followlinks=False):
             directories[:] = sorted(
                 item
@@ -171,7 +173,7 @@ class WorkspaceService:
             )
             for name in sorted(directories + files):
                 examined += 1
-                if examined > 20_000:
+                if examined > self._MAX_REVISION_ENTRIES:
                     return material.hexdigest(), False
                 path = os.path.join(current, name)
                 try:
