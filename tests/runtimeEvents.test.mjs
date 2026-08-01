@@ -12,6 +12,9 @@ function event(sequence, type, payload) {
     version: 2,
     event_id: `event-${sequence}`,
     run_id: 'run-1',
+    conversation_id: 'conversation-1',
+    turn_id: 'turn-1',
+    candidate_id: null,
     sequence,
     timestamp: '2026-08-01T12:00:00Z',
     type,
@@ -25,6 +28,15 @@ test('runtime reducer preserves order and rejects duplicate or foreign events', 
   assert.equal(reducer.consume(event(1, 'run_state', { state: 'preparing' })).runtime_state, 'preparing');
   assert.equal(reducer.consume(event(1, 'run_state', { state: 'running' })), null);
   assert.equal(reducer.consume({ ...event(2, 'run_state', { state: 'running' }), run_id: 'run-2' }), null);
+  assert.equal(reducer.lastSequence, 1);
+});
+
+test('runtime reducer rejects missing or foreign ownership identity', () => {
+  const reducer = createRuntimeEventReducer();
+  const first = event(1, 'run_state', { state: 'preparing' });
+  assert.equal(reducer.consume({ ...first, conversation_id: '' }), null);
+  assert.equal(reducer.consume(first).runtime_state, 'preparing');
+  assert.equal(reducer.consume({ ...event(2, 'run_state', { state: 'running' }), turn_id: 'other-turn' }), null);
   assert.equal(reducer.lastSequence, 1);
 });
 

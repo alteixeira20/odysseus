@@ -167,7 +167,7 @@ def test_sensitive_or_opaque_host_effects_require_approval(tmp_path, command):
     assert outcome.decision is ApprovalDecision.REQUIRE_APPROVAL
 
 
-def test_justified_read_only_host_command_is_allowed(tmp_path):
+def test_every_generic_host_command_requires_exact_approval(tmp_path):
     prepared = context(tmp_path, mode="host")
     definition = TOOL_REGISTRY.resolve("run_host_command", prepared)
     arguments = definition.validate_arguments({"command": "pwd"})
@@ -176,7 +176,7 @@ def test_justified_read_only_host_command_is_allowed(tmp_path):
         definition.resolve_effects(arguments, prepared),
         approval_policy=definition.approval_policy,
     )
-    assert outcome.decision is ApprovalDecision.ALLOW
+    assert outcome.decision is ApprovalDecision.REQUIRE_APPROVAL
 
 
 def test_provider_schemas_are_canonical_and_host_is_contextual(tmp_path):

@@ -44,6 +44,9 @@ class BatchDisposition(str, Enum):
     BUDGET_EXHAUSTED = "budget_exhausted"
     AWAIT_USER = "await_user"
     AWAIT_APPROVAL = "await_approval"
+    APPROVAL_DENIED = "approval_denied"
+    APPROVAL_EXPIRED = "approval_expired"
+    APPROVAL_INVALIDATED = "approval_invalidated"
     DOCUMENT_CREATE_COMPLETE = "document_create_complete"
     DOCUMENT_TOOL_COMPLETE = "document_tool_complete"
     DETERMINISTIC_COMPLETE = "deterministic_complete"
@@ -128,6 +131,7 @@ class ToolBatchRunner:
         budget_hit = False
         awaiting_user = False
         awaiting_approval = False
+        rejected_approval: Optional[ApprovalRecordState] = None
         doc_stream_create_completed = False
         doc_tool_completed = False
         deterministic_tool_completed = False
@@ -327,22 +331,22 @@ class ToolBatchRunner:
                                 approval_id,
                                 context=request.execution_context,
                             )
-                            yield encode_runtime_sse(
-                                request.execution_context.event_factory.create(
-                                    "run_state",
-                                    {
-                                        "state": RunState.RUNNING.value,
-                                        "reason": f"effect_approval_{decision.value}",
-                                        "resumable": False,
-                                        "terminal": False,
-                                        "approval_id": approval_id,
-                                        "call_id": call_id,
-                                        "canonical_name": canonical_tool_name,
-                                    },
-                                    caused_by=call_id,
-                                )
-                            )
                             if decision is ApprovalRecordState.GRANTED:
+                                yield encode_runtime_sse(
+                                    request.execution_context.event_factory.create(
+                                        "run_state",
+                                        {
+                                            "state": RunState.RUNNING.value,
+                                            "reason": "effect_approval_granted",
+                                            "resumable": False,
+                                            "terminal": False,
+                                            "approval_id": approval_id,
+                                            "call_id": call_id,
+                                            "canonical_name": canonical_tool_name,
+                                        },
+                                        caused_by=call_id,
+                                    )
+                                )
                                 yield encode_runtime_sse(
                                     request.execution_context.event_factory.create(
                                         "tool_resumed",
@@ -355,6 +359,8 @@ class ToolBatchRunner:
                                         caused_by=call_id,
                                     )
                                 )
+                            else:
+                                rejected_approval = decision
                             runtime_result = await execute_normalized_tool_call(
                                 normalized_call,
                                 request.execution_context,
@@ -512,6 +518,12 @@ class ToolBatchRunner:
         disposition = BatchDisposition.CONTINUE
         if budget_hit:
             disposition = BatchDisposition.BUDGET_EXHAUSTED
+        elif rejected_approval is ApprovalRecordState.DENIED:
+            disposition = BatchDisposition.APPROVAL_DENIED
+        elif rejected_approval is ApprovalRecordState.EXPIRED:
+            disposition = BatchDisposition.APPROVAL_EXPIRED
+        elif rejected_approval is ApprovalRecordState.INVALIDATED:
+            disposition = BatchDisposition.APPROVAL_INVALIDATED
         elif awaiting_approval:
             disposition = BatchDisposition.AWAIT_APPROVAL
         elif awaiting_user:

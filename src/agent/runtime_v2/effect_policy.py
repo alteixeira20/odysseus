@@ -17,6 +17,7 @@ from .contracts import (
     Capability,
     Effect,
 )
+from .process_identity import snapshot_process
 from .workspace_service import WORKSPACE_SERVICE
 
 
@@ -26,44 +27,6 @@ class DefinitionApprovalPolicy(str, Enum):
     ALWAYS_APPROVE = "always_approve"
 
 
-_SAFE_HOST_PROGRAMS = frozenset(
-    {
-        "pwd",
-        "whoami",
-        "id",
-        "uname",
-        "date",
-        "printf",
-        "echo",
-        "ls",
-        "find",
-        "rg",
-        "grep",
-        "head",
-        "tail",
-        "wc",
-        "stat",
-        "file",
-        "du",
-        "df",
-        "realpath",
-        "readlink",
-        "git",
-    }
-)
-_SAFE_GIT_SUBCOMMANDS = frozenset(
-    {
-        "status",
-        "diff",
-        "log",
-        "show",
-        "rev-parse",
-        "ls-files",
-        "ls-tree",
-        "cat-file",
-        "describe",
-    }
-)
 _PACKAGE_MANAGERS = frozenset(
     {"apt", "apt-get", "dnf", "yum", "pacman", "apk", "brew", "pip", "pip3", "npm", "pnpm", "yarn"}
 )
@@ -78,7 +41,6 @@ _CREDENTIAL_PROGRAMS = frozenset(
 _DESTRUCTIVE_PROGRAMS = frozenset(
     {"rm", "rmdir", "shred", "truncate", "dd", "mkfs", "wipefs", "unlink"}
 )
-_OPAQUE_SHELL = re.compile(r"(?:&&|\|\||[;|<>`]|\$\(|\n)")
 _CREDENTIAL_PATH = re.compile(
     r"(?:^|[/\\])(?:\.ssh|\.gnupg|\.aws|\.kube|\.docker|\.config/gh)(?:[/\\]|$)|"
     r"(?:credentials|id_rsa|id_ed25519|private[_-]?key|\.env)(?:$|\s)",
@@ -116,32 +78,33 @@ def resolve_command_effects(
         if mode is ExecutionMode.HOST
         else "process.execute.sandbox"
     )
-    # Opaque host commands require approval. The same syntax remains bounded
-    # by Bubblewrap in sandbox mode, where specifically classified sensitive
-    # effects (delete/install/etc.) still apply independently.
-    opaque = mode is ExecutionMode.HOST and (
-        not argv or bool(_OPAQUE_SHELL.search(command))
-    )
-    if mode is ExecutionMode.HOST and not opaque:
-        if program not in _SAFE_HOST_PROGRAMS:
-            opaque = True
-        elif program == "git":
-            subcommand = next((item for item in argv[1:] if not item.startswith("-")), "")
-            opaque = subcommand not in _SAFE_GIT_SUBCOMMANDS
-        elif program == "find" and any(
-            item in {"-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprintf"}
-            for item in argv[1:]
-        ):
-            opaque = True
+    # Generic host execution is never inferred safe from a basename or an
+    # apparent read-only subcommand. Option-level execution features, PATH
+    # wrappers, aliases and interpreters all remain opaque and exact-approved.
+    opaque = mode is ExecutionMode.HOST
+    process_metadata: dict[str, Any] = {
+        "execution_root": context.execution_root.path,
+    }
     effects: list[Effect] = [
         Effect(
             kind=process_kind,
             target=program,
             capability=process_capability,
             opaque=opaque,
-            metadata={"execution_root": context.execution_root.path},
+            metadata=process_metadata,
         )
     ]
+    if context.authority_grant.allows(Capability.PROCESS_WORKSPACE_WRITE):
+        effects.append(
+            Effect(
+                "filesystem.process_write",
+                context.execution_root.path,
+                Capability.PROCESS_WORKSPACE_WRITE,
+                consequential=True,
+                opaque=True,
+                metadata={"staging": "direct_workspace_interim"},
+            )
+        )
     lowered = command.casefold()
     if program in {"sudo", "doas", "pkexec", "su"} or re.search(
         r"(?:^|\s)(?:sudo|doas|pkexec|su)(?:\s|$)", lowered
@@ -253,6 +216,35 @@ def resolve_command_effects(
                     consequential=True,
                 )
             )
+    # Host commands are always exact-approved. Sandbox commands receive the
+    # same executable/interpreter/environment binding whenever their resolved
+    # effects are sensitive enough to require approval (for example delete or
+    # the separately granted process-write capability).
+    bind_process_identity = mode is ExecutionMode.HOST or any(
+        effect.consequential or effect.destructive or effect.opaque
+        for effect in effects[1:]
+    )
+    if bind_process_identity:
+        identity = snapshot_process(
+            command,
+            root=context.execution_root.path,
+            execution_mode=mode,
+        )
+        process_metadata.update(
+            {
+                "process_identity": identity.digest,
+                "executable": identity.executable,
+                "environment_digest": identity.environment_digest,
+                "dependency_digests": list(identity.dependency_digests),
+            }
+        )
+        effects[0] = Effect(
+            kind=process_kind,
+            target=program,
+            capability=process_capability,
+            opaque=opaque,
+            metadata=process_metadata,
+        )
     return tuple(effects)
 
 
@@ -260,24 +252,72 @@ def resolve_python_effects(
     arguments: Mapping[str, Any],
     context: AgentExecutionContext,
 ) -> tuple[Effect, ...]:
-    if context.execution_mode is ExecutionMode.HOST:
-        return (
-            Effect(
-                "process.execute.host",
-                "python",
-                Capability.PROCESS_HOST,
-                opaque=True,
-                metadata={"execution_root": context.execution_root.path},
-            ),
+    bind_process_identity = (
+        context.execution_mode is ExecutionMode.HOST
+        or context.authority_grant.allows(Capability.PROCESS_WORKSPACE_WRITE)
+    )
+    if bind_process_identity:
+        identity = snapshot_process(
+            f"{os.path.realpath(__import__('sys').executable)} -I -c "
+            + shlex.quote(str(arguments.get("code") or "")),
+            root=context.execution_root.path,
+            execution_mode=context.execution_mode,
         )
-    return (
+        effects = [
+            Effect(
+                (
+                    "process.execute.host"
+                    if context.execution_mode is ExecutionMode.HOST
+                    else "process.execute.sandbox"
+                ),
+                "python",
+                (
+                    Capability.PROCESS_HOST
+                    if context.execution_mode is ExecutionMode.HOST
+                    else Capability.PROCESS_SANDBOX
+                ),
+                opaque=context.execution_mode is ExecutionMode.HOST,
+                metadata={
+                    "execution_root": context.execution_root.path,
+                    "process_identity": identity.digest,
+                    "executable": identity.executable,
+                    "environment_digest": identity.environment_digest,
+                    "dependency_digests": list(identity.dependency_digests),
+                },
+            ),
+        ]
+        if context.authority_grant.allows(Capability.PROCESS_WORKSPACE_WRITE):
+            effects.append(
+                Effect(
+                    "filesystem.process_write",
+                    context.execution_root.path,
+                    Capability.PROCESS_WORKSPACE_WRITE,
+                    consequential=True,
+                    opaque=True,
+                    metadata={"staging": "direct_workspace_interim"},
+                )
+            )
+        return tuple(effects)
+    effects = [
         Effect(
             "process.execute.sandbox",
             "python",
             Capability.PROCESS_SANDBOX,
             metadata={"execution_root": context.execution_root.path},
         ),
-    )
+    ]
+    if context.authority_grant.allows(Capability.PROCESS_WORKSPACE_WRITE):
+        effects.append(
+            Effect(
+                "filesystem.process_write",
+                context.execution_root.path,
+                Capability.PROCESS_WORKSPACE_WRITE,
+                consequential=True,
+                opaque=True,
+                metadata={"staging": "direct_workspace_interim"},
+            )
+        )
+    return tuple(effects)
 
 
 def resolve_workspace_read_effects(
@@ -307,6 +347,15 @@ def resolve_workspace_patch_effects(
     arguments: Mapping[str, Any],
     context: AgentExecutionContext,
 ) -> tuple[Effect, ...]:
+    if bool(arguments.get("dry_run")):
+        return (
+            Effect(
+                "filesystem.read",
+                context.execution_root.path,
+                Capability.WORKSPACE_READ,
+                metadata={"purpose": "patch_preview"},
+            ),
+        )
     effects: list[Effect] = []
     for operation in arguments.get("operations") or []:
         if not isinstance(operation, Mapping):
@@ -395,6 +444,7 @@ class EffectPolicy:
             "credential.access",
             "filesystem.delete",
             "external.write",
+            "filesystem.process_write",
         }
     )
 

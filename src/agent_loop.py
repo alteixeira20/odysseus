@@ -2234,6 +2234,9 @@ async def stream_agent_loop(
             "workspace_write_granted": execution_context.authority_grant.allows(
                 Capability.WORKSPACE_WRITE
             ),
+            "process_workspace_write_granted": execution_context.authority_grant.allows(
+                Capability.PROCESS_WORKSPACE_WRITE
+            ),
             "workspace_revision": execution_context.execution_root.workspace_revision,
         },
         "capabilities": sorted(
@@ -3281,6 +3284,14 @@ async def stream_agent_loop(
         if _batch_disposition is BatchDisposition.AWAIT_APPROVAL:
             _run_disposition = RunDisposition.AWAITING_APPROVAL
             _run_disposition_reason = "awaiting_effect_approval"
+            break
+        if _batch_disposition in {
+            BatchDisposition.APPROVAL_DENIED,
+            BatchDisposition.APPROVAL_EXPIRED,
+            BatchDisposition.APPROVAL_INVALIDATED,
+        }:
+            _run_disposition = RunDisposition.INCOMPLETE
+            _run_disposition_reason = _batch_disposition.value
             break
         if _batch_disposition is BatchDisposition.AWAIT_USER:
             _run_disposition = RunDisposition.AWAITING_INPUT

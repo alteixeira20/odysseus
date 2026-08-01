@@ -48,6 +48,7 @@ class ExecutionRoot:
 class Capability(str, Enum):
     WORKSPACE_READ = "workspace_read"
     WORKSPACE_WRITE = "workspace_write"
+    PROCESS_WORKSPACE_WRITE = "process_workspace_write"
     PROCESS_SANDBOX = "process_sandbox"
     PROCESS_HOST = "process_host"
     VCS_READ = "vcs_read"
@@ -228,7 +229,10 @@ class ToolResult:
     status: ToolResultStatus
     data: Mapping[str, Any] = field(default_factory=immutable_mapping)
     error: Optional[ToolError] = None
+    attempted_effects: tuple[Effect, ...] = ()
+    observed_effects: tuple[Effect, ...] = ()
     committed_effects: tuple[Effect, ...] = ()
+    unknown_effects: tuple[Effect, ...] = ()
     artifacts: tuple[Mapping[str, Any], ...] = ()
     truncation: Optional[Mapping[str, Any]] = None
     continuation: Optional[Mapping[str, Any]] = None
@@ -273,24 +277,36 @@ class ToolResult:
                 if self.error
                 else None
             ),
+            "attempted_effects": [
+                self._effect_dict(effect) for effect in self.attempted_effects
+            ],
+            "observed_effects": [
+                self._effect_dict(effect) for effect in self.observed_effects
+            ],
             "committed_effects": [
-                {
-                    "kind": effect.kind,
-                    "target": effect.target,
-                    "key": effect.key,
-                    "capability": effect.capability.value,
-                    "consequential": effect.consequential,
-                    "destructive": effect.destructive,
-                    "opaque": effect.opaque,
-                    "metadata": dict(effect.metadata),
-                }
-                for effect in self.committed_effects
+                self._effect_dict(effect) for effect in self.committed_effects
+            ],
+            "unknown_effects": [
+                self._effect_dict(effect) for effect in self.unknown_effects
             ],
             "artifacts": [dict(item) for item in self.artifacts],
             "truncation": dict(self.truncation) if self.truncation else None,
             "continuation": dict(self.continuation) if self.continuation else None,
             "backend": self.backend,
             "duration_ms": self.duration_ms,
+        }
+
+    @staticmethod
+    def _effect_dict(effect: Effect) -> dict[str, Any]:
+        return {
+            "kind": effect.kind,
+            "target": effect.target,
+            "key": effect.key,
+            "capability": effect.capability.value,
+            "consequential": effect.consequential,
+            "destructive": effect.destructive,
+            "opaque": effect.opaque,
+            "metadata": dict(effect.metadata),
         }
 
     def model_text(self) -> str:
@@ -345,6 +361,6 @@ def error_result(
         canonical_name=call.canonical_name,
         status=status,
         error=ToolError(code, message, immutable_mapping(details)),
-        committed_effects=tuple(effects),
+        attempted_effects=tuple(effects),
         backend=backend,
     )

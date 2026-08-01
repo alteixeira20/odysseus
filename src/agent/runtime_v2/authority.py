@@ -180,6 +180,7 @@ def _authority_capabilities(
     root: ExecutionRoot,
     plan_mode: bool,
     workspace_write: bool,
+    process_workspace_write: bool,
 ) -> frozenset[Capability]:
     capabilities = {Capability.WORKSPACE_READ, Capability.VCS_READ}
     # Host filesystem permissions are an implementation fact, not agent
@@ -188,6 +189,8 @@ def _authority_capabilities(
     # read-only.
     if workspace_write and root.writable and not plan_mode:
         capabilities.update({Capability.WORKSPACE_WRITE, Capability.VCS_WRITE})
+    if process_workspace_write and root.writable and not plan_mode and mode.enabled:
+        capabilities.add(Capability.PROCESS_WORKSPACE_WRITE)
     if mode is ExecutionMode.SANDBOXED and not plan_mode:
         capabilities.add(Capability.PROCESS_SANDBOX)
     elif mode is ExecutionMode.HOST and not plan_mode:
@@ -220,7 +223,9 @@ def prepare_execution_context(
     conversation_id: Optional[str] = None,
     turn_lease: Optional[TurnLease] = None,
     workspace_write: bool = False,
+    process_workspace_write: bool = False,
     disabled_tools: frozenset[str] = frozenset(),
+    defer_ownership: bool = False,
 ) -> tuple[AgentExecutionContext, str]:
     owner = str(owner_id or "")
     session = str(session_id)
@@ -257,6 +262,7 @@ def prepare_execution_context(
         root=execution_root,
         plan_mode=plan_mode,
         workspace_write=bool(workspace_write),
+        process_workspace_write=bool(process_workspace_write),
     )
     revision_material = json.dumps(
         {
@@ -268,6 +274,7 @@ def prepare_execution_context(
             "disabled_tools": sorted(str(item) for item in disabled_tools),
             "plan_mode": bool(plan_mode),
             "workspace_write": bool(workspace_write),
+            "process_workspace_write": bool(process_workspace_write),
         },
         sort_keys=True,
         separators=(",", ":"),
@@ -307,12 +314,24 @@ def prepare_execution_context(
         observation_ledger=ObservationLedger(),
         event_factory=event_factory,
     )
-    RUN_OWNERSHIP.bind_run(
-        owner_id=owner,
-        conversation_id=conversation,
-        turn_id=lease.turn_id,
-        run_id=actual_run_id,
-    )
+    if defer_ownership:
+        if not lease.prepared:
+            raise ValueError("deferred execution context requires a prepared turn lease")
+        return context, reason
+    if lease.prepared:
+        RUN_OWNERSHIP.commit_prepared_turn(lease, run_id=actual_run_id)
+    else:
+        RUN_OWNERSHIP.bind_run(
+            owner_id=owner,
+            conversation_id=conversation,
+            turn_id=lease.turn_id,
+            run_id=actual_run_id,
+        )
+    _bind_initial_contract(context)
+    return context, reason
+
+
+def _bind_initial_contract(context: AgentExecutionContext) -> None:
     # Direct internal callers historically receive an immediately usable
     # context.  Bind the widest registry-derived contract here, then the real
     # agent round narrows it exactly once before provider schemas or dispatch.
@@ -323,12 +342,12 @@ def prepare_execution_context(
         definition.name
         for definition in TOOL_REGISTRY
         if definition.exposed(context)
-        and definition.name not in authority.disabled_tools
+        and definition.name not in context.authority_grant.disabled_tools
     )
     contract_material = json.dumps(
         {
-            "authority": authority.revision,
-            "catalog": str(tool_catalog_revision),
+            "authority": context.authority_grant.revision,
+            "catalog": str(context.tool_catalog_revision),
             "names": sorted(initial_tools),
         },
         sort_keys=True,
@@ -344,4 +363,15 @@ def prepare_execution_context(
         round_number=0,
         candidate_id=context.candidate_id,
     )
-    return context, reason
+
+
+def activate_execution_context(
+    context: AgentExecutionContext,
+    turn_lease: TurnLease,
+) -> None:
+    """Commit a prepared turn and bind its immutable execution contract."""
+
+    if context.turn_id != turn_lease.turn_id:
+        raise ValueError("execution context and prepared turn lease do not match")
+    RUN_OWNERSHIP.commit_prepared_turn(turn_lease, run_id=context.run_id)
+    _bind_initial_contract(context)

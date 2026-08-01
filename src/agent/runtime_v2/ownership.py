@@ -21,6 +21,9 @@ class OwnershipError(RuntimeError):
 class TurnLease:
     conversation_id: str
     turn_id: str
+    owner_id: str = ""
+    expected_turn_id: Optional[str] = None
+    prepared: bool = False
 
 
 @dataclass
@@ -47,14 +50,63 @@ class RunOwnershipStore:
         owner = str(owner_id or "")
         if not conversation:
             raise ValueError("turn ownership requires a conversation id")
-        lease = TurnLease(conversation, secrets.token_urlsafe(18))
         with self._lock:
+            current = self._records.get(conversation)
+            lease = TurnLease(
+                conversation,
+                secrets.token_urlsafe(18),
+                owner,
+                current.turn_id if current else None,
+                False,
+            )
             self._records[conversation] = _TurnRecord(
                 owner_id=owner,
                 conversation_id=conversation,
                 turn_id=lease.turn_id,
             )
         return lease
+
+    def prepare_turn(self, *, owner_id: str, conversation_id: str) -> TurnLease:
+        """Create a compare-and-set lease without superseding current work."""
+
+        conversation = str(conversation_id or "")
+        owner = str(owner_id or "")
+        if not conversation:
+            raise ValueError("turn ownership requires a conversation id")
+        with self._lock:
+            current = self._records.get(conversation)
+            return TurnLease(
+                conversation,
+                secrets.token_urlsafe(18),
+                owner,
+                current.turn_id if current else None,
+                True,
+            )
+
+    def commit_prepared_turn(
+        self,
+        lease: TurnLease,
+        *,
+        run_id: Optional[str] = None,
+    ) -> None:
+        """Atomically install a prepared lease iff its predecessor is current."""
+
+        if not lease.prepared:
+            raise OwnershipError("turn lease was not prepared for atomic commit")
+        with self._lock:
+            current = self._records.get(lease.conversation_id)
+            current_turn = current.turn_id if current else None
+            if current_turn != lease.expected_turn_id:
+                raise OwnershipError(
+                    "conversation changed while the replacement request was preparing"
+                )
+            self._records[lease.conversation_id] = _TurnRecord(
+                owner_id=lease.owner_id,
+                conversation_id=lease.conversation_id,
+                turn_id=lease.turn_id,
+                run_id=str(run_id) if run_id else None,
+                run_active=bool(run_id),
+            )
 
     def bind_run(
         self,
@@ -156,9 +208,9 @@ class RunOwnershipStore:
             record = self._require_context_locked(context)
             if event.run_id != context.run_id:
                 raise OwnershipError("runtime event belongs to a different run")
-            if event.conversation_id not in {None, context.conversation_id}:
+            if event.conversation_id != context.conversation_id:
                 raise OwnershipError("runtime event belongs to a different conversation")
-            if event.turn_id not in {None, context.turn_id}:
+            if event.turn_id != context.turn_id:
                 raise OwnershipError("runtime event belongs to a superseded turn")
             if event.candidate_id is not None and (
                 event.candidate_id not in record.selected_candidates.values()

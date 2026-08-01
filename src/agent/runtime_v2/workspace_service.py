@@ -5,17 +5,19 @@ from __future__ import annotations
 import base64
 import difflib
 import hashlib
+import heapq
 import json
 import os
 import shutil
 import stat
-import subprocess
 import tempfile
 import threading
 import time
 import uuid
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Optional, Sequence
+
+from .internal_git import HARDENED_GIT
 
 
 class WorkspaceError(RuntimeError):
@@ -42,6 +44,7 @@ class WorkspaceService:
     """All migrated filesystem handlers enter through this service."""
 
     INTERNAL_DIRECTORY = ".odysseus-runtime"
+    _MAX_SEARCH_LINE_BYTES = 4 * 1024 * 1024
     SKIP_DIRECTORIES = frozenset(
         {
             ".git",
@@ -150,93 +153,12 @@ class WorkspaceService:
         return self._bump_revision(canonical)
 
     def _workspace_fingerprint(self, root: str) -> tuple[str, bool]:
-        """Hash Git identity plus dirty-file content; bounded metadata fallback."""
+        """Hash non-executing Git identity plus bounded workspace contents."""
 
         material = hashlib.sha256()
-        try:
-            completed = subprocess.run(
-                [
-                    "git",
-                    "-C",
-                    root,
-                    "status",
-                    "--porcelain=v1",
-                    "-z",
-                    "--untracked-files=all",
-                    "--ignored=no",
-                    "--",
-                    ".",
-                ],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                timeout=2,
-                check=False,
-                env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LC_ALL": "C"},
-            )
-        except (OSError, subprocess.SubprocessError):
-            completed = None
-        if completed is not None and completed.returncode == 0:
-            status_bytes = completed.stdout
-            material.update(b"git\0")
-            material.update(status_bytes)
-            try:
-                head = subprocess.run(
-                    ["git", "-C", root, "rev-parse", "HEAD"],
-                    stdin=subprocess.DEVNULL,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL,
-                    timeout=1,
-                    check=False,
-                    env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "LC_ALL": "C"},
-                )
-            except (OSError, subprocess.SubprocessError):
-                return material.hexdigest(), False
-            material.update(head.stdout.strip())
-            records = [item for item in status_bytes.split(b"\0") if item]
-            if len(records) > 20_000 or len(status_bytes) > 4 * 1024 * 1024:
-                return material.hexdigest(), False
-            content_bytes = 0
-            content_budget = 16 * 1024 * 1024
-            for raw in records:
-                text = raw.decode("utf-8", errors="surrogateescape")
-                relative = text[3:] if len(text) > 3 else ""
-                if not relative:
-                    continue
-                path = os.path.realpath(os.path.join(root, relative))
-                try:
-                    if os.path.commonpath((root, path)) != root:
-                        continue
-                    info = os.stat(path, follow_symlinks=False)
-                except (OSError, ValueError):
-                    material.update(relative.encode("utf-8", errors="surrogateescape"))
-                    material.update(b"\0missing")
-                    continue
-                material.update(relative.encode("utf-8", errors="surrogateescape"))
-                material.update(
-                    f"\0{info.st_mode}:{info.st_size}:{info.st_mtime_ns}:{info.st_ino}".encode()
-                )
-                if stat.S_ISREG(info.st_mode):
-                    sample_bytes = (
-                        info.st_size
-                        if info.st_size <= 4 * 1024 * 1024
-                        else 128 * 1024
-                    )
-                    if content_bytes + sample_bytes > content_budget:
-                        return material.hexdigest(), False
-                    try:
-                        with open(path, "rb") as handle:
-                            if info.st_size <= 4 * 1024 * 1024:
-                                material.update(handle.read())
-                            else:
-                                material.update(handle.read(64 * 1024))
-                                handle.seek(max(info.st_size - 64 * 1024, 0))
-                                material.update(handle.read(64 * 1024))
-                        content_bytes += sample_bytes
-                    except OSError:
-                        return material.hexdigest(), False
-            return material.hexdigest(), True
-
+        git_identity = HARDENED_GIT.inspect(root)
+        material.update(b"git-metadata\0")
+        material.update(git_identity.digest.encode("ascii"))
         examined = 0
         content_bytes = 0
         content_budget = 8 * 1024 * 1024
@@ -271,11 +193,17 @@ class WorkspaceService:
                         content_bytes += info.st_size
                     except OSError:
                         return material.hexdigest(), False
-        return material.hexdigest(), True
+        return material.hexdigest(), git_identity.stable
 
     def transaction_parent(self, root: str) -> str:
         canonical = self._root(root)
-        root_id = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        root_id = hashlib.sha256(
+            json.dumps(
+                self._filesystem_identity(canonical),
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
         for journal_base in self._journal_bases:
             try:
                 if os.path.commonpath((canonical, journal_base)) == canonical:
@@ -286,6 +214,15 @@ class WorkspaceService:
         raise WorkspacePathError(
             "no recovery-journal location is outside the selected workspace"
         )
+
+    @staticmethod
+    def _filesystem_identity(root: str) -> dict[str, Any]:
+        info = os.stat(root, follow_symlinks=False)
+        return {
+            "root": os.path.realpath(root),
+            "device": int(info.st_dev),
+            "inode": int(info.st_ino),
+        }
 
     def _bump_revision(self, root: str) -> str:
         with self._lock:
@@ -479,11 +416,11 @@ class WorkspaceService:
         revision: str,
         arguments: Mapping[str, Any],
         offset: int,
-        total: int,
-        cursor: Optional[str] = None,
+        total: Optional[int],
+        cursor: Any = None,
         remaining: Optional[int] = None,
     ) -> Optional[dict[str, Any]]:
-        if offset >= total:
+        if total is not None and offset >= total:
             return None
         token = self._token(
             {
@@ -497,7 +434,11 @@ class WorkspaceService:
         return {
             "token": token,
             "offset": offset,
-            "remaining": total - offset if remaining is None else remaining,
+            "remaining": (
+                None
+                if total is None and remaining is None
+                else (total - offset if remaining is None else remaining)
+            ),
         }
 
     def _continuation_cursor(
@@ -522,31 +463,67 @@ class WorkspaceService:
         cursor = decoded.get("cursor")
         return str(cursor) if cursor else None
 
-    def _iter_workspace_entries(self, base: str):
-        """Yield a bounded-consumer-friendly lexical depth-first view.
+    def _search_scan_cursor(
+        self,
+        *,
+        revision: str,
+        arguments: Mapping[str, Any],
+    ) -> Optional[dict[str, Any]]:
+        token = arguments.get("continuation")
+        if not token:
+            return None
+        decoded = self._decode_token(str(token))
+        if (
+            decoded.get("kind") != "search_text"
+            or decoded.get("revision") != revision
+            or decoded.get("query")
+            != self._query_identity("search_text", arguments)
+        ):
+            raise WorkspaceConflict(
+                "continuation no longer matches stable search_text query or workspace revision"
+            )
+        cursor = decoded.get("cursor")
+        if cursor is None:
+            return None
+        if not isinstance(cursor, Mapping):
+            raise WorkspaceConflict("invalid search continuation cursor")
+        try:
+            return {
+                "path": str(cursor.get("path") or ""),
+                "offset": max(int(cursor.get("offset") or 0), 0),
+                "line": max(int(cursor.get("line") or 0), 0),
+            }
+        except (TypeError, ValueError) as exc:
+            raise WorkspaceConflict("invalid search continuation cursor") from exc
 
-        Directories are yielded before their children so callers can charge
-        traversal work to a scan budget without first materializing the tree.
+    def _iter_workspace_entries(self, base: str):
+        """Yield entries in global lexical order with a bounded frontier.
+
+        A depth-first walk is not globally lexical for prefix-collision paths
+        such as ``a.txt`` and ``a/child.txt``.  A heap frontier makes the cursor
+        order exactly match iteration order without materializing the tree.
         """
 
-        def entries(path: str):
-            try:
-                return iter(sorted(os.scandir(path), key=lambda item: item.name))
-            except OSError:
-                return iter(())
+        frontier: list[tuple[str, str]] = []
 
-        stack = [entries(base)]
-        while stack:
+        def push_children(path: str) -> None:
             try:
-                entry = next(stack[-1])
-            except StopIteration:
-                stack.pop()
-                continue
-            path = entry.path
+                entries = os.scandir(path)
+            except OSError:
+                return
+            with entries:
+                for entry in entries:
+                    relative = os.path.relpath(entry.path, base).replace(os.sep, "/")
+                    heapq.heappush(frontier, (relative, entry.path))
+
+        push_children(base)
+        while frontier:
+            _, path = heapq.heappop(frontier)
             try:
-                is_symlink = entry.is_symlink()
-                is_directory = entry.is_dir(follow_symlinks=False)
-                is_file = entry.is_file(follow_symlinks=False)
+                entry = os.stat(path, follow_symlinks=False)
+                is_symlink = stat.S_ISLNK(entry.st_mode)
+                is_directory = stat.S_ISDIR(entry.st_mode)
+                is_file = stat.S_ISREG(entry.st_mode)
             except OSError:
                 yield path, False
                 continue
@@ -554,10 +531,10 @@ class WorkspaceService:
             if (
                 is_directory
                 and not is_symlink
-                and entry.name.casefold() not in self.SKIP_DIRECTORIES
-                and entry.name != self.INTERNAL_DIRECTORY
+                and os.path.basename(path).casefold() not in self.SKIP_DIRECTORIES
+                and os.path.basename(path) != self.INTERNAL_DIRECTORY
             ):
-                stack.append(entries(path))
+                push_children(path)
 
     def find_files(self, root: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
         canonical_root = self._root(root)
@@ -652,7 +629,11 @@ class WorkspaceService:
                 revision=revision,
                 arguments=arguments,
                 offset=offset + len(files),
-                total=offset + len(files) + (1 if has_more else 0),
+                total=(
+                    offset + len(files) + 1
+                    if has_more
+                    else None
+                ),
                 cursor=last_cursor,
                 remaining=None if budget_exhausted else 1,
             )
@@ -667,139 +648,21 @@ class WorkspaceService:
             "scan_budget_entries": scan_budget,
         }
 
-    @staticmethod
-    def _rg_available() -> Optional[str]:
-        return shutil.which("rg")
-
-    def _ripgrep_matches(
-        self,
-        root: str,
-        arguments: Mapping[str, Any],
-        max_results: int,
-    ) -> tuple[list[dict[str, Any]], bool, bool, Optional[int], int]:
-        rg = self._rg_available()
-        if not rg:
-            raise FileNotFoundError("ripgrep unavailable")
-        pattern = str(arguments.get("pattern") or "")
-        argv = [
-            rg,
-            "--json",
-            "--no-messages",
-            "--max-columns",
-            "4096",
-            "--max-columns-preview",
-        ]
-        argv.append("--fixed-strings" if arguments.get("fixed_string") else "--regexp")
-        argv.append(pattern)
-        argv.extend(("--context", str(max(0, min(int(arguments.get("context_lines") or 0), 20)))))
-        case_sensitive = arguments.get("case_sensitive")
-        if case_sensitive is False:
-            argv.append("--ignore-case")
-        elif case_sensitive is True:
-            argv.append("--case-sensitive")
-        includes = arguments.get("include") or []
-        excludes = arguments.get("exclude") or []
-        if isinstance(includes, str):
-            includes = [includes]
-        if isinstance(excludes, str):
-            excludes = [excludes]
-        for include in includes:
-            argv.extend(("--glob", str(include)))
-        for exclude in excludes:
-            argv.extend(("--glob", "!" + str(exclude).lstrip("!")))
-        argv.extend(("--glob", f"!{self.INTERNAL_DIRECTORY}/**"))
-        for directory in sorted(self.SKIP_DIRECTORIES):
-            argv.extend(("--glob", f"!{directory}/**"))
-            argv.extend(("--glob", f"!**/{directory}/**"))
-        sensitive_names = set(self.SENSITIVE_BASENAMES) | set(
-            self._SENSITIVE_SEARCH_FILENAMES
-        )
-        for filename in sorted(sensitive_names):
-            argv.extend(("--glob", f"!{filename}"))
-            argv.extend(("--glob", f"!**/{filename}"))
-        for pattern in (
-            ".env.*",
-            "**/.env.*",
-            "*.pem",
-            "**/*.pem",
-            "*.key",
-            "**/*.key",
-            "*.p12",
-            "**/*.p12",
-            "*.pfx",
-            "**/*.pfx",
-        ):
-            argv.extend(("--glob", f"!{pattern}"))
-        search_path = self.resolve(root, str(arguments.get("path") or "."), allow_missing=False)
-        argv.append(search_path)
-        from .process_service import PROCESS_SERVICE
-
-        completed = PROCESS_SERVICE.run_workspace_search(
-            argv,
-            root=root,
-            timeout_seconds=min(
-                float(arguments.get("scan_timeout_seconds") or 2.0),
-                10.0,
-            ),
-            max_output_bytes=min(
-                max(int(arguments.get("max_scan_bytes") or 1_048_576), 65_536),
-                4_194_304,
-            ),
-        )
-        if completed["returncode"] not in (0, 1) and not (
-            completed.get("budget_exhausted") or completed.get("timed_out")
-        ):
-            detail = completed["stderr"].decode("utf-8", errors="replace")[:500]
-            raise WorkspaceError(
-                f"ripgrep failed: {detail or completed['returncode']}"
-            )
-        matches: list[dict[str, Any]] = []
-        for raw_line in completed["stdout"].splitlines():
-            try:
-                event = json.loads(raw_line)
-            except (TypeError, ValueError):
-                continue
-            event_type = event.get("type")
-            if event_type not in {"match", "context"}:
-                continue
-            data = event.get("data") or {}
-            path_text = ((data.get("path") or {}).get("text") or "")
-            if not path_text:
-                continue
-            absolute = path_text if os.path.isabs(path_text) else os.path.join(root, path_text)
-            try:
-                relative = self.relative(root, self.resolve(root, absolute, allow_missing=False))
-            except WorkspaceError:
-                continue
-            line_text = str((data.get("lines") or {}).get("text") or "").rstrip("\r\n")
-            from src.process_sandbox import redact_sensitive_output
-
-            line_text, _ = redact_sensitive_output(line_text)
-            submatches = data.get("submatches") or []
-            column = int(submatches[0].get("start", 0)) + 1 if submatches else 1
-            matches.append(
-                {
-                    "path": relative,
-                    "line": int(data.get("line_number") or 0),
-                    "column": column,
-                    "text": line_text,
-                    "kind": event_type,
-                }
-            )
-        return (
-            matches,
-            bool(completed.get("budget_exhausted")),
-            bool(completed.get("timed_out")),
-            None,
-            len(completed["stdout"]),
-        )
-
     def _python_search_matches(
         self,
         root: str,
         arguments: Mapping[str, Any],
         max_results: int,
-    ) -> tuple[list[dict[str, Any]], bool, bool, int, int]:
+        *,
+        scan_cursor: Optional[Mapping[str, Any]] = None,
+    ) -> tuple[
+        list[dict[str, Any]],
+        bool,
+        bool,
+        int,
+        int,
+        Optional[dict[str, Any]],
+    ]:
         import re
 
         pattern = str(arguments.get("pattern") or "")
@@ -834,29 +697,29 @@ class WorkspaceService:
         if os.path.isfile(search_path):
             paths = iter((search_path,))
         else:
-            def iter_paths():
-                for current, directories, names in os.walk(
-                    search_path, followlinks=False
-                ):
-                    directories[:] = sorted(
-                        directory
-                        for directory in directories
-                        if directory.casefold() not in self.SKIP_DIRECTORIES
-                        and directory != self.INTERNAL_DIRECTORY
-                        and not os.path.islink(os.path.join(current, directory))
-                    )
-                    for name in sorted(names):
-                        yield os.path.join(current, name)
-
-            paths = iter_paths()
+            paths = (
+                path
+                for path, is_file in self._iter_workspace_entries(search_path)
+                if is_file
+            )
+        cursor_path = str((scan_cursor or {}).get("path") or "")
+        cursor_offset = max(int((scan_cursor or {}).get("offset") or 0), 0)
+        cursor_line = max(int((scan_cursor or {}).get("line") or 0), 0)
+        last_cursor: Optional[dict[str, Any]] = (
+            {"path": cursor_path, "offset": cursor_offset, "line": cursor_line}
+            if cursor_path
+            else None
+        )
         for path in paths:
+            relative = self.relative(root, path)
+            if cursor_path and relative < cursor_path:
+                continue
             if scanned >= scan_budget or time.monotonic() - started > timeout:
                 budget_exhausted = True
                 break
             scanned += 1
             if os.path.islink(path) or not os.path.isfile(path):
                 continue
-            relative = self.relative(root, path)
             if self._is_sensitive_relative(relative):
                 continue
             if not any(
@@ -871,12 +734,16 @@ class WorkspaceService:
                 if remaining_bytes <= 0:
                     budget_exhausted = True
                     break
+                start_offset = cursor_offset if relative == cursor_path else 0
+                start_line = cursor_line if relative == cursor_path else 0
                 with open(path, "rb") as handle:
+                    handle.seek(start_offset)
                     raw = handle.read(remaining_bytes + 1)
                 truncated_file = len(raw) > remaining_bytes
                 raw = raw[:remaining_bytes]
                 scanned_bytes += len(raw)
-                lines = raw.decode("utf-8", errors="replace").splitlines()
+                decoded_lines = raw.decode("utf-8", errors="replace").splitlines()
+                lines = decoded_lines
                 matched = {
                     index: expression.search(line)
                     for index, line in enumerate(lines)
@@ -895,7 +762,7 @@ class WorkspaceService:
                         current_match = matched.get(current)
                         emitted[current] = {
                             "path": relative,
-                            "line": current + 1,
+                            "line": start_line + current + 1,
                             "column": (
                                 current_match.start() + 1
                                 if current_match is not None
@@ -909,6 +776,11 @@ class WorkspaceService:
                 for item in emitted.values():
                     item["text"], _ = redact_sensitive_output(item["text"])
                 matches.extend(emitted[index] for index in sorted(emitted))
+                last_cursor = {
+                    "path": relative,
+                    "offset": start_offset + len(raw),
+                    "line": start_line + len(decoded_lines),
+                }
                 if truncated_file:
                     budget_exhausted = True
                     break
@@ -920,6 +792,198 @@ class WorkspaceService:
             time.monotonic() - started > timeout,
             scanned,
             scanned_bytes,
+            last_cursor,
+        )
+
+    def _python_search_page(
+        self,
+        root: str,
+        arguments: Mapping[str, Any],
+        max_results: int,
+        *,
+        scan_cursor: Optional[Mapping[str, Any]],
+    ) -> tuple[
+        list[dict[str, Any]],
+        bool,
+        bool,
+        int,
+        int,
+        Optional[dict[str, Any]],
+    ]:
+        """Scan a deterministic page without advancing past an unreturned match.
+
+        This path is used whenever traversal/byte/time budgets can interrupt a
+        search.  Its cursor identifies the next unread byte of the globally
+        lexical file stream, so even an empty match page remains resumable.
+        Context rows are deliberately omitted on interrupted pages; exact match
+        continuation takes precedence over best-effort presentation context.
+        """
+
+        import re
+
+        pattern = str(arguments.get("pattern") or "")
+        flags = 0 if arguments.get("case_sensitive", True) else re.IGNORECASE
+        expression = re.compile(
+            re.escape(pattern) if arguments.get("fixed_string") else pattern,
+            flags,
+        )
+        includes = arguments.get("include") or ["**/*"]
+        excludes = arguments.get("exclude") or []
+        if isinstance(includes, str):
+            includes = [includes]
+        if isinstance(excludes, str):
+            excludes = [excludes]
+        search_path = self.resolve(
+            root,
+            str(arguments.get("path") or "."),
+            allow_missing=False,
+        )
+        paths: Any
+        if os.path.isfile(search_path):
+            paths = iter((search_path,))
+        else:
+            paths = (
+                path
+                for path, is_file in self._iter_workspace_entries(search_path)
+                if is_file
+            )
+        scan_budget = max(
+            1,
+            min(int(arguments.get("max_scan_entries") or 20_000), 100_000),
+        )
+        byte_budget = min(
+            max(int(arguments.get("max_scan_bytes") or 1_048_576), 65_536),
+            4_194_304,
+        )
+        timeout = max(
+            0.05,
+            min(float(arguments.get("scan_timeout_seconds") or 2.0), 10.0),
+        )
+        cursor_path = str((scan_cursor or {}).get("path") or "")
+        cursor_offset = max(int((scan_cursor or {}).get("offset") or 0), 0)
+        cursor_line = max(int((scan_cursor or {}).get("line") or 0), 0)
+        matches: list[dict[str, Any]] = []
+        scanned_entries = 0
+        scanned_bytes = 0
+        started = time.monotonic()
+        incomplete = False
+        timed_out = False
+        next_cursor: Optional[dict[str, Any]] = None
+
+        for path in paths:
+            relative = self.relative(root, path)
+            if cursor_path and relative < cursor_path:
+                continue
+            start_offset = cursor_offset if relative == cursor_path else 0
+            completed_lines = cursor_line if relative == cursor_path else 0
+            try:
+                file_size = os.stat(path, follow_symlinks=False).st_size
+            except OSError:
+                continue
+            # An EOF cursor means this file is already fully consumed. Skip it
+            # without charging the next page's entry budget; otherwise a
+            # one-entry page can become permanently stuck on the prior file.
+            if relative == cursor_path and start_offset >= file_size:
+                continue
+            if scanned_entries >= scan_budget:
+                incomplete = True
+                break
+            if time.monotonic() - started > timeout:
+                incomplete = True
+                timed_out = True
+                break
+            scanned_entries += 1
+            if (
+                os.path.islink(path)
+                or not os.path.isfile(path)
+                or self._is_sensitive_relative(relative)
+                or not any(self._path_matches(relative, item) for item in includes)
+                or any(self._path_matches(relative, item) for item in excludes)
+            ):
+                next_cursor = {
+                    "path": relative,
+                    "offset": max(file_size, 0),
+                    "line": completed_lines,
+                }
+                continue
+            try:
+                with open(path, "rb") as handle:
+                    handle.seek(min(start_offset, file_size))
+                    while True:
+                        if len(matches) >= max_results:
+                            incomplete = True
+                            next_cursor = {
+                                "path": relative,
+                                "offset": handle.tell(),
+                                "line": completed_lines,
+                            }
+                            break
+                        if time.monotonic() - started > timeout:
+                            incomplete = True
+                            timed_out = True
+                            next_cursor = {
+                                "path": relative,
+                                "offset": handle.tell(),
+                                "line": completed_lines,
+                            }
+                            break
+                        if scanned_bytes >= byte_budget:
+                            incomplete = True
+                            next_cursor = {
+                                "path": relative,
+                                "offset": handle.tell(),
+                                "line": completed_lines,
+                            }
+                            break
+                        raw = handle.readline(self._MAX_SEARCH_LINE_BYTES + 1)
+                        if not raw:
+                            next_cursor = {
+                                "path": relative,
+                                "offset": handle.tell(),
+                                "line": completed_lines,
+                            }
+                            break
+                        if (
+                            len(raw) > self._MAX_SEARCH_LINE_BYTES
+                            and not raw.endswith(b"\n")
+                            and handle.tell() < file_size
+                        ):
+                            raise WorkspaceError(
+                                "search line exceeds the 4 MiB deterministic scan limit"
+                            )
+                        text = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+                        match = expression.search(text)
+                        if match is not None:
+                            from src.process_sandbox import redact_sensitive_output
+
+                            redacted, _ = redact_sensitive_output(text[:4096])
+                            matches.append(
+                                {
+                                    "path": relative,
+                                    "line": completed_lines + 1,
+                                    "column": match.start() + 1,
+                                    "text": redacted,
+                                    "kind": "match",
+                                }
+                            )
+                        scanned_bytes += len(raw)
+                        completed_lines += 1
+                        next_cursor = {
+                            "path": relative,
+                            "offset": handle.tell(),
+                            "line": completed_lines,
+                        }
+            except OSError:
+                continue
+            if incomplete:
+                break
+        return (
+            matches,
+            incomplete,
+            timed_out,
+            scanned_entries,
+            scanned_bytes,
+            next_cursor if incomplete else None,
         )
 
     def search_text(self, root: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
@@ -928,30 +992,59 @@ class WorkspaceService:
             canonical_root, arguments.get("expected_workspace_revision")
         )
         max_results = max(1, min(int(arguments.get("max_results") or 200), 500))
-        try:
-            if arguments.get("max_scan_entries") is not None:
-                raise FileNotFoundError("entry budget requires bounded walker")
+        scan_cursor = self._search_scan_cursor(
+            revision=revision,
+            arguments=arguments,
+        )
+        force_bounded = (
+            arguments.get("max_scan_entries") is not None
+            or scan_cursor is not None
+        )
+        if force_bounded:
             (
                 matches,
                 byte_budget_exhausted,
                 timed_out,
                 scanned_entries,
                 scanned_bytes,
-            ) = self._ripgrep_matches(
-                canonical_root, arguments, max_results
+                next_scan_cursor,
+            ) = self._python_search_page(
+                canonical_root,
+                arguments,
+                max_results,
+                scan_cursor=scan_cursor,
             )
-            backend = "ripgrep"
-        except FileNotFoundError:
+            backend = "python_bounded"
+        else:
             (
                 matches,
                 byte_budget_exhausted,
                 timed_out,
                 scanned_entries,
                 scanned_bytes,
+                next_scan_cursor,
             ) = self._python_search_matches(
-                canonical_root, arguments, max_results
+                canonical_root,
+                arguments,
+                max_results,
+                scan_cursor=None,
             )
-            backend = "python_fallback"
+            backend = "python_native"
+            if byte_budget_exhausted or timed_out:
+                (
+                    matches,
+                    byte_budget_exhausted,
+                    timed_out,
+                    scanned_entries,
+                    scanned_bytes,
+                    next_scan_cursor,
+                ) = self._python_search_page(
+                    canonical_root,
+                    arguments,
+                    max_results,
+                    scan_cursor=None,
+                )
+                backend = "python_bounded"
         matches.sort(
             key=lambda item: (
                 item["path"],
@@ -960,16 +1053,32 @@ class WorkspaceService:
                 0 if item["kind"] == "match" else 1,
             )
         )
-        offset = self._continuation_offset(
+        offset = (
+            0
+            if scan_cursor is not None
+            else self._continuation_offset(
             kind="search_text",
             root=canonical_root,
             revision=revision,
             arguments=arguments,
+            )
         )
         page = matches[offset : offset + max_results]
         incomplete_scan = bool(byte_budget_exhausted or timed_out)
         continuation = None
-        if offset + len(page) < len(matches):
+        if incomplete_scan:
+            continuation = self._next_continuation(
+                kind="search_text",
+                revision=revision,
+                arguments=arguments,
+                offset=0,
+                total=None,
+                cursor=next_scan_cursor
+                or scan_cursor
+                or {"path": "", "offset": 0, "line": 0},
+                remaining=None,
+            )
+        elif offset + len(page) < len(matches):
             continuation = self._next_continuation(
                 kind="search_text",
                 revision=revision,
@@ -1323,9 +1432,11 @@ class WorkspaceService:
                     f"cannot recover transaction {transaction_id}: invalid manifest"
                 )
             if (
-                manifest.get("version") != 1
+                manifest.get("version") != 2
                 or str(manifest.get("transaction_id") or "") != transaction_id
                 or os.path.realpath(str(manifest.get("root") or "")) != canonical_root
+                or manifest.get("filesystem_identity")
+                != self._filesystem_identity(canonical_root)
             ):
                 raise WorkspaceError(
                     f"cannot recover transaction {transaction_id}: manifest identity mismatch"
@@ -1409,15 +1520,27 @@ class WorkspaceService:
                 pass
         return recovered
 
-    def patch_workspace(self, root: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
+    def patch_workspace(
+        self,
+        root: str,
+        arguments: Mapping[str, Any],
+        *,
+        effect_started_cb=None,
+    ) -> dict[str, Any]:
         canonical_root = self._root(root)
         with self._root_lock(canonical_root):
-            return self._patch_workspace_locked(canonical_root, arguments)
+            return self._patch_workspace_locked(
+                canonical_root,
+                arguments,
+                effect_started_cb=effect_started_cb,
+            )
 
     def _patch_workspace_locked(
         self,
         root: str,
         arguments: Mapping[str, Any],
+        *,
+        effect_started_cb=None,
     ) -> dict[str, Any]:
         canonical_root = self._root(root)
         before_revision = self.require_revision(
@@ -1474,10 +1597,11 @@ class WorkspaceService:
         os.makedirs(backups, mode=0o700, exist_ok=False)
         manifest_path = os.path.join(journal_root, "manifest.json")
         manifest: dict[str, Any] = {
-            "version": 1,
+            "version": 2,
             "transaction_id": transaction_id,
             "state": "prepared",
             "root": canonical_root,
+            "filesystem_identity": self._filesystem_identity(canonical_root),
             "changes": [],
         }
         staged: dict[str, str] = {}
@@ -1536,6 +1660,7 @@ class WorkspaceService:
             self._fsync_directory(journal_root)
             committed: list[str] = []
             try:
+                boundary_started = False
                 for path, new in changes.items():
                     self._assert_target_still_confined(canonical_root, path)
                     self._check_hash(
@@ -1543,6 +1668,9 @@ class WorkspaceService:
                         before_hashes[path],
                         self.relative(canonical_root, path),
                     )
+                    if not boundary_started and effect_started_cb is not None:
+                        effect_started_cb()
+                        boundary_started = True
                     if new is None:
                         os.unlink(path)
                     else:

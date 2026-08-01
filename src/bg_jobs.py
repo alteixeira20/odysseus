@@ -98,6 +98,7 @@ def launch(
     owner: Optional[str] = None,
     execution_mode: str = "disabled",
     execution_context: Optional[Any] = None,
+    effect_started_cb: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Launch `command` detached. Returns the job record (status='running').
 
@@ -106,7 +107,7 @@ def launch(
     outlives the request/stream that started it.
     """
     context_snapshot: Dict[str, Any] = {}
-    workspace_write_granted = False
+    process_workspace_write_granted = False
     if execution_context is not None:
         from src.agent.runtime_v2.contracts import Capability
         from src.agent.runtime_v2.workspace_service import WORKSPACE_SERVICE
@@ -119,8 +120,8 @@ def launch(
         if canonical_cwd != execution_context.execution_root.path:
             raise ValueError("background root does not match execution context")
         mode = execution_context.execution_mode
-        workspace_write_granted = execution_context.authority_grant.allows(
-            Capability.WORKSPACE_WRITE
+        process_workspace_write_granted = execution_context.authority_grant.allows(
+            Capability.PROCESS_WORKSPACE_WRITE
         )
         max_runtime_s = max(
             1,
@@ -140,7 +141,7 @@ def launch(
                 execution_context.execution_root.path
             ),
             "authority_revision": execution_context.authority_grant.revision,
-            "workspace_write_granted": workspace_write_granted,
+            "process_workspace_write_granted": process_workspace_write_granted,
             "resource_limits": {
                 "wall_clock_seconds": execution_context.budgets.wall_clock_seconds,
                 "idle_seconds": execution_context.budgets.idle_seconds,
@@ -191,7 +192,7 @@ def launch(
             timeout_seconds=max_runtime_s,
             writable_paths=(
                 (os.path.realpath(cwd),)
-                if workspace_write_granted
+                if process_workspace_write_granted
                 else ()
             ),
         )
@@ -207,10 +208,11 @@ def launch(
         popen_stderr = subprocess.DEVNULL
         child_environment = minimal_environment({})
     elif mode is ExecutionMode.HOST:
-        # Full host mode is intentionally useful: inherit network, PATH,
-        # credential helpers, SSH agents, Docker sockets and platform tooling
-        # from the Odysseus process. A trap persists the exit status even when
-        # the command itself calls `exit`.
+        # Full host mode retains host visibility/network, but executes with the
+        # same exact, minimal environment that was bound into approval. A trap
+        # persists the exit status even when the command itself calls `exit`.
+        from src.agent.runtime_v2.process_identity import execution_environment
+
         encoded = base64.b64encode(command.encode("utf-8", errors="surrogatepass")).decode("ascii")
         exit_target = git_bash_path(exit_path)
         script_path = _JOBS_DIR / f"{job_id}.sh"
@@ -225,8 +227,8 @@ def launch(
         argv, child_environment = host_command_boundary(
             [bash, str(script_path)],
             cwd=os.path.realpath(cwd),
-            workspace_writable=workspace_write_granted,
-            environment=os.environ.copy(),
+            workspace_writable=process_workspace_write_granted,
+            environment=execution_environment(),
         )
         log_handle = log_path.open("ab")
         popen_stdout = log_handle
@@ -247,6 +249,15 @@ def launch(
             env=child_environment,
             **detached_popen_kwargs(),  # setsid / DETACHED_PROCESS
         )
+        if effect_started_cb is not None:
+            try:
+                effect_started_cb()
+            except BaseException:
+                try:
+                    proc.terminate()
+                except OSError:
+                    pass
+                raise
     finally:
         if mode is ExecutionMode.HOST:
             log_handle.close()
@@ -355,7 +366,10 @@ def refresh() -> Dict[str, Dict[str, Any]]:
                         rec["execution_root"]
                     )
                     rec["workspace_mutated"] = True
-                    if not rec.get("workspace_write_granted"):
+                    if not rec.get(
+                        "process_workspace_write_granted",
+                        rec.get("workspace_write_granted", False),
+                    ):
                         rec["status"] = "failed"
                         rec["boundary_violation"] = True
                         rec["exit_code"] = -1

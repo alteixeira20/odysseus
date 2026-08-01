@@ -22,6 +22,7 @@ from src.execution_policy import ExecutionMode, normalize_execution_mode
 from src.process_sandbox import (
     SandboxUnavailable,
     host_command_boundary,
+    minimal_environment,
     redact_sensitive_output,
     sandbox_command,
 )
@@ -648,6 +649,8 @@ async def _run_direct_bash(
     execution_mode: ExecutionMode = ExecutionMode.SANDBOXED,
     preserve_logical_cwd: bool = True,
     workspace_writable: bool = True,
+    effect_started_cb: Optional[Callable[[], None]] = None,
+    bash_executable_override: Optional[str] = None,
 ) -> BashExecutionResult:
     canonical = os.path.realpath(cwd)
     state_key = (
@@ -687,7 +690,7 @@ async def _run_direct_bash(
     }
     try:
         if execution_mode is ExecutionMode.HOST:
-            bash_executable = find_bash()
+            bash_executable = bash_executable_override or find_bash()
             if not bash_executable:
                 raise SandboxUnavailable(
                     "Full host shell was authorized, but no Bash executable is installed"
@@ -708,7 +711,7 @@ async def _run_direct_bash(
                 direct_argv,
                 cwd=run_cwd,
                 workspace_writable=workspace_writable,
-                environment=os.environ.copy(),
+                environment=env or minimal_environment({}),
                 runtime_environment=runtime_environment,
             )
         else:
@@ -744,6 +747,16 @@ async def _run_direct_bash(
             cwd=run_cwd,
             **process_kwargs,
         )
+        if effect_started_cb is not None:
+            try:
+                effect_started_cb()
+            except BaseException:
+                if os.name == "posix":
+                    await _terminate_owned_group(proc.pid)
+                elif proc.returncode is None:
+                    proc.kill()
+                await proc.wait()
+                raise
         stdout, stderr, rc, timed_out, escalation = await _run_subprocess_streaming(
             proc,
             timeout=timeout,

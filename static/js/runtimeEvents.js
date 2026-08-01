@@ -32,23 +32,32 @@ export function runtimeStateToolStatus(state) {
 
 export function createRuntimeEventReducer() {
   let runId = null;
+  let conversationId = null;
+  let turnId = null;
   let lastSequence = 0;
   let runState = null;
   let terminalState = null;
 
   return {
     get runId() { return runId; },
+    get conversationId() { return conversationId; },
+    get turnId() { return turnId; },
     get lastSequence() { return lastSequence; },
     get runState() { return runState; },
 
     consume(raw) {
-      if (!raw || raw.version !== 2 || !raw.event_id || !raw.run_id || !raw.timestamp) return null;
+      if (!raw || raw.version !== 2 || !raw.event_id || !raw.run_id
+          || !raw.conversation_id || !raw.turn_id || !raw.timestamp) return null;
       const sequence = Number(raw.sequence);
       if (!Number.isInteger(sequence) || sequence <= 0) return null;
       if (runId && raw.run_id !== runId) return null;
+      if (conversationId && raw.conversation_id !== conversationId) return null;
+      if (turnId && raw.turn_id !== turnId) return null;
       if (sequence <= lastSequence) return null;
       if (!raw.payload || typeof raw.payload !== 'object' || Array.isArray(raw.payload)) return null;
       runId = raw.run_id;
+      conversationId = raw.conversation_id;
+      turnId = raw.turn_id;
       lastSequence = sequence;
 
       const payload = raw.payload;

@@ -18,6 +18,9 @@ from src.agent.runtime_v2.authority import (
     prepare_execution_context,
 )
 from src.agent.runtime_v2.contracts import RunBudgets, ToolResult, ToolResultStatus
+from src.agent.runtime_v2.approvals import EFFECT_APPROVALS
+from src.agent.runtime_v2.executor import execute_normalized_tool_call
+from src.agent.rounds.tool_calls import normalize_tool_calls
 from src.agent.tools.bootstrap import TOOL_REGISTRY
 
 
@@ -69,19 +72,35 @@ async def test_dispatcher_rejects_process_tool_without_typed_authority(tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_host_mode_inherits_normal_environment_and_reports_mode(tmp_path, monkeypatch):
+async def test_host_mode_uses_approved_sanitized_environment_and_reports_mode(
+    tmp_path,
+    monkeypatch,
+):
     monkeypatch.setenv("ODYSSEUS_HOST_MODE_PROBE", "host-visible")
     context = _execution_context(tmp_path, mode="host")
-    _, result = await execute_tool_block(
-        ToolBlock("bash", 'printf "%s" "$ODYSSEUS_HOST_MODE_PROBE"'),
-        owner="admin",
-        workspace=str(tmp_path),
-        allowed_tools={"bash"},
+    call = normalize_tool_calls(
+        [ToolBlock("bash", 'printf "%s" "$ODYSSEUS_HOST_MODE_PROBE"')],
+        [],
         execution_context=context,
+        provider_name="host-environment-test",
+    )[0]
+    waiting = await execute_normalized_tool_call(call, context)
+    assert waiting.status is ToolResultStatus.APPROVAL_REQUIRED
+    approval_id = waiting.data["approval"]["approval_id"]
+    EFFECT_APPROVALS.decide(
+        approval_id,
+        owner_id=context.owner_id,
+        decision="allow",
     )
-    assert result["exit_code"] == 0
-    assert result["output"] == "host-visible"
-    assert result["execution_mode"] == "host"
+    result = await execute_normalized_tool_call(
+        call,
+        context,
+        approval_id=approval_id,
+    )
+    assert result.status is ToolResultStatus.SUCCESS
+    assert result.data["exit_code"] == 0
+    assert result.data["stdout"] == ""
+    assert result.data["execution_mode"] == "host"
 
 
 @pytest.mark.asyncio

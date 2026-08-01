@@ -45,7 +45,8 @@ def test_guidance_describes_the_enforced_process_sandbox():
     assert "isolated Linux namespace" in SANDBOX_SHELL_AUTHORITY
     assert "no network" in SANDBOX_SHELL_AUTHORITY
     assert "read-only host root" in SANDBOX_SHELL_AUTHORITY
-    assert "workspace_write_granted: true" in SANDBOX_SHELL_AUTHORITY
+    assert "process_workspace_write_granted: true" in SANDBOX_SHELL_AUTHORITY
+    assert "ordinary `workspace_write_granted`" in SANDBOX_SHELL_AUTHORITY
     assert "common workspace secrets masked" in SANDBOX_SHELL_AUTHORITY
     assert "no host fallback" in SANDBOX_SHELL_AUTHORITY
 

@@ -36,6 +36,7 @@ from .process_service import (
     ProcessSandboxUnavailable,
     ProcessServiceError,
 )
+from .process_identity import snapshot_process
 from .workspace_service import WORKSPACE_SERVICE, WorkspaceError
 
 
@@ -47,7 +48,10 @@ _RESULT_SCHEMA = {
         "status",
         "data",
         "error",
+        "attempted_effects",
+        "observed_effects",
         "committed_effects",
+        "unknown_effects",
         "artifacts",
         "truncation",
         "continuation",
@@ -70,7 +74,10 @@ _RESULT_SCHEMA = {
         },
         "data": {"type": "object"},
         "error": {"type": ["object", "null"]},
+        "attempted_effects": {"type": "array"},
+        "observed_effects": {"type": "array"},
         "committed_effects": {"type": "array"},
+        "unknown_effects": {"type": "array"},
         "artifacts": {"type": "array"},
         "truncation": {"type": ["object", "null"]},
         "continuation": {"type": ["object", "null"]},
@@ -78,6 +85,11 @@ _RESULT_SCHEMA = {
         "duration_ms": {"type": "number", "minimum": 0},
     },
 }
+
+_HANDLER_VERSION = "runtime-v2-execution-integrity-v3"
+_EFFECT_RESOLVER_VERSION = "runtime-v2-effect-policy-v3"
+_EXPOSURE_POLICY_VERSION = "runtime-v2-exposure-policy-v2"
+_SECURITY_POLICY_VERSION = "runtime-v2-approval-lifecycle-v3"
 
 
 def _json_object(raw: Any) -> dict[str, Any]:
@@ -437,6 +449,9 @@ async def _workspace_context(arguments: Mapping[str, Any], context: AgentExecuti
     workspace_write_granted = context.authority_grant.allows(
         Capability.WORKSPACE_WRITE
     )
+    process_write_granted = context.authority_grant.allows(
+        Capability.PROCESS_WORKSPACE_WRITE
+    )
     return _success(
         "workspace_context",
         {
@@ -445,14 +460,15 @@ async def _workspace_context(arguments: Mapping[str, Any], context: AgentExecuti
             "writable": workspace_write_granted,
             "host_writable": context.execution_root.writable,
             "workspace_write_granted": workspace_write_granted,
+            "process_workspace_write_granted": process_write_granted,
             "capabilities": sorted(
                 capability.value
                 for capability in context.authority_grant.capabilities
             ),
             "workspace_revision": WORKSPACE_SERVICE.revision(context.execution_root.path),
             "workspace_snapshot_policy": (
-                "git_head_status_with_bounded_dirty_and_untracked_content; "
-                "ignored_dependency_artifacts_are_visible_but_outside_the_revision"
+                "nonexecuting_git_metadata_and_bounded_workspace_content; "
+                "strong_revision_required_for_approval"
             ),
             "execution_mode": context.execution_mode.value,
             "text": (
@@ -520,10 +536,19 @@ async def _read_files(arguments: Mapping[str, Any], context: AgentExecutionConte
     )
 
 
-async def _patch_workspace(arguments: Mapping[str, Any], context: AgentExecutionContext) -> ToolResult:
+async def _patch_workspace(
+    arguments: Mapping[str, Any],
+    context: AgentExecutionContext,
+    *,
+    effect_started_cb=None,
+) -> ToolResult:
     started = time.perf_counter()
     try:
-        data = WORKSPACE_SERVICE.patch_workspace(context.execution_root.path, arguments)
+        data = WORKSPACE_SERVICE.patch_workspace(
+            context.execution_root.path,
+            arguments,
+            effect_started_cb=effect_started_cb,
+        )
     except (WorkspaceError, ValueError, UnicodeError) as exc:
         return _failure(
             "patch_workspace", getattr(exc, "code", "patch_error"), str(exc),
@@ -552,6 +577,8 @@ async def _run_command_named(
     *,
     progress_cb=None,
     invocation_id: Optional[str] = None,
+    effect_started_cb=None,
+    expected_process_identity: Optional[str] = None,
 ) -> ToolResult:
     started = time.perf_counter()
     command = str(arguments.get("command") or "")
@@ -559,7 +586,21 @@ async def _run_command_named(
     if lines and lines[0].strip().casefold() in {"#!bg", "# bg", "# background", "#background"}:
         background_command = "\n".join(lines[1:]).strip()
         try:
-            record = PROCESS_SERVICE.launch_background(background_command, context)
+            if expected_process_identity:
+                current_identity = snapshot_process(
+                    command,
+                    root=context.execution_root.path,
+                    execution_mode=context.execution_mode,
+                )
+                if current_identity.digest != str(expected_process_identity or ""):
+                    raise ProcessServiceError(
+                        "host background process identity changed after approval"
+                    )
+            record = PROCESS_SERVICE.launch_background(
+                background_command,
+                context,
+                effect_started_cb=effect_started_cb,
+            )
         except (ProcessServiceError, RuntimeError, ValueError) as exc:
             return _failure(
                 name, "background_launch_error", str(exc), backend="background_job",
@@ -572,6 +613,8 @@ async def _run_command_named(
                 "job_id": record["id"],
                 "execution_mode": context.execution_mode.value,
                 "execution_root": context.execution_root.path,
+                "effect_started": True,
+                "background": True,
             },
             backend="background_job",
             duration_ms=(time.perf_counter() - started) * 1000,
@@ -583,6 +626,8 @@ async def _run_command_named(
             context,
             progress_cb=progress_cb,
             invocation_id=invocation_id,
+            effect_started_cb=effect_started_cb,
+            expected_process_identity=expected_process_identity,
         )
     except (ProcessSandboxUnavailable, ProcessServiceError) as exc:
         return _failure(
@@ -612,6 +657,8 @@ async def _run_sandbox(
     *,
     progress_cb=None,
     invocation_id: Optional[str] = None,
+    effect_started_cb=None,
+    expected_process_identity: Optional[str] = None,
 ) -> ToolResult:
     return await _run_command_named(
         "run_sandbox_command",
@@ -619,6 +666,8 @@ async def _run_sandbox(
         context,
         progress_cb=progress_cb,
         invocation_id=invocation_id,
+        effect_started_cb=effect_started_cb,
+        expected_process_identity=expected_process_identity,
     )
 
 
@@ -628,6 +677,8 @@ async def _run_host(
     *,
     progress_cb=None,
     invocation_id: Optional[str] = None,
+    effect_started_cb=None,
+    expected_process_identity: Optional[str] = None,
 ) -> ToolResult:
     return await _run_command_named(
         "run_host_command",
@@ -635,6 +686,8 @@ async def _run_host(
         context,
         progress_cb=progress_cb,
         invocation_id=invocation_id,
+        effect_started_cb=effect_started_cb,
+        expected_process_identity=expected_process_identity,
     )
 
 
@@ -644,6 +697,8 @@ async def _run_python(
     *,
     progress_cb=None,
     invocation_id: Optional[str] = None,
+    effect_started_cb=None,
+    expected_process_identity: Optional[str] = None,
 ) -> ToolResult:
     started = time.perf_counter()
     try:
@@ -651,6 +706,8 @@ async def _run_python(
             arguments,
             context,
             progress_cb=progress_cb,
+            effect_started_cb=effect_started_cb,
+            expected_process_identity=expected_process_identity,
         )
     except (ProcessSandboxUnavailable, ProcessServiceError) as exc:
         return _failure(
@@ -758,6 +815,10 @@ def _definition(
         timeout_seconds=timeout,
         argument_adapter=adapter,
         runtime_v2=True,
+        handler_version=_HANDLER_VERSION,
+        effect_resolver_version=_EFFECT_RESOLVER_VERSION,
+        exposure_policy_version=_EXPOSURE_POLICY_VERSION,
+        security_policy_version=_SECURITY_POLICY_VERSION,
     )
 
 
@@ -852,7 +913,7 @@ def build_runtime_v2_definitions() -> dict[str, ToolDefinition]:
         ),
         _definition(
             name="search_text",
-            description="Search workspace text with ripgrep or a disclosed Python fallback and stable continuation.",
+            description="Search workspace text natively with bounded scanning and snapshot-bound stable continuation.",
             schema=object_schema({
                 "pattern": {"type": "string", "minLength": 1},
                 "path": {"type": "string"}, "fixed_string": {"type": "boolean"},
@@ -912,10 +973,10 @@ def build_runtime_v2_definitions() -> dict[str, ToolDefinition]:
         ),
         _definition(
             name="run_host_command",
-            description="Run a justified command at the server-bound host root. Opaque or sensitive effects require additional approval.",
+            description="Run one exact-approved generic command at the server-bound host root from a revalidated process snapshot.",
             schema=command_schema, handler=_run_host, category=ToolCategory.EXECUTION, risk=ToolRisk.PRIVILEGED,
             required={Capability.PROCESS_HOST}, effects=resolve_command_effects,
-            approval=DefinitionApprovalPolicy.SENSITIVE_EFFECTS, exposure=_expose_host,
+            approval=DefinitionApprovalPolicy.ALWAYS_APPROVE, exposure=_expose_host,
             adapter=_adapt_command, mutates=True, progress=True, timeout=1800,
         ),
         _definition(

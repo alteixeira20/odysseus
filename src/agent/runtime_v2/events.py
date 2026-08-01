@@ -16,8 +16,8 @@ class RuntimeEvent:
     version: int
     event_id: str
     run_id: str
-    conversation_id: Optional[str]
-    turn_id: Optional[str]
+    conversation_id: str
+    turn_id: str
     candidate_id: Optional[str]
     sequence: int
     timestamp: str
@@ -48,12 +48,16 @@ class RuntimeEventFactory:
         self,
         run_id: str,
         *,
-        conversation_id: Optional[str] = None,
-        turn_id: Optional[str] = None,
+        conversation_id: str,
+        turn_id: str,
     ):
         self.run_id = str(run_id)
-        self.conversation_id = str(conversation_id) if conversation_id else None
-        self.turn_id = str(turn_id) if turn_id else None
+        self.conversation_id = str(conversation_id or "")
+        self.turn_id = str(turn_id or "")
+        if not all((self.run_id, self.conversation_id, self.turn_id)):
+            raise ValueError(
+                "runtime event factory requires run, conversation, and turn identity"
+            )
         self._candidate_id: Optional[str] = None
         self._sequence = 0
         self._lock = threading.Lock()
@@ -102,6 +106,9 @@ def runtime_event_from_payload(payload: Mapping[str, Any]) -> Optional[RuntimeEv
     required = {
         "event_id",
         "run_id",
+        "conversation_id",
+        "turn_id",
+        "candidate_id",
         "sequence",
         "timestamp",
         "type",
@@ -113,6 +120,12 @@ def runtime_event_from_payload(payload: Mapping[str, Any]) -> Optional[RuntimeEv
     nested = payload.get("payload")
     if not isinstance(nested, Mapping):
         return None
+    if not str(payload.get("run_id") or ""):
+        return None
+    if not str(payload.get("conversation_id") or ""):
+        return None
+    if not str(payload.get("turn_id") or ""):
+        return None
     try:
         sequence = int(payload["sequence"])
     except (TypeError, ValueError):
@@ -121,16 +134,8 @@ def runtime_event_from_payload(payload: Mapping[str, Any]) -> Optional[RuntimeEv
         version=2,
         event_id=str(payload["event_id"]),
         run_id=str(payload["run_id"]),
-        conversation_id=(
-            str(payload["conversation_id"])
-            if payload.get("conversation_id") is not None
-            else None
-        ),
-        turn_id=(
-            str(payload["turn_id"])
-            if payload.get("turn_id") is not None
-            else None
-        ),
+        conversation_id=str(payload["conversation_id"]),
+        turn_id=str(payload["turn_id"]),
         candidate_id=(
             str(payload["candidate_id"])
             if payload.get("candidate_id") is not None

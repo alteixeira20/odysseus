@@ -28,9 +28,7 @@ def _all_search_pages(root, arguments):
         request = {**arguments, "continuation": continuation["token"]}
 
 
-def test_search_text_prefers_ripgrep_and_continuation_is_exact(tmp_path):
-    if shutil.which("rg") is None:
-        pytest.skip("ripgrep is unavailable")
+def test_search_text_native_continuation_is_exact(tmp_path):
     for index in range(7):
         (tmp_path / f"match-{index}.txt").write_text(
             f"needle {index}\n",
@@ -46,18 +44,17 @@ def test_search_text_prefers_ripgrep_and_continuation_is_exact(tmp_path):
         str(tmp_path),
         {**arguments, "max_results": 500},
     )["matches"]
-    assert backend == "ripgrep"
+    assert backend == "python_native"
     assert paged == full
     identities = [(item["path"], item["line"], item["column"]) for item in paged]
     assert len(identities) == len(set(identities)) == 7
 
 
-def test_search_text_python_fallback_discloses_backend_and_context(tmp_path, monkeypatch):
+def test_search_text_native_backend_preserves_context(tmp_path):
     (tmp_path / "sample.txt").write_text(
         "before\nneedle\nafter\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(WORKSPACE_SERVICE, "_rg_available", lambda: None)
     result = WORKSPACE_SERVICE.search_text(
         str(tmp_path),
         {
@@ -66,7 +63,7 @@ def test_search_text_python_fallback_discloses_backend_and_context(tmp_path, mon
             "context_lines": 1,
         },
     )
-    assert result["backend"] == "python_fallback"
+    assert result["backend"] == "python_native"
     assert [item["kind"] for item in result["matches"]] == [
         "context",
         "match",
@@ -192,10 +189,13 @@ def test_prepared_crash_journal_is_recovered_before_next_revision(tmp_path):
     (journal / "manifest.json").write_text(
         json.dumps(
             {
-                "version": 1,
+                "version": 2,
                 "transaction_id": transaction_id,
                 "state": "prepared",
                 "root": str(tmp_path.resolve()),
+                "filesystem_identity": WORKSPACE_SERVICE._filesystem_identity(
+                    str(tmp_path)
+                ),
                 "changes": [
                     {
                         "path": "interrupted.txt",

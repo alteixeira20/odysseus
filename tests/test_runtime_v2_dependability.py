@@ -48,6 +48,7 @@ def context(
     *,
     mode: str = "disabled",
     workspace_write: bool = False,
+    process_workspace_write: bool = False,
     session: str | None = None,
 ):
     session_id = session or f"dependability-{secrets.token_urlsafe(8)}"
@@ -66,6 +67,7 @@ def context(
         tool_catalog_revision=TOOL_REGISTRY.revision,
         host_authorization_token=token,
         workspace_write=workspace_write,
+        process_workspace_write=process_workspace_write,
     )
     assert reason == "requested"
     return prepared
@@ -234,10 +236,15 @@ async def test_read_only_sandbox_cannot_mutate_or_read_common_workspace_secret(t
 
 
 @pytest.mark.asyncio
-async def test_granted_shell_mutation_advances_workspace_snapshot(tmp_path):
+async def test_explicit_process_write_grant_advances_workspace_snapshot(tmp_path):
     if not sandbox_capability().available:
         pytest.skip(sandbox_capability().reason)
-    prepared = context(tmp_path, mode="sandboxed", workspace_write=True)
+    prepared = context(
+        tmp_path,
+        mode="sandboxed",
+        workspace_write=True,
+        process_workspace_write=True,
+    )
     before = WORKSPACE_SERVICE.revision(str(tmp_path))
     call = normalize(
         prepared,
@@ -245,7 +252,15 @@ async def test_granted_shell_mutation_advances_workspace_snapshot(tmp_path):
         {"command": "printf changed > generated.txt"},
     )
 
-    result = await execute_normalized_tool_call(call, prepared)
+    waiting = await execute_normalized_tool_call(call, prepared)
+    assert waiting.status is ToolResultStatus.APPROVAL_REQUIRED
+    request_id = approval_id(waiting)
+    EFFECT_APPROVALS.decide(request_id, owner_id="owner", decision="allow")
+    result = await execute_normalized_tool_call(
+        call,
+        prepared,
+        approval_id=request_id,
+    )
 
     assert result.status is ToolResultStatus.SUCCESS
     assert (tmp_path / "generated.txt").read_text(encoding="utf-8") == "changed"
@@ -277,7 +292,10 @@ async def test_host_process_authority_does_not_grant_workspace_mutation(tmp_path
 
     assert result.status is ToolResultStatus.ERROR
     assert not (tmp_path / "host-should-not-exist.txt").exists()
-    assert EFFECT_APPROVALS.state(request_id) is ApprovalRecordState.CONSUMED
+    assert (
+        EFFECT_APPROVALS.state(request_id)
+        is ApprovalRecordState.FAILED_AFTER_UNKNOWN_EFFECT
+    )
 
 
 @pytest.mark.asyncio
@@ -304,7 +322,7 @@ async def test_approval_is_exact_atomic_and_one_use(tmp_path):
     assert committed.status is ToolResultStatus.SUCCESS
     assert not target.exists()
     assert replayed.status is ToolResultStatus.DENIED
-    assert EFFECT_APPROVALS.state(request_id) is ApprovalRecordState.CONSUMED
+    assert EFFECT_APPROVALS.state(request_id) is ApprovalRecordState.COMMITTED
 
 
 @pytest.mark.asyncio
@@ -328,7 +346,7 @@ async def test_changed_arguments_invalidate_granted_approval(tmp_path):
     )
 
     assert denied.status is ToolResultStatus.DENIED
-    assert denied.error.code == "effect_approval_invalid"
+    assert denied.error.code == "effect_approval_invalidated"
     assert (tmp_path / "first.txt").exists()
     assert (tmp_path / "second.txt").exists()
     assert EFFECT_APPROVALS.state(request_id) is ApprovalRecordState.INVALIDATED
@@ -543,7 +561,7 @@ async def test_real_agent_batch_resumes_same_exact_call_after_approval(
     assert approved_id is not None
     assert provider_calls == 2
     assert not target.exists()
-    assert EFFECT_APPROVALS.state(approved_id) is ApprovalRecordState.CONSUMED
+    assert EFFECT_APPROVALS.state(approved_id) is ApprovalRecordState.COMMITTED
     assert any(item["type"] == "tool_resumed" for item in typed)
     terminal = [
         item["payload"]
@@ -734,9 +752,7 @@ def test_workspace_revision_transactions_metadata_and_budgets(tmp_path, monkeypa
     assert searched["scanned_entries"] <= 4
 
 
-def test_ripgrep_search_masks_secret_files_and_secret_shaped_output(tmp_path):
-    if WORKSPACE_SERVICE._rg_available() is None:
-        pytest.skip("ripgrep unavailable")
+def test_native_search_masks_secret_files_and_secret_shaped_output(tmp_path):
     (tmp_path / ".env").write_text(
         "needle=workspace-secret-value\n", encoding="utf-8"
     )

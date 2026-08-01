@@ -756,7 +756,10 @@ def setup_chat_routes(
                 decision=str((payload or {}).get("decision") or ""),
             )
         except EffectApprovalError as exc:
-            raise HTTPException(409, str(exc)) from exc
+            raise HTTPException(
+                409,
+                {"code": exc.code, "message": str(exc)},
+            ) from exc
         return {
             "approval_id": approval_id,
             "state": state.value,
@@ -803,6 +806,11 @@ def setup_chat_routes(
         allow_workspace_write = form_data.get("allow_workspace_write")
         if allow_workspace_write is None:
             allow_workspace_write = (body or {}).get("allow_workspace_write")
+        allow_process_workspace_write = form_data.get("allow_process_workspace_write")
+        if allow_process_workspace_write is None:
+            allow_process_workspace_write = (body or {}).get(
+                "allow_process_workspace_write"
+            )
         from src.execution_policy import resolve_execution_mode
         # Missing/false allow_bash is an immutable denial.  Legacy true maps
         # only to sandboxed mode; host access requires shell_mode=host too.
@@ -975,10 +983,10 @@ def setup_chat_routes(
             _verify_session_owner(request, session)
             sess = session_manager.get_session(session)
             owner = effective_user(request)
-            # Claim turn ownership before provider/context preparation. A new
-            # accepted user message immediately supersedes any unfinished turn
-            # for this conversation; cancellation is not the security check.
-            _turn_lease = agent_runs.begin_turn(
+            # Prepare a compare-and-set ownership transition without touching
+            # the current detached run. Model, privilege, context and endpoint
+            # preparation may still reject this request.
+            _prepared_turn = agent_runs.prepare_turn(
                 session_id=str(session),
                 owner=str(owner) if owner else None,
             )
@@ -1405,16 +1413,23 @@ def setup_chat_routes(
                 sandbox_default=get_setting("agent_sandbox_default_root", None),
                 host_default=get_setting("agent_host_default_root", None),
                 conversation_id=str(session),
-                turn_lease=_turn_lease,
+                turn_lease=_prepared_turn.lease,
                 workspace_write=(
                     str(allow_workspace_write).strip().lower() == "true"
                     and bool(workspace)
+                    and not plan_mode
+                ),
+                process_workspace_write=(
+                    str(allow_process_workspace_write).strip().lower() == "true"
+                    and bool(workspace)
+                    and shell_enabled
                     and not plan_mode
                 ),
                 disabled_tools=TOOL_REGISTRY.canonicalize_names(
                     set(disabled_tools) | set(blocked_tools_for_owner(_user)),
                     None,
                 ),
+                defer_ownership=True,
             )
             execution_mode = _execution_context.execution_mode
             shell_enabled = execution_mode.enabled
@@ -1891,8 +1906,8 @@ def setup_chat_routes(
                         "root_source": _execution_context.execution_root.source.value,
                         "workspace_revision": _execution_context.execution_root.workspace_revision,
                         "workspace_snapshot_policy": (
-                            "git_head_status_with_bounded_dirty_and_untracked_content; "
-                            "ignored_dependency_artifacts_outside_revision"
+                            "nonexecuting_git_metadata_and_bounded_workspace_content; "
+                            "strong_revision_required_for_approval"
                         ),
                         "authority_revision": _execution_context.authority_grant.revision,
                         "capabilities": sorted(
@@ -1901,6 +1916,11 @@ def setup_chat_routes(
                         ),
                         "workspace_write_granted": _execution_context.authority_grant.allows(
                             Capability.WORKSPACE_WRITE
+                        ),
+                        "process_workspace_write_granted": (
+                            _execution_context.authority_grant.allows(
+                                Capability.PROCESS_WORKSPACE_WRITE
+                            )
                         ),
                         "run_id": _execution_context.run_id,
                     }) + "\n\n"
@@ -2140,18 +2160,46 @@ def setup_chat_routes(
         # the run keeps going and saves the assistant message on completion
         # regardless. Reconnect via /api/chat/resume.
         if compare_mode:
+            try:
+                agent_runs.commit_prepared_turn(
+                    _prepared_turn,
+                    session_id=str(session),
+                    execution_context=_execution_context,
+                )
+            except Exception as exc:
+                from src.agent.runtime_v2.ownership import OwnershipError
+
+                if isinstance(exc, OwnershipError):
+                    raise HTTPException(
+                        409,
+                        "Conversation changed while this request was preparing; retry the request.",
+                    ) from exc
+                raise
             return StreamingResponse(_safe_stream(), media_type="text/event-stream")
 
+        _detached_source = _safe_stream()
         try:
             agent_runs.start(
                 session,
-                _safe_stream(),
+                _detached_source,
                 mode=agent_runs.RunMode.DETACHED,
                 owner=str(_user) if _user else None,
                 execution_context=_execution_context,
+                prepared_turn=_prepared_turn,
             )
         except agent_runs.RunCapacityError as exc:
+            await _detached_source.aclose()
             raise HTTPException(429, str(exc))
+        except Exception as exc:
+            await _detached_source.aclose()
+            from src.agent.runtime_v2.ownership import OwnershipError
+
+            if isinstance(exc, OwnershipError):
+                raise HTTPException(
+                    409,
+                    "Conversation changed while this request was preparing; retry the request.",
+                ) from exc
+            raise
         return StreamingResponse(agent_runs.subscribe(session), media_type="text/event-stream")
 
     # ------------------------------------------------------------------ #

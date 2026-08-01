@@ -142,6 +142,10 @@ class ToolDefinition:
     provider_schema: Optional[Mapping[str, Any]] = None
     argument_adapter: Optional[ArgumentAdapter] = None
     runtime_v2: bool = False
+    handler_version: str = "legacy-unversioned"
+    effect_resolver_version: str = "legacy-unversioned"
+    exposure_policy_version: str = "legacy-unversioned"
+    security_policy_version: str = "legacy-unversioned"
 
     def validate_arguments(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(arguments, Mapping):
@@ -360,6 +364,22 @@ class ToolRegistry:
                 "aliases": sorted(definition.aliases),
                 "schema": definition.input_schema,
                 "runtime_v2": definition.runtime_v2,
+                "handler_version": definition.handler_version,
+                "effect_resolver_version": definition.effect_resolver_version,
+                "exposure_policy_version": definition.exposure_policy_version,
+                "security_policy_version": definition.security_policy_version,
+                "required_capabilities": sorted(
+                    capability.value
+                    for capability in definition.required_capabilities
+                ),
+                "approval_policy": definition.approval_policy.value,
+                "risk": definition.risk.value,
+                "autonomy": definition.autonomy.value,
+                "idempotency": definition.idempotency.value,
+                "mutates_state": definition.mutates_state,
+                "destructive": definition.destructive,
+                "timeout_seconds": definition.timeout_seconds,
+                "requires_shell_enabled": definition.requires_shell_enabled,
             }
             for definition in self._by_name.values()
         ]

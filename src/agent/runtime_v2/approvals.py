@@ -21,13 +21,23 @@ class ApprovalRecordState(str, Enum):
     PENDING = "pending"
     GRANTED = "granted"
     DENIED = "denied"
-    CONSUMED = "consumed"
+    CLAIMED = "claimed"
+    EXECUTING = "executing"
+    COMPLETED = "completed"
+    COMMITTED = "committed"
+    FAILED_BEFORE_EFFECT = "failed_before_effect"
+    FAILED_AFTER_UNKNOWN_EFFECT = "failed_after_unknown_effect"
     EXPIRED = "expired"
     INVALIDATED = "invalidated"
 
 
 class EffectApprovalError(RuntimeError):
     code = "effect_approval_invalid"
+
+    def __init__(self, message: str, *, code: Optional[str] = None) -> None:
+        super().__init__(message)
+        if code:
+            self.code = str(code)
 
 
 @dataclass(frozen=True)
@@ -58,6 +68,9 @@ class _ApprovalRecord:
     workspace_revision: str
     expires_at: float
     state: ApprovalRecordState = ApprovalRecordState.PENDING
+    claim_count: int = 0
+    executing_at: Optional[float] = None
+    finished_at: Optional[float] = None
 
 
 def _effects_digest(effects: Sequence[Effect]) -> str:
@@ -150,10 +163,19 @@ class EffectApprovalStore:
             self._prune_locked(now)
             record = self._records.get(str(approval_id))
             if record is None or record.owner_id != str(owner_id or ""):
-                raise EffectApprovalError("approval request was not found")
-            if record.state is not ApprovalRecordState.PENDING:
                 raise EffectApprovalError(
-                    f"approval request is already {record.state.value}"
+                    "approval request was not found",
+                    code="effect_approval_invalidated",
+                )
+            if record.state is not ApprovalRecordState.PENDING:
+                code = {
+                    ApprovalRecordState.DENIED: "effect_approval_denied",
+                    ApprovalRecordState.EXPIRED: "effect_approval_expired",
+                    ApprovalRecordState.INVALIDATED: "effect_approval_invalidated",
+                }.get(record.state, "effect_approval_state_conflict")
+                raise EffectApprovalError(
+                    f"approval request is already {record.state.value}",
+                    code=code,
                 )
             if not RUN_OWNERSHIP.snapshot_is_current(
                 owner_id=record.owner_id,
@@ -163,7 +185,8 @@ class EffectApprovalStore:
             ):
                 record.state = ApprovalRecordState.INVALIDATED
                 raise EffectApprovalError(
-                    "approval request belongs to a superseded run or turn"
+                    "approval request belongs to a superseded run or turn",
+                    code="effect_approval_invalidated",
                 )
             try:
                 current_revision = WORKSPACE_SERVICE.revision(
@@ -172,12 +195,14 @@ class EffectApprovalStore:
             except Exception as exc:
                 record.state = ApprovalRecordState.INVALIDATED
                 raise EffectApprovalError(
-                    "approval workspace is no longer available"
+                    "approval workspace is no longer available",
+                    code="effect_approval_invalidated",
                 ) from exc
             if current_revision != record.workspace_revision:
                 record.state = ApprovalRecordState.INVALIDATED
                 raise EffectApprovalError(
-                    "workspace changed after approval was requested"
+                    "workspace changed after approval was requested",
+                    code="effect_approval_invalidated",
                 )
             normalized = str(decision or "").strip().lower()
             if normalized == "allow":
@@ -207,14 +232,14 @@ class EffectApprovalStore:
                 return state
             await asyncio.sleep(max(float(poll_seconds), 0.01))
 
-    def consume(
+    def claim(
         self,
         approval_id: str,
         *,
         call: NormalizedToolCall,
         context: AgentExecutionContext,
         effects: Sequence[Effect],
-    ) -> None:
+    ) -> ApprovalRecordState:
         try:
             RUN_OWNERSHIP.validate_call(context, call)
         except OwnershipError as exc:
@@ -224,11 +249,38 @@ class EffectApprovalStore:
             self._prune_locked(now)
             record = self._records.get(str(approval_id))
             if record is None:
-                raise EffectApprovalError("approval request was not found or expired")
-            if record.state is not ApprovalRecordState.GRANTED:
                 raise EffectApprovalError(
-                    f"approval request is {record.state.value}, not granted"
+                    "approval request was not found or expired",
+                    code="effect_approval_expired",
                 )
+            if record.state not in {
+                ApprovalRecordState.GRANTED,
+                ApprovalRecordState.FAILED_BEFORE_EFFECT,
+            }:
+                code = {
+                    ApprovalRecordState.DENIED: "effect_approval_denied",
+                    ApprovalRecordState.EXPIRED: "effect_approval_expired",
+                    ApprovalRecordState.INVALIDATED: "effect_approval_invalidated",
+                    ApprovalRecordState.CLAIMED: "effect_approval_already_claimed",
+                    ApprovalRecordState.EXECUTING: "effect_outcome_unknown_or_active",
+                    ApprovalRecordState.COMPLETED: "effect_approval_already_completed",
+                    ApprovalRecordState.COMMITTED: "effect_approval_already_committed",
+                    ApprovalRecordState.FAILED_AFTER_UNKNOWN_EFFECT: "effect_outcome_unknown",
+                }.get(record.state, "effect_approval_invalid")
+                raise EffectApprovalError(
+                    f"approval request is {record.state.value}, not claimable",
+                    code=code,
+                )
+            try:
+                current_workspace_revision = WORKSPACE_SERVICE.revision(
+                    context.execution_root.path
+                )
+            except Exception as exc:
+                record.state = ApprovalRecordState.INVALIDATED
+                raise EffectApprovalError(
+                    "approval workspace is no longer available",
+                    code="effect_approval_invalidated",
+                ) from exc
             exact = (
                 record.owner_id == context.owner_id
                 and record.session_id == context.session_id
@@ -244,15 +296,96 @@ class EffectApprovalStore:
                 and record.tool_contract_revision == call.tool_contract_revision
                 and record.workspace_root == context.execution_root.path
                 and record.workspace_revision
-                == WORKSPACE_SERVICE.revision(context.execution_root.path)
+                == current_workspace_revision
             )
             if not exact:
                 record.state = ApprovalRecordState.INVALIDATED
                 raise EffectApprovalError(
-                    "approval no longer matches the exact call, effects, authority, or workspace"
+                    "approval no longer matches the exact call, effects, authority, or workspace",
+                    code="effect_approval_invalidated",
                 )
-            # The state transition is the atomic one-use consumption point.
-            record.state = ApprovalRecordState.CONSUMED
+            # This compare-and-set is the one active execution lease. A launch
+            # that failed before the boundary may be reclaimed; a started effect
+            # can never be replayed.
+            record.state = ApprovalRecordState.CLAIMED
+            record.claim_count += 1
+            return record.state
+
+    # Compatibility spelling for internal callers during the Runtime V2
+    # transition. New code should use claim and complete the lifecycle.
+    consume = claim
+
+    def mark_executing(self, approval_id: str) -> ApprovalRecordState:
+        with self._lock:
+            record = self._records.get(str(approval_id))
+            if record is None:
+                raise EffectApprovalError("approval request was not found")
+            if record.state is not ApprovalRecordState.CLAIMED:
+                raise EffectApprovalError(
+                    f"approval request cannot start from {record.state.value}",
+                    code="effect_approval_state_conflict",
+                )
+            record.state = ApprovalRecordState.EXECUTING
+            record.executing_at = time.time()
+            return record.state
+
+    def complete(
+        self,
+        approval_id: str,
+        *,
+        committed_effects: bool = False,
+    ) -> ApprovalRecordState:
+        with self._lock:
+            record = self._records.get(str(approval_id))
+            if record is None:
+                raise EffectApprovalError("approval request was not found")
+            if record.state not in {
+                ApprovalRecordState.CLAIMED,
+                ApprovalRecordState.EXECUTING,
+            }:
+                raise EffectApprovalError(
+                    f"approval request cannot complete from {record.state.value}",
+                    code="effect_approval_state_conflict",
+                )
+            # A successfully reaped opaque process proves execution completed;
+            # it does not prove every predicted side effect committed.  Only a
+            # handler that returned validated committed effects earns the
+            # COMMITTED lifecycle state.
+            record.state = (
+                ApprovalRecordState.COMMITTED
+                if committed_effects
+                else ApprovalRecordState.COMPLETED
+            )
+            record.finished_at = time.time()
+            return record.state
+
+    def fail_before_effect(self, approval_id: str) -> ApprovalRecordState:
+        with self._lock:
+            record = self._records.get(str(approval_id))
+            if record is None:
+                raise EffectApprovalError("approval request was not found")
+            if record.state is not ApprovalRecordState.CLAIMED:
+                raise EffectApprovalError(
+                    f"approval request cannot record a pre-effect failure from {record.state.value}",
+                    code="effect_approval_state_conflict",
+                )
+            record.state = ApprovalRecordState.FAILED_BEFORE_EFFECT
+            record.finished_at = time.time()
+            return record.state
+
+    def fail_after_unknown_effect(self, approval_id: str) -> ApprovalRecordState:
+        with self._lock:
+            record = self._records.get(str(approval_id))
+            if record is None:
+                raise EffectApprovalError("approval request was not found")
+            if record.state is not ApprovalRecordState.EXECUTING:
+                raise EffectApprovalError(
+                    f"approval request cannot record an uncertain effect from {record.state.value}",
+                    code="effect_approval_state_conflict",
+                )
+            record.state = ApprovalRecordState.FAILED_AFTER_UNKNOWN_EFFECT
+            record.finished_at = time.time()
+            return record.state
 
     def state(self, approval_id: str) -> Optional[ApprovalRecordState]:
         with self._lock:
@@ -268,13 +401,18 @@ class EffectApprovalStore:
             if record and record.state in {
                 ApprovalRecordState.PENDING,
                 ApprovalRecordState.GRANTED,
+                ApprovalRecordState.FAILED_BEFORE_EFFECT,
             }:
                 record.state = ApprovalRecordState.INVALIDATED
 
     def _prune_locked(self, now: float) -> None:
         for record in self._records.values():
             if (
-                record.state in {ApprovalRecordState.PENDING, ApprovalRecordState.GRANTED}
+                record.state in {
+                    ApprovalRecordState.PENDING,
+                    ApprovalRecordState.GRANTED,
+                    ApprovalRecordState.FAILED_BEFORE_EFFECT,
+                }
                 and record.expires_at <= now
             ):
                 record.state = ApprovalRecordState.EXPIRED

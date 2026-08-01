@@ -16,12 +16,16 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from enum import Enum
+import hashlib
 import json
 import logging
 import math
 import os
 import re
+import stat
 import sys
+import tempfile
+import threading
 import time
 from typing import AsyncGenerator, Dict, Optional
 
@@ -53,6 +57,12 @@ class RunTerminal:
 
 class RunCapacityError(RuntimeError):
     """Raised before start when the server/owner detached-run quota is full."""
+
+
+@dataclass(frozen=True)
+class PreparedTurn:
+    lease: TurnLease
+    expected_run: Optional["_Run"]
 
 
 class _RunLimitExceeded(RuntimeError):
@@ -106,6 +116,10 @@ class _Run:
 
 
 _RUNS: Dict[str, _Run] = {}
+_RUNS_LOCK = threading.RLock()
+_RUNTIME_STATE_LOCK_FD: Optional[int] = None
+_RUNTIME_STATE_LOCK_PID: Optional[int] = None
+_RUNTIME_STATE_LOCK_KEY: Optional[str] = None
 
 _EVICT_GRACE_S = 180
 _MAX_REPLAY_EVENTS = 4_096
@@ -137,6 +151,89 @@ _MAX_RUN_IDLE_S = _positive_env_number(
 )
 
 
+def _acquire_runtime_state_lock() -> None:
+    """Hold a process lock keyed to the configured Runtime V2 state root."""
+
+    global _RUNTIME_STATE_LOCK_FD, _RUNTIME_STATE_LOCK_PID, _RUNTIME_STATE_LOCK_KEY
+    from src.constants import DATA_DIR
+
+    state_root = os.path.realpath(
+        os.getenv("ODYSSEUS_RUNTIME_STATE_DIR") or DATA_DIR
+    )
+    key = hashlib.sha256(state_root.encode("utf-8")).hexdigest()
+    pid = os.getpid()
+    if (
+        _RUNTIME_STATE_LOCK_FD is not None
+        and _RUNTIME_STATE_LOCK_PID == pid
+        and _RUNTIME_STATE_LOCK_KEY == key
+    ):
+        return
+    if _RUNTIME_STATE_LOCK_FD is not None:
+        if _RUNTIME_STATE_LOCK_PID == pid:
+            raise RuntimeError(
+                "Runtime V2 state directory cannot change after its process lock is acquired"
+            )
+        try:
+            os.close(_RUNTIME_STATE_LOCK_FD)
+        except OSError:
+            pass
+        _RUNTIME_STATE_LOCK_FD = None
+    owner_suffix = str(os.getuid()) if hasattr(os, "getuid") else "current-user"
+    lock_root = os.path.join(
+        tempfile.gettempdir(),
+        f"odysseus-runtime-v2-state-locks-{owner_suffix}",
+    )
+    os.makedirs(lock_root, mode=0o700, exist_ok=True)
+    root_info = os.lstat(lock_root)
+    if not stat.S_ISDIR(root_info.st_mode):
+        raise RuntimeError("Runtime V2 process-lock root is not a directory")
+    if hasattr(os, "getuid") and root_info.st_uid != os.getuid():
+        raise RuntimeError("Runtime V2 process-lock root has a foreign owner")
+    try:
+        os.chmod(lock_root, 0o700)
+    except OSError:
+        pass
+    lock_path = os.path.join(lock_root, f"{key}.lock")
+    open_flags = os.O_RDWR | os.O_CREAT
+    if hasattr(os, "O_CLOEXEC"):
+        open_flags |= os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        open_flags |= os.O_NOFOLLOW
+    descriptor = os.open(lock_path, open_flags, 0o600)
+    try:
+        lock_info = os.fstat(descriptor)
+        if not stat.S_ISREG(lock_info.st_mode):
+            raise RuntimeError("Runtime V2 process lock is not a regular file")
+        if hasattr(os, "getuid") and lock_info.st_uid != os.getuid():
+            raise RuntimeError("Runtime V2 process lock has a foreign owner")
+        if os.name != "posix":
+            os.ftruncate(descriptor, 1)
+            os.lseek(descriptor, 0, os.SEEK_SET)
+        if os.name == "posix":
+            import fcntl
+
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        else:
+            import msvcrt
+
+            msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+        pid_bytes = str(pid).encode("ascii")
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        os.write(descriptor, pid_bytes)
+        os.ftruncate(descriptor, max(len(pid_bytes), 1))
+        os.fsync(descriptor)
+    except BaseException as exc:
+        os.close(descriptor)
+        if not isinstance(exc, OSError):
+            raise
+        raise RuntimeError(
+            "another Odysseus process already owns this Runtime V2 state directory"
+        ) from exc
+    _RUNTIME_STATE_LOCK_FD = descriptor
+    _RUNTIME_STATE_LOCK_PID = pid
+    _RUNTIME_STATE_LOCK_KEY = key
+
+
 def enforce_single_runtime_worker() -> None:
     """Fail startup when process-local run durability would be split."""
 
@@ -164,6 +261,7 @@ def enforce_single_runtime_worker() -> None:
         raise RuntimeError(
             "Odysseus agent runs and approvals are process-local; configure exactly one runtime worker"
         )
+    _acquire_runtime_state_lock()
 
 
 def _publish(run: _Run, event: str) -> None:
@@ -693,6 +791,7 @@ def start(
     mode: RunMode = RunMode.DETACHED,
     owner: Optional[str] = None,
     execution_context: Optional[AgentExecutionContext] = None,
+    prepared_turn: Optional[PreparedTurn] = None,
 ) -> _Run:
     """Start a run with explicit ownership semantics.
 
@@ -702,32 +801,44 @@ def start(
 
     if not isinstance(mode, RunMode):
         mode = RunMode(str(mode))
-    if execution_context is not None:
-        RUN_OWNERSHIP.validate_context(execution_context)
-    previous = _RUNS.get(session_id)
-    active_other_runs = [
-        candidate
-        for candidate_session, candidate in _RUNS.items()
-        if candidate_session != session_id and candidate.status == "running"
-    ]
-    if len(active_other_runs) >= _MAX_ACTIVE_RUNS:
-        raise RunCapacityError("server agent-run concurrency limit reached")
-    if owner is not None and sum(
-        candidate.owner == owner for candidate in active_other_runs
-    ) >= _MAX_ACTIVE_RUNS_PER_OWNER:
-        raise RunCapacityError("owner agent-run concurrency limit reached")
-    previous_task: Optional[asyncio.Task] = None
-    if previous:
-        if previous.task and not previous.task.done():
-            if previous.execution_context is not None:
-                previous.execution_context.cancellation_token.cancel()
-            previous.task.cancel()
-            previous_task = previous.task
-        if previous.evict_task and not previous.evict_task.done():
-            previous.evict_task.cancel()
-    run = _Run(mode, owner, execution_context)
-    _RUNS[session_id] = run
-    run.task = asyncio.create_task(_drain(session_id, agen, previous_task))
+    with _RUNS_LOCK:
+        previous = _RUNS.get(session_id)
+        active_other_runs = [
+            candidate
+            for candidate_session, candidate in _RUNS.items()
+            if candidate_session != session_id and candidate.status == "running"
+        ]
+        if len(active_other_runs) >= _MAX_ACTIVE_RUNS:
+            raise RunCapacityError("server agent-run concurrency limit reached")
+        if owner is not None and sum(
+            candidate.owner == owner for candidate in active_other_runs
+        ) >= _MAX_ACTIVE_RUNS_PER_OWNER:
+            raise RunCapacityError("owner agent-run concurrency limit reached")
+        if prepared_turn is not None:
+            if previous is not prepared_turn.expected_run:
+                raise OwnershipError(
+                    "conversation run changed while the replacement request was preparing"
+                )
+            if execution_context is not None:
+                from src.agent.runtime_v2.authority import activate_execution_context
+
+                activate_execution_context(execution_context, prepared_turn.lease)
+            else:
+                RUN_OWNERSHIP.commit_prepared_turn(prepared_turn.lease)
+        elif execution_context is not None:
+            RUN_OWNERSHIP.validate_context(execution_context)
+        previous_task: Optional[asyncio.Task] = None
+        if previous:
+            if previous.task and not previous.task.done():
+                if previous.execution_context is not None:
+                    previous.execution_context.cancellation_token.cancel()
+                previous.task.cancel()
+                previous_task = previous.task
+            if previous.evict_task and not previous.evict_task.done():
+                previous.evict_task.cancel()
+        run = _Run(mode, owner, execution_context)
+        _RUNS[session_id] = run
+        run.task = asyncio.create_task(_drain(session_id, agen, previous_task))
 
     def _ensure_terminal(task: asyncio.Task) -> None:
         # Cancellation can win the race before _drain executes its first line,
@@ -777,6 +888,47 @@ def begin_turn(*, session_id: str, owner: Optional[str]) -> TurnLease:
         owner_id=str(owner or ""),
         conversation_id=str(session_id),
     )
+
+
+def prepare_turn(*, session_id: str, owner: Optional[str]) -> PreparedTurn:
+    """Prepare a replacement without cancelling or superseding valid work."""
+
+    with _RUNS_LOCK:
+        previous = _RUNS.get(str(session_id))
+        lease = RUN_OWNERSHIP.prepare_turn(
+            owner_id=str(owner or ""),
+            conversation_id=str(session_id),
+        )
+        return PreparedTurn(
+            lease=lease,
+            expected_run=previous,
+        )
+
+
+def commit_prepared_turn(
+    prepared: PreparedTurn,
+    *,
+    session_id: str,
+    execution_context: Optional[AgentExecutionContext],
+) -> None:
+    """Commit ownership for a direct (non-managed) stream after preparation."""
+
+    with _RUNS_LOCK:
+        previous = _RUNS.get(str(session_id))
+        if previous is not prepared.expected_run:
+            raise OwnershipError(
+                "conversation run changed while the replacement request was preparing"
+            )
+        if execution_context is not None:
+            from src.agent.runtime_v2.authority import activate_execution_context
+
+            activate_execution_context(execution_context, prepared.lease)
+        else:
+            RUN_OWNERSHIP.commit_prepared_turn(prepared.lease)
+        if previous and previous.task and not previous.task.done():
+            if previous.execution_context is not None:
+                previous.execution_context.cancellation_token.cancel()
+            previous.task.cancel()
 
 
 async def subscribe(session_id: str) -> AsyncGenerator[str, None]:
@@ -853,9 +1005,12 @@ def stop(session_id: str) -> bool:
 
 __all__ = [
     "RunMode",
+    "PreparedTurn",
     "RunCapacityError",
     "RunTerminal",
     "begin_turn",
+    "prepare_turn",
+    "commit_prepared_turn",
     "get_status",
     "enforce_single_runtime_worker",
     "is_active",

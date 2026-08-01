@@ -5,11 +5,14 @@ from __future__ import annotations
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+import json
 import threading
 from types import SimpleNamespace
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+import httpx
+import pytest
 
 import routes.chat_routes as chat_routes
 from routes.chat_helpers import ChatContext, PreprocessedMessage, PresetInfo
@@ -75,6 +78,32 @@ def _execute(context, name, arguments):
     return asyncio.run(execute_normalized_tool_call(call, context))
 
 
+def _execute_approved(context, name, arguments):
+    call = normalize_tool_calls(
+        [ToolBlock(name, "", arguments=arguments)],
+        [],
+        execution_context=context,
+        provider_name="http-authority-approved-test",
+    )[0]
+
+    async def execute():
+        waiting = await execute_normalized_tool_call(call, context)
+        assert waiting.status.value == "approval_required"
+        approval_id = waiting.data["approval"]["approval_id"]
+        EFFECT_APPROVALS.decide(
+            approval_id,
+            owner_id=context.owner_id,
+            decision="allow",
+        )
+        return await execute_normalized_tool_call(
+            call,
+            context,
+            approval_id=approval_id,
+        )
+
+    return asyncio.run(execute())
+
+
 def test_production_http_preparation_binds_roots_and_one_run_host_authority(
     monkeypatch,
     tmp_path,
@@ -136,7 +165,67 @@ def test_production_http_preparation_binds_roots_and_one_run_host_authority(
                 {"state": RunState.RUNNING.value, "reason": "http_running"},
             )
         )
-        if "Delete obsolete" in latest:
+        if "Search continuation" in latest:
+            continuation = None
+            for page_number in range(10):
+                arguments = {
+                    "pattern": "http-needle",
+                    "fixed_string": True,
+                    "max_results": 1,
+                    "max_scan_entries": 1,
+                }
+                if continuation:
+                    arguments["continuation"] = continuation["token"]
+                call = normalize_tool_calls(
+                    [ToolBlock("search_text", "", arguments=arguments)],
+                    [],
+                    execution_context=execution_context,
+                    provider_name="http-sse-continuation-test",
+                )[0]
+                yield encode_runtime_sse(
+                    execution_context.event_factory.create(
+                        "tool_started",
+                        {
+                            "call_id": call.call_id,
+                            "canonical_name": call.canonical_name,
+                            "raw_name": call.raw_name,
+                            "round": page_number + 1,
+                        },
+                        caused_by=call.call_id,
+                    )
+                )
+                result = await execute_normalized_tool_call(
+                    call,
+                    execution_context,
+                )
+                yield encode_runtime_sse(
+                    execution_context.event_factory.create(
+                        "tool_result",
+                        {
+                            "result": result.as_dict(),
+                            "round": page_number + 1,
+                        },
+                        caused_by=call.call_id,
+                    )
+                )
+                continuation = result.continuation
+                if continuation is None:
+                    break
+            else:
+                raise AssertionError("HTTP search continuation did not terminate")
+            yield encode_runtime_sse(
+                execution_context.event_factory.create(
+                    "run_state",
+                    {
+                        "state": RunState.COMPLETED.value,
+                        "disposition": "completed",
+                        "reason": "http_search_continuation_complete",
+                        "resumable": False,
+                        "terminal": True,
+                    },
+                )
+            )
+        elif "Delete obsolete" in latest:
             call = normalize_tool_calls(
                 [
                     ToolBlock(
@@ -315,7 +404,12 @@ def test_production_http_preparation_binds_roots_and_one_run_host_authority(
     monkeypatch.setattr(chat_routes, "stream_agent_loop", agent_stream)
 
     def start(session_id, source, **kwargs):
-        captured_contexts.append(kwargs["execution_context"])
+        execution_context = kwargs["execution_context"]
+        prepared_turn = kwargs["prepared_turn"]
+        from src.agent.runtime_v2.authority import activate_execution_context
+
+        activate_execution_context(execution_context, prepared_turn.lease)
+        captured_contexts.append(execution_context)
         buffered = []
 
         async def drain():
@@ -368,6 +462,42 @@ def test_production_http_preparation_binds_roots_and_one_run_host_authority(
     assert selected_result.data["execution_root"] == str(tmp_path.resolve())
     assert selected_result.data["stdout"].strip() == str(tmp_path.resolve())
 
+    for index in range(5):
+        (tmp_path / f"search-{index}.txt").write_text(
+            "http-needle\n" if index == 4 else "no match\n",
+            encoding="utf-8",
+        )
+    search_response = client.post(
+        "/api/chat_stream",
+        data={
+            **common,
+            "message": "Search continuation over the disposable workspace.",
+            "shell_mode": "sandboxed",
+            "workspace": str(tmp_path),
+        },
+    )
+    assert search_response.status_code == 200
+    search_events = [
+        json.loads(line[6:])
+        for line in search_response.text.splitlines()
+        if line.startswith("data: {")
+    ]
+    search_results = [
+        event["payload"]["result"]
+        for event in search_events
+        if event.get("type") == "tool_result"
+    ]
+    assert any(
+        not result["data"]["matches"] and result["continuation"]
+        for result in search_results
+    )
+    assert [
+        match["path"]
+        for result in search_results
+        for match in result["data"]["matches"]
+    ] == ["search-4.txt"]
+    assert search_results[-1]["continuation"] is None
+
     no_workspace_response = client.post(
         "/api/chat_stream",
         data={**common, "shell_mode": "sandboxed"},
@@ -407,7 +537,11 @@ def test_production_http_preparation_binds_roots_and_one_run_host_authority(
     host_context = captured_contexts[-1]
     assert host_context.execution_mode is ExecutionMode.HOST
     assert host_context.execution_root.path == str(tmp_path.resolve())
-    host_result = _execute(host_context, "run_host_command", {"command": "pwd"})
+    host_result = _execute_approved(
+        host_context,
+        "run_host_command",
+        {"command": "pwd"},
+    )
     assert host_result.data["stdout"].strip() == str(tmp_path.resolve())
 
     approval_authorization = client.post(
@@ -459,7 +593,7 @@ def test_production_http_preparation_binds_roots_and_one_run_host_authority(
     assert '"type":"tool_resumed"' in continued.text
     assert '"reason":"approved_effect_committed"' in continued.text
     assert not target.exists()
-    assert EFFECT_APPROVALS.state(exact_approval_id).value == "consumed"
+    assert EFFECT_APPROVALS.state(exact_approval_id).value == "committed"
     replayed_decision = client.post(
         f"/api/chat/approvals/{exact_approval_id}",
         json={"decision": "allow"},
@@ -484,3 +618,72 @@ def test_production_http_preparation_binds_roots_and_one_run_host_authority(
         json={"session_id": "runtime-v2-http"},
     )
     assert denied.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_invalid_http_replacement_preserves_existing_detached_run(monkeypatch):
+    session_manager = _SessionManager()
+    session_manager.session.model = ""
+    release = asyncio.Event()
+
+    async def existing_source():
+        await release.wait()
+        yield "data: [DONE]\n\n"
+
+    existing = chat_routes.agent_runs.start(
+        "runtime-v2-http",
+        existing_source(),
+        mode=chat_routes.agent_runs.RunMode.DETACHED,
+        owner="admin",
+    )
+    monkeypatch.setattr(chat_routes, "_verify_session_owner", lambda *args, **kwargs: None)
+    monkeypatch.setattr(chat_routes, "get_current_user", lambda request: "admin")
+    monkeypatch.setattr(chat_routes, "effective_user", lambda request: "admin")
+    monkeypatch.setattr(
+        chat_routes,
+        "_reconcile_selected_route_from_request",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        chat_routes,
+        "_clear_orphaned_session_endpoint",
+        lambda *args, **kwargs: False,
+    )
+    monkeypatch.setattr(
+        chat_routes,
+        "_recover_empty_session_model",
+        lambda *args, **kwargs: False,
+    )
+
+    app = FastAPI()
+    app.include_router(
+        chat_routes.setup_chat_routes(
+            session_manager,
+            chat_handler=None,
+            chat_processor=None,
+            memory_manager=None,
+            research_handler=None,
+            upload_handler=None,
+        )
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://runtime-v2.test",
+    ) as client:
+        response = await client.post(
+            "/api/chat_stream",
+            data={
+                "message": "This malformed replacement has no model.",
+                "session": "runtime-v2-http",
+                "mode": "agent",
+            },
+        )
+
+    assert response.status_code == 400
+    assert "No model selected" in response.text
+    assert not existing.task.done()
+    assert chat_routes.agent_runs.is_active("runtime-v2-http")
+
+    release.set()
+    await existing.task
