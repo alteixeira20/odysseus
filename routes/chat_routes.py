@@ -2088,14 +2088,15 @@ def setup_chat_routes(
         return {"runs": agent_runs.list_runs(str(owner) if owner else None)}
 
     # ------------------------------------------------------------------ #
-    # GET /api/chat/resume — reconnect to a detached run that's still going
-    # (e.g. after reopening a session whose agent kept running in the background)
+    # GET /api/chat/resume — reconnect to an active detached run or replay its
+    # bounded terminal buffer during the retention grace period. A disconnect
+    # racing with completion must still receive the authoritative final state.
     # ------------------------------------------------------------------ #
     @router.get("/api/chat/resume/{session_id}")
     async def chat_resume(request: Request, session_id: str) -> StreamingResponse:
         _verify_session_owner(request, session_id)
-        if not agent_runs.is_active(session_id):
-            raise HTTPException(404, "No active run for this session")
+        if agent_runs.get_status(session_id) is None:
+            raise HTTPException(404, "No retained run for this session")
         return StreamingResponse(agent_runs.subscribe(session_id), media_type="text/event-stream")
 
     # ------------------------------------------------------------------ #

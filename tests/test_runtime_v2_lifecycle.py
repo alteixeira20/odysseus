@@ -4,8 +4,11 @@ import asyncio
 import json
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 from src import agent_runs
+import routes.chat_routes as chat_routes
 from src.agent.runtime_v2.authority import prepare_execution_context
 from src.agent.runtime_v2.contracts import RunBudgets
 from src.agent.runtime_v2.events import encode_runtime_sse, runtime_event_from_payload
@@ -175,3 +178,22 @@ async def test_detached_subscriber_disconnect_does_not_cancel_run(tmp_path):
     assert sequences == sorted(sequences)
     assert len(sequences) == len(set(sequences))
     assert run.state_machine.state is RunState.COMPLETED
+
+
+def test_http_resume_replays_a_retained_terminal_run(monkeypatch):
+    monkeypatch.setattr(chat_routes, "_verify_session_owner", lambda *args, **kwargs: None)
+    monkeypatch.setattr(chat_routes.agent_runs, "get_status", lambda session_id: "done")
+
+    async def subscribe(session_id):
+        yield 'data: {"type":"run_state","state":"completed","terminal":true}\n\n'
+        yield "data: [DONE]\n\n"
+
+    monkeypatch.setattr(chat_routes.agent_runs, "subscribe", subscribe)
+    app = FastAPI()
+    app.include_router(chat_routes.setup_chat_routes(None, None, None, None, None, None))
+
+    response = TestClient(app).get("/api/chat/resume/retained-run")
+
+    assert response.status_code == 200
+    assert '"state":"completed"' in response.text
+    assert response.text.endswith("data: [DONE]\n\n")
