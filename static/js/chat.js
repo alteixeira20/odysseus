@@ -30,6 +30,7 @@ import {
   toolTerminalState,
 } from './agentToolLifecycle.js?v=20260731bash1';
 import { appendAgentToolRequestFields } from './agentToolRequest.js?v=20260731runtime1';
+import { createRuntimeEventReducer, runtimeStateToolStatus } from './runtimeEvents.js?v=20260801runtime2';
 
   const RESEARCH_TIMEOUT_MS = 360000;
   const DEFAULT_TIMEOUT_MS = 120000;
@@ -1351,6 +1352,7 @@ import { appendAgentToolRequestFields } from './agentToolRequest.js?v=20260731ru
     let finalMeta = null;
     let spinner = null;
     let timedOut = false;
+    const _runtimeEvents = createRuntimeEventReducer();
     let processingProbeTimer = null;
     let processingProbeAbort = null;
     let _renderStream = () => {};
@@ -1688,16 +1690,22 @@ import { appendAgentToolRequestFields } from './agentToolRequest.js?v=20260731ru
 	        fd.set('plan_mode', 'false');
       }
       const _ws = (Storage.KEYS && Storage.get(Storage.KEYS.WORKSPACE, '')) || '';
+      const _hostShellEnabled = !!el('host-shell-toggle')?.checked;
+      const _hostAuthorization = _hostShellEnabled
+        && typeof window.__odysseusTakeHostShellAuthorization === 'function'
+        ? window.__odysseusTakeHostShellAuthorization()
+        : '';
       appendAgentToolRequestFields(fd, {
         shellEnabled: !!el('bash-toggle').checked,
-        hostShellEnabled: !!el('host-shell-toggle')?.checked,
+        hostShellEnabled: _hostShellEnabled,
+        hostAuthorization: _hostAuthorization,
         workspace: _ws,
       });
       // Full host authority is deliberately one-shot. It remains captured in
       // this request/run, including detached work and continuation rounds, but
       // is never silently reused by the next user message.
       const _hostShell = el('host-shell-toggle');
-      if (_hostShell?.checked) {
+      if (_hostShell?.checked && !_hostAuthorization) {
         if (typeof window.__odysseusClearHostShellAuthorization === 'function') {
           window.__odysseusClearHostShellAuthorization();
         } else {
@@ -2284,7 +2292,9 @@ import { appendAgentToolRequestFields } from './agentToolRequest.js?v=20260731ru
               if (!_isBg) {
                 settleRunningToolNodes(
                   document,
-                  _terminalStreamError ? 'failed' : 'interrupted',
+                  _terminalStreamError
+                    ? 'failed'
+                    : runtimeStateToolStatus(_runtimeEvents.runState),
                 );
               }
               // Always update background map if entry exists (even if user switched back)
@@ -2292,7 +2302,7 @@ import { appendAgentToolRequestFields } from './agentToolRequest.js?v=20260731ru
               if (bgDone && !_isBg) {
                 _backgroundStreams.delete(streamSessionId);
               } else if (bgDone) {
-                bgDone.status = 'completed';
+                bgDone.status = _runtimeEvents.runState || 'incomplete';
                 bgDone.accumulated = accumulated;
                 if (_isBg) {
                   try {
@@ -2358,7 +2368,11 @@ import { appendAgentToolRequestFields } from './agentToolRequest.js?v=20260731ru
               break;
             }
             try {
-              const json = JSON.parse(data);
+              let json = JSON.parse(data);
+              if (json?.version === 2) {
+                json = _runtimeEvents.consume(json);
+                if (!json) continue;
+              }
               // Handle SSE error events (e.g. HTTP 404 from provider)
               if (_nextIsError || json.status >= 400) {
                 _nextIsError = false;
@@ -2409,8 +2423,13 @@ import { appendAgentToolRequestFields } from './agentToolRequest.js?v=20260731ru
               }
               if (json.type === 'run_state' && json.terminal) {
                 _clearRunStatus();
-                if (!_isBg) settleRunningToolNodes(document, runTerminalToolState(json.state));
-                if (json.state === 'cancelled' && !_isBg && !accumulated) {
+                if (!_isBg) settleRunningToolNodes(
+                  document,
+                  json.runtime_state
+                    ? runtimeStateToolStatus(json.runtime_state)
+                    : runTerminalToolState(json.state),
+                );
+                if ((json.runtime_state || json.state) === 'cancelled' && !_isBg && !accumulated) {
                   _renderCancelledBubble(holder);
                 }
                 continue;
@@ -3850,7 +3869,7 @@ import { appendAgentToolRequestFields } from './agentToolRequest.js?v=20260731ru
         // Error happened while backgrounded — update map, don't touch DOM
         console.error('Background stream error:', err);
         var bgErr = _backgroundStreams.get(streamSessionId);
-        if (bgErr && bgErr.status === 'completed') {
+        if (bgErr && bgErr.status !== 'running') {
           // [DONE] was already processed — this error is benign (e.g. reader.read() after close)
           // Don't override the completed status; just ensure the completed dot stays
           if (sessionModule && sessionModule.clearStreaming) {
@@ -4443,6 +4462,8 @@ import { appendAgentToolRequestFields } from './agentToolRequest.js?v=20260731ru
     let gotDelta = false;
     let leftSession = false;
     let metricsData = null;
+    const runtimeEvents = createRuntimeEventReducer();
+    let semanticTerminal = false;
     // "Rich" responses (tool calls, sources, doc streaming, multi-round) need the
     // full canonical render, which is rebuilt from the saved DB record on reload.
     // Plain text replies can be finalized in place without a reload.
@@ -4488,6 +4509,15 @@ import { appendAgentToolRequestFields } from './agentToolRequest.js?v=20260731ru
           }
           let json;
           try { json = JSON.parse(payload); } catch (_) { continue; }
+          if (json?.version === 2) {
+            json = runtimeEvents.consume(json);
+            if (!json) continue;
+            if (json.type === 'run_state' && json.terminal) {
+              semanticTerminal = true;
+              if (json.runtime_state !== 'completed') rich = true;
+              continue;
+            }
+          }
           if (json.delta) {
             roundText += json.delta;
             if (!docFenceOpened && (roundText.includes('```create_document\n') || roundText.includes('```document\n') || roundText.includes('```documen\n'))) {
@@ -4527,7 +4557,13 @@ import { appendAgentToolRequestFields } from './agentToolRequest.js?v=20260731ru
     // Plain text reply: finalize in place. Replace the live bubble with a
     // canonical single message (markdown + footer actions + metrics) using the
     // same renderer history does. No history refetch, no end-of-stream flicker.
-    if (onThisSession && !rich && roundText.trim()) {
+    if (
+      onThisSession
+      && semanticTerminal
+      && runtimeEvents.runState === 'completed'
+      && !rich
+      && roundText.trim()
+    ) {
       if (holder.parentNode) holder.remove();
       const model = meta && meta.model;
       const meta_ = metricsData ? Object.assign({ model }, metricsData) : { model };
@@ -4553,8 +4589,9 @@ import { appendAgentToolRequestFields } from './agentToolRequest.js?v=20260731ru
     if (!sessionId || !_backgroundStreams.has(sessionId)) return;
     var entry = _backgroundStreams.get(sessionId);
 
-    if (entry.status === 'completed') {
-      // Response is already saved to DB and will appear in history — just clean up
+    if (entry.status !== 'running' && entry.status !== 'error') {
+      // The authoritative runtime reached a semantic terminal state. The saved
+      // response will be reloaded from the DB; [DONE] alone never selects it.
       _backgroundStreams.delete(sessionId);
       return;
     }

@@ -1987,7 +1987,9 @@ function initializeEventListeners() {
     chk.checked = false;
     btn.classList.remove('active');
     btn.setAttribute('aria-pressed', 'false');
+    let authorizationToken = '';
     function clearAuthorization() {
+      authorizationToken = '';
       chk.checked = false;
       btn.classList.remove('active');
       btn.setAttribute('aria-pressed', 'false');
@@ -2004,7 +2006,12 @@ function initializeEventListeners() {
       }
     }
     window.__odysseusClearHostShellAuthorization = clearAuthorization;
-    btn.addEventListener('click', () => {
+    window.__odysseusTakeHostShellAuthorization = () => {
+      const token = authorizationToken;
+      clearAuthorization();
+      return token;
+    };
+    btn.addEventListener('click', async () => {
       if (chk.checked) {
         clearAuthorization();
         showToolToggleToast('host_shell', false);
@@ -2016,6 +2023,33 @@ function initializeEventListeners() {
         'Docker socket, services, and filesystem permissions. This is not sandboxed.'
       );
       if (!approved) return;
+      let sessionId = sessionModule?.getCurrentSessionId?.();
+      if (!sessionId && sessionModule?.materializePendingSession) {
+        try {
+          await sessionModule.materializePendingSession();
+          sessionId = sessionModule.getCurrentSessionId?.();
+        } catch (_) {}
+      }
+      if (!sessionId) {
+        uiModule?.showToast?.('Start a chat before granting full host shell', 3500);
+        return;
+      }
+      try {
+        const response = await fetch(`${API_BASE}/api/chat/host-authorize`, {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session_id: sessionId }),
+        });
+        if (!response.ok) throw new Error('Host authorization was denied');
+        const issued = await response.json();
+        authorizationToken = String(issued?.authorization || '');
+        if (!authorizationToken) throw new Error('Host authorization was not issued');
+      } catch (error) {
+        authorizationToken = '';
+        uiModule?.showToast?.(error?.message || 'Unable to authorize full host shell', 4000);
+        return;
+      }
       const safeChk = el('bash-toggle');
       const safeBtn = el('bash-toggle-btn');
       btn.dataset.restoreSafeShell = String(!!safeChk?.checked);

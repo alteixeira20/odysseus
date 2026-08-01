@@ -49,10 +49,25 @@ test('full host shell is a distinct explicit request mode', () => {
   assert.deepEqual(agentToolRequestFields({
     shellEnabled: false,
     hostShellEnabled: true,
+    hostAuthorization: 'one-run-token',
     workspace: '/selected/repository',
   }), {
     allow_bash: 'true',
     shell_mode: 'host',
+    host_authorization: 'one-run-token',
+    workspace: '/selected/repository',
+  });
+});
+
+
+test('host UI state without a server authorization cannot request host mode', () => {
+  assert.deepEqual(agentToolRequestFields({
+    shellEnabled: false,
+    hostShellEnabled: true,
+    workspace: '/selected/repository',
+  }), {
+    allow_bash: 'false',
+    shell_mode: 'disabled',
     workspace: '/selected/repository',
   });
 });
