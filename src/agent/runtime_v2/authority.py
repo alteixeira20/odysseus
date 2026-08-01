@@ -160,6 +160,9 @@ def resolve_execution_root(
         root_path = tempfile.mkdtemp(prefix="odysseus-agent-workspace-")
         source = ExecutionRootSource.EPHEMERAL_WORKSPACE
     canonical = os.path.realpath(root_path)
+    # Complete or roll back any durable staging journal before freezing the
+    # run's workspace revision. A run never observes a half-committed root.
+    WORKSPACE_SERVICE.recover_transactions(canonical)
     writable = os.access(canonical, os.W_OK)
     root = ExecutionRoot(
         path=canonical,

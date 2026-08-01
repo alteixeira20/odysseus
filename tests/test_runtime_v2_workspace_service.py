@@ -1,5 +1,6 @@
 """Behavioral contracts for canonical coding workspace tools."""
 
+import json
 import os
 import shutil
 
@@ -176,6 +177,55 @@ def test_failed_multi_file_commit_restores_every_original(tmp_path, monkeypatch)
         )
     assert left.read_text(encoding="utf-8") == "left-before"
     assert right.read_text(encoding="utf-8") == "right-before"
+
+
+def test_prepared_crash_journal_is_recovered_before_next_revision(tmp_path):
+    target = tmp_path / "interrupted.txt"
+    target.write_text("before", encoding="utf-8")
+    before_revision = WORKSPACE_SERVICE.revision(str(tmp_path))
+    transaction_id = "prepared-crash"
+    journal = (
+        tmp_path
+        / WORKSPACE_SERVICE.INTERNAL_DIRECTORY
+        / "transactions"
+        / transaction_id
+    )
+    backups = journal / "backups"
+    backups.mkdir(parents=True)
+    (backups / "0.bin").write_text("before", encoding="utf-8")
+    (journal / "manifest.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "transaction_id": transaction_id,
+                "state": "prepared",
+                "root": str(tmp_path.resolve()),
+                "changes": [
+                    {
+                        "path": "interrupted.txt",
+                        "existed": True,
+                        "backup": "backups/0.bin",
+                        "delete": False,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    target.write_text("partially committed", encoding="utf-8")
+
+    recovered = WORKSPACE_SERVICE.recover_transactions(str(tmp_path))
+
+    assert recovered == [
+        {
+            "transaction_id": transaction_id,
+            "action": "restored",
+            "state": "prepared",
+        }
+    ]
+    assert target.read_text(encoding="utf-8") == "before"
+    assert not journal.exists()
+    assert WORKSPACE_SERVICE.revision(str(tmp_path)) != before_revision
 
 
 def test_dry_run_produces_preview_without_mutation(tmp_path):

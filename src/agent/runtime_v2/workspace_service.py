@@ -806,6 +806,131 @@ class WorkspaceService:
         finally:
             os.close(descriptor)
 
+    def recover_transactions(self, root: str) -> list[dict[str, Any]]:
+        """Recover prepared journals and clean completed journals.
+
+        A manifest is fsynced before the first target replacement. If the
+        process stops after that point, the next request restores every
+        original from the journal before taking its immutable workspace
+        revision. A manifest marked committed is only stale cleanup metadata;
+        its already-completed changes are preserved.
+        """
+
+        canonical_root = self._root(root)
+        transaction_parent = os.path.join(
+            canonical_root, self.INTERNAL_DIRECTORY, "transactions"
+        )
+        if not os.path.isdir(transaction_parent):
+            return []
+        recovered: list[dict[str, Any]] = []
+        restored_any = False
+        for transaction_id in sorted(os.listdir(transaction_parent)):
+            journal_root = os.path.realpath(
+                os.path.join(transaction_parent, transaction_id)
+            )
+            try:
+                if os.path.commonpath((transaction_parent, journal_root)) != transaction_parent:
+                    raise WorkspaceError("transaction journal escaped the runtime directory")
+            except ValueError as exc:
+                raise WorkspaceError("invalid transaction journal path") from exc
+            if not os.path.isdir(journal_root):
+                continue
+            manifest_path = os.path.join(journal_root, "manifest.json")
+            try:
+                with open(manifest_path, "r", encoding="utf-8") as handle:
+                    manifest = json.load(handle)
+            except (OSError, ValueError, TypeError) as exc:
+                raise WorkspaceError(
+                    f"cannot recover transaction {transaction_id}: invalid manifest"
+                ) from exc
+            if not isinstance(manifest, Mapping):
+                raise WorkspaceError(
+                    f"cannot recover transaction {transaction_id}: invalid manifest"
+                )
+            if (
+                manifest.get("version") != 1
+                or str(manifest.get("transaction_id") or "") != transaction_id
+                or os.path.realpath(str(manifest.get("root") or "")) != canonical_root
+            ):
+                raise WorkspaceError(
+                    f"cannot recover transaction {transaction_id}: manifest identity mismatch"
+                )
+            state = str(manifest.get("state") or "")
+            if state in {"committed", "rolled_back", "recovered"}:
+                shutil.rmtree(journal_root)
+                recovered.append(
+                    {"transaction_id": transaction_id, "action": "cleaned", "state": state}
+                )
+                continue
+            if state not in {"prepared", "recovery_required"}:
+                raise WorkspaceError(
+                    f"cannot recover transaction {transaction_id}: unknown state {state!r}"
+                )
+            changes = manifest.get("changes")
+            if not isinstance(changes, list):
+                raise WorkspaceError(
+                    f"cannot recover transaction {transaction_id}: invalid change list"
+                )
+            errors: list[str] = []
+            for change in reversed(changes):
+                if not isinstance(change, Mapping):
+                    errors.append("invalid change entry")
+                    continue
+                relative = str(change.get("path") or "")
+                try:
+                    target = self.resolve(canonical_root, relative)
+                    if bool(change.get("existed")):
+                        backup_relative = str(change.get("backup") or "")
+                        backup = os.path.realpath(
+                            os.path.join(journal_root, backup_relative)
+                        )
+                        if (
+                            not backup_relative
+                            or os.path.commonpath((journal_root, backup)) != journal_root
+                            or not os.path.isfile(backup)
+                        ):
+                            raise WorkspaceError("journal backup is missing or invalid")
+                        os.makedirs(os.path.dirname(target), exist_ok=True)
+                        shutil.copyfile(backup, target)
+                    elif os.path.exists(target):
+                        if not os.path.isfile(target) and not os.path.islink(target):
+                            raise WorkspaceError("recovery target is not a file")
+                        os.unlink(target)
+                    self._fsync_directory(os.path.dirname(target))
+                    restored_any = True
+                except (OSError, ValueError, WorkspaceError) as exc:
+                    errors.append(f"{relative or '<missing>'}: {exc}")
+            if errors:
+                manifest["state"] = "recovery_required"
+                manifest["rollback_errors"] = errors
+                with open(manifest_path, "w", encoding="utf-8") as handle:
+                    json.dump(manifest, handle, sort_keys=True)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                raise WorkspaceError(
+                    f"transaction {transaction_id} still requires recovery: {'; '.join(errors)}"
+                )
+            manifest["state"] = "recovered"
+            with open(manifest_path, "w", encoding="utf-8") as handle:
+                json.dump(manifest, handle, sort_keys=True)
+                handle.flush()
+                os.fsync(handle.fileno())
+            shutil.rmtree(journal_root)
+            recovered.append(
+                {"transaction_id": transaction_id, "action": "restored", "state": state}
+            )
+        if restored_any:
+            self._bump_revision(canonical_root)
+        for directory in (
+            transaction_parent,
+            os.path.dirname(transaction_parent),
+        ):
+            try:
+                os.rmdir(directory)
+            except OSError:
+                pass
+        return recovered
+
     def patch_workspace(self, root: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
         canonical_root = self._root(root)
         before_revision = self.require_revision(
