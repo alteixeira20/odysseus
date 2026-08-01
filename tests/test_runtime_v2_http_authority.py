@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+import threading
 from types import SimpleNamespace
 
 from fastapi import FastAPI
@@ -13,6 +15,7 @@ import routes.chat_routes as chat_routes
 from routes.chat_helpers import ChatContext, PreprocessedMessage, PresetInfo
 from src.agent.rounds.tool_calls import normalize_tool_calls
 from src.agent.runtime_v2.executor import execute_normalized_tool_call
+from src.agent.runtime_v2.approvals import EFFECT_APPROVALS
 from src.agent.runtime_v2.events import encode_runtime_sse
 from src.agent.runtime_v2.state import RunState
 from src.agent.tools.bootstrap import TOOL_REGISTRY
@@ -80,6 +83,8 @@ def test_production_http_preparation_binds_roots_and_one_run_host_authority(
     principal = {"name": "admin", "admin": True}
     captured_contexts = []
     runs = {}
+    approval_ready = threading.Event()
+    approval_capture = {}
 
     monkeypatch.setattr(chat_routes, "_verify_session_owner", lambda *args, **kwargs: None)
     monkeypatch.setattr(chat_routes, "get_current_user", lambda request: principal["name"])
@@ -131,7 +136,128 @@ def test_production_http_preparation_binds_roots_and_one_run_host_authority(
                 {"state": RunState.RUNNING.value, "reason": "http_running"},
             )
         )
-        if "sudo id" in latest:
+        if "Delete obsolete" in latest:
+            call = normalize_tool_calls(
+                [
+                    ToolBlock(
+                        "patch_workspace",
+                        "",
+                        arguments={
+                            "operations": [
+                                {
+                                    "type": "delete",
+                                    "path": "obsolete-http.txt",
+                                }
+                            ]
+                        },
+                    )
+                ],
+                [],
+                execution_context=execution_context,
+                provider_name="http-sse-approval-test",
+            )[0]
+            yield encode_runtime_sse(
+                execution_context.event_factory.create(
+                    "tool_started",
+                    {
+                        "call_id": call.call_id,
+                        "canonical_name": call.canonical_name,
+                        "raw_name": call.raw_name,
+                        "round": 1,
+                        "command": "delete obsolete-http.txt",
+                    },
+                    caused_by=call.call_id,
+                )
+            )
+            waiting = await execute_normalized_tool_call(call, execution_context)
+            approval_id = waiting.data["approval"]["approval_id"]
+            approval_capture.update(
+                approval_id=approval_id,
+                call_id=call.call_id,
+            )
+            yield encode_runtime_sse(
+                execution_context.event_factory.create(
+                    "tool_result",
+                    {"result": waiting.as_dict(), "round": 1},
+                    caused_by=call.call_id,
+                )
+            )
+            yield encode_runtime_sse(
+                execution_context.event_factory.create(
+                    "run_state",
+                    {
+                        "state": RunState.WAITING_APPROVAL.value,
+                        "reason": "waiting_for_exact_effect_approval",
+                        "resumable": True,
+                        "terminal": False,
+                        "approval_id": approval_id,
+                        "call_id": call.call_id,
+                    },
+                    caused_by=call.call_id,
+                )
+            )
+            approval_ready.set()
+            decision = await EFFECT_APPROVALS.wait(
+                approval_id,
+                context=execution_context,
+            )
+            yield encode_runtime_sse(
+                execution_context.event_factory.create(
+                    "run_state",
+                    {
+                        "state": RunState.RUNNING.value,
+                        "reason": f"effect_approval_{decision.value}",
+                        "terminal": False,
+                    },
+                    caused_by=call.call_id,
+                )
+            )
+            resumed = await execute_normalized_tool_call(
+                call,
+                execution_context,
+                approval_id=approval_id,
+            )
+            yield encode_runtime_sse(
+                execution_context.event_factory.create(
+                    "tool_resumed",
+                    {
+                        "call_id": call.call_id,
+                        "canonical_name": call.canonical_name,
+                        "approval_id": approval_id,
+                        "round": 1,
+                    },
+                    caused_by=call.call_id,
+                )
+            )
+            yield encode_runtime_sse(
+                execution_context.event_factory.create(
+                    "tool_result",
+                    {
+                        "result": resumed.as_dict(),
+                        "round": 1,
+                        "approval_id": approval_id,
+                    },
+                    caused_by=call.call_id,
+                )
+            )
+            succeeded = resumed.status.value == "success"
+            yield encode_runtime_sse(
+                execution_context.event_factory.create(
+                    "run_state",
+                    {
+                        "state": (
+                            RunState.COMPLETED.value
+                            if succeeded
+                            else RunState.FAILED.value
+                        ),
+                        "disposition": "completed" if succeeded else "error",
+                        "reason": "approved_effect_committed",
+                        "resumable": False,
+                        "terminal": True,
+                    },
+                )
+            )
+        elif "sudo id" in latest:
             call = normalize_tool_calls(
                 [ToolBlock("run_host_command", "", arguments={"command": "sudo id"})],
                 [],
@@ -167,7 +293,7 @@ def test_production_http_preparation_binds_roots_and_one_run_host_authority(
                         "disposition": "awaiting_approval",
                         "reason": "sensitive_effect",
                         "resumable": True,
-                        "terminal": True,
+                        "terminal": False,
                     },
                 )
             )
@@ -304,6 +430,41 @@ def test_production_http_preparation_binds_roots_and_one_run_host_authority(
     assert '"type":"tool_result"' in approval.text
     assert '"status":"approval_required"' in approval.text
     assert '"state":"waiting_approval"' in approval.text
+
+    target = tmp_path / "obsolete-http.txt"
+    target.write_text("delete after exact approval\n", encoding="utf-8")
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pending_response = pool.submit(
+            client.post,
+            "/api/chat_stream",
+            data={
+                **common,
+                "message": "Delete obsolete-http.txt",
+                "shell_mode": "disabled",
+                "workspace": str(tmp_path),
+                "allow_workspace_write": "true",
+            },
+        )
+        assert approval_ready.wait(timeout=5)
+        exact_approval_id = approval_capture["approval_id"]
+        decision = TestClient(app).post(
+            f"/api/chat/approvals/{exact_approval_id}",
+            json={"decision": "allow"},
+        )
+        continued = pending_response.result(timeout=10)
+
+    assert decision.status_code == 200
+    assert decision.json()["state"] == "granted"
+    assert continued.status_code == 200
+    assert '"type":"tool_resumed"' in continued.text
+    assert '"reason":"approved_effect_committed"' in continued.text
+    assert not target.exists()
+    assert EFFECT_APPROVALS.state(exact_approval_id).value == "consumed"
+    replayed_decision = client.post(
+        f"/api/chat/approvals/{exact_approval_id}",
+        json={"decision": "allow"},
+    )
+    assert replayed_decision.status_code == 409
 
     replay = client.post(
         "/api/chat_stream",

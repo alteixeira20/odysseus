@@ -41,7 +41,7 @@ export function syncWorkspaceIndicator(path) {
   if (pill) {
     pill.style.display = (path && !chat) ? '' : 'none';
     pill.classList.toggle('active', !!path);
-    if (path) pill.title = `Workspace: ${path}\nSelecting this folder grants no shell authority. Safe shell is confined here; Full host shell is separately authorized.\nClick to clear.`;
+    if (path) pill.title = `Workspace: ${path}\nSelecting this folder grants inspection only. Shell and workspace-write authority are separate controls.\nClick to clear.`;
   }
   if (name) name.textContent = path ? _basename(path) : '';
   if (overflow) {
@@ -58,9 +58,17 @@ export function applyMode(_mode) {
 }
 
 export function setWorkspace(path) {
+  const previous = getWorkspace();
   if (path) Storage.set(KEYS.WORKSPACE, path);
   else Storage.remove(KEYS.WORKSPACE);
   syncWorkspaceIndicator(path || '');
+  if (String(previous || '') !== String(path || '')) {
+    try {
+      window.dispatchEvent(new CustomEvent('odysseus:workspace-change', {
+        detail: { previous: previous || '', current: path || '' },
+      }));
+    } catch (_) {}
+  }
 }
 
 /**
@@ -153,7 +161,7 @@ function _getModal() {
       <input type="text" class="styled-prompt-input workspace-cur" id="workspace-cur-path"
              spellcheck="false" autocomplete="off" autocapitalize="off" autocorrect="off"
              placeholder="Type or paste a folder path, then press Enter" />
-      <p class="muted workspace-note">This folder is the working tree; selecting it grants <strong>no process authority</strong>. Safe workspace shell is isolated and writable only here. Full host shell is a separate, one-run authorization that can reach outside it.</p>
+      <p class="muted workspace-note">Selecting this folder grants <strong>inspection only</strong>. Safe shell, workspace changes, and Full host shell are independent controls; the workspace stays read-only until “Allow workspace changes” is enabled for the run.</p>
       <div class="modal-body workspace-body" id="workspace-body"></div>
       <div class="modal-footer workspace-footer">
         <button type="button" class="confirm-btn confirm-btn-secondary" id="workspace-cancel">Cancel</button>

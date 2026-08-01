@@ -733,6 +733,36 @@ def setup_chat_routes(
             "one_run": True,
         }
 
+    @router.post("/api/chat/approvals/{approval_id}")
+    async def decide_effect_approval(
+        request: Request,
+        approval_id: str,
+    ) -> Dict[str, Any]:
+        """Grant or deny one exact pending effect without accepting call args."""
+
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        from src.agent.runtime_v2.approvals import (
+            EFFECT_APPROVALS,
+            EffectApprovalError,
+        )
+
+        try:
+            state = EFFECT_APPROVALS.decide(
+                approval_id,
+                owner_id=str(effective_user(request) or ""),
+                decision=str((payload or {}).get("decision") or ""),
+            )
+        except EffectApprovalError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return {
+            "approval_id": approval_id,
+            "state": state.value,
+            "one_use": True,
+        }
+
     @router.post("/api/chat_stream")
     async def chat_stream(request: Request) -> StreamingResponse:
         _request_received_at = time.perf_counter()
@@ -770,6 +800,9 @@ def setup_chat_routes(
         host_authorization_token = form_data.get("host_authorization")
         if host_authorization_token is None:
             host_authorization_token = (body or {}).get("host_authorization")
+        allow_workspace_write = form_data.get("allow_workspace_write")
+        if allow_workspace_write is None:
+            allow_workspace_write = (body or {}).get("allow_workspace_write")
         from src.execution_policy import resolve_execution_mode
         # Missing/false allow_bash is an immutable denial.  Legacy true maps
         # only to sandboxed mode; host access requires shell_mode=host too.
@@ -788,8 +821,11 @@ def setup_chat_routes(
         chat_mode = str(form_data.get("mode", "")).lower()  # 'chat' or 'agent'
         # Workspace: confine the agent's file/shell tools to this folder.
         _workspace_resolution_started = time.perf_counter()
+        posted_workspace = form_data.get("workspace")
+        if posted_workspace is None:
+            posted_workspace = (body or {}).get("workspace")
         workspace, workspace_rejected = _resolve_request_workspace(
-            request, form_data.get("workspace")
+            request, posted_workspace
         )
         logger.info(
             "[agent-timing] phase=workspace_resolution_complete session=%s "
@@ -939,6 +975,13 @@ def setup_chat_routes(
             _verify_session_owner(request, session)
             sess = session_manager.get_session(session)
             owner = effective_user(request)
+            # Claim turn ownership before provider/context preparation. A new
+            # accepted user message immediately supersedes any unfinished turn
+            # for this conversation; cancellation is not the security check.
+            _turn_lease = agent_runs.begin_turn(
+                session_id=str(session),
+                owner=str(owner) if owner else None,
+            )
             _reconcile_selected_route_from_request(request, sess, session, form_data, owner=owner)
             if _clear_orphaned_session_endpoint(sess, owner=owner):
                 raise HTTPException(400, "Selected model endpoint was removed. Pick another model in Settings.")
@@ -1324,7 +1367,7 @@ def setup_chat_routes(
         _max_rounds = 1
         if _effective_mode == "agent":
             from src.agent.runtime_v2.authority import prepare_execution_context
-            from src.agent.runtime_v2.contracts import RunBudgets
+            from src.agent.runtime_v2.contracts import Capability, RunBudgets
             from src.agent.tools.bootstrap import TOOL_REGISTRY
             from src.agent_tools import MAX_AGENT_ROUNDS as _DEFAULT_ROUNDS
             from src.tool_security import blocked_tools_for_owner
@@ -1361,6 +1404,13 @@ def setup_chat_routes(
                 ),
                 sandbox_default=get_setting("agent_sandbox_default_root", None),
                 host_default=get_setting("agent_host_default_root", None),
+                conversation_id=str(session),
+                turn_lease=_turn_lease,
+                workspace_write=(
+                    str(allow_workspace_write).strip().lower() == "true"
+                    and bool(workspace)
+                    and not plan_mode
+                ),
                 disabled_tools=TOOL_REGISTRY.canonicalize_names(
                     set(disabled_tools) | set(blocked_tools_for_owner(_user)),
                     None,
@@ -1840,7 +1890,18 @@ def setup_chat_routes(
                         "execution_root": _execution_context.execution_root.path,
                         "root_source": _execution_context.execution_root.source.value,
                         "workspace_revision": _execution_context.execution_root.workspace_revision,
+                        "workspace_snapshot_policy": (
+                            "git_head_status_with_bounded_dirty_and_untracked_content; "
+                            "ignored_dependency_artifacts_outside_revision"
+                        ),
                         "authority_revision": _execution_context.authority_grant.revision,
+                        "capabilities": sorted(
+                            capability.value
+                            for capability in _execution_context.authority_grant.capabilities
+                        ),
+                        "workspace_write_granted": _execution_context.authority_grant.allows(
+                            Capability.WORKSPACE_WRITE
+                        ),
                         "run_id": _execution_context.run_id,
                     }) + "\n\n"
 
@@ -1894,14 +1955,22 @@ def setup_chat_routes(
                                     elif data.get("type") == "run_state":
                                         _payload = data.get("payload") or {}
                                         if _payload.get("terminal"):
-                                            _agent_terminal_state = (
+                                            _candidate_terminal_state = (
                                                 _payload.get("disposition")
                                                 or _payload.get("state")
                                             )
-                                            _agent_terminal_reason = _payload.get("reason")
-                                            _agent_terminal_resumable = bool(
-                                                _payload.get("resumable")
-                                            )
+                                            if (
+                                                _agent_terminal_state is None
+                                                or (
+                                                    _agent_terminal_state == "completed"
+                                                    and _candidate_terminal_state != "completed"
+                                                )
+                                            ):
+                                                _agent_terminal_state = _candidate_terminal_state
+                                                _agent_terminal_reason = _payload.get("reason")
+                                                _agent_terminal_resumable = bool(
+                                                    _payload.get("resumable")
+                                                )
                                     yield chunk
                                 elif data.get("type") == "web_sources":
                                     web_sources = data.get("data", [])
@@ -1926,9 +1995,17 @@ def setup_chat_routes(
                                     elif data.get("type") == "tool_start":
                                         _agent_tool_calls += 1
                                     elif data.get("type") == "run_state" and data.get("terminal"):
-                                        _agent_terminal_state = data.get("state")
-                                        _agent_terminal_reason = data.get("reason")
-                                        _agent_terminal_resumable = bool(data.get("resumable"))
+                                        _candidate_terminal_state = data.get("state")
+                                        if (
+                                            _agent_terminal_state is None
+                                            or (
+                                                _agent_terminal_state == "completed"
+                                                and _candidate_terminal_state != "completed"
+                                            )
+                                        ):
+                                            _agent_terminal_state = _candidate_terminal_state
+                                            _agent_terminal_reason = data.get("reason")
+                                            _agent_terminal_resumable = bool(data.get("resumable"))
                                     yield chunk
                                 elif data.get("type") == "fallback":
                                     # Selected model failed; a fallback answered.

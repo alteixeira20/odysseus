@@ -3,7 +3,6 @@
 // components are migrated incrementally.
 
 const TERMINAL_STATES = new Set([
-  'waiting_approval',
   'waiting_user',
   'incomplete',
   'completed',
@@ -35,6 +34,7 @@ export function createRuntimeEventReducer() {
   let runId = null;
   let lastSequence = 0;
   let runState = null;
+  let terminalState = null;
 
   return {
     get runId() { return runId; },
@@ -53,7 +53,14 @@ export function createRuntimeEventReducer() {
 
       const payload = raw.payload;
       if (raw.type === 'run_state') {
-        runState = String(payload.state || 'incomplete');
+        const candidateState = String(payload.state || 'incomplete');
+        const candidateTerminal = payload.terminal === true || runtimeStateIsTerminal(candidateState);
+        if (terminalState) {
+          if (!candidateTerminal) return null;
+          if (!(terminalState === 'completed' && candidateState !== 'completed')) return null;
+        }
+        runState = candidateState;
+        if (candidateTerminal) terminalState = candidateState;
         return {
           type: 'run_state',
           state: String(payload.disposition || runState),
@@ -61,6 +68,10 @@ export function createRuntimeEventReducer() {
           terminal: payload.terminal === true || runtimeStateIsTerminal(runState),
           reason: String(payload.reason || runState),
           resumable: !!payload.resumable,
+          approval_id: payload.approval_id ? String(payload.approval_id) : null,
+          call_id: payload.call_id ? String(payload.call_id) : null,
+          canonical_name: payload.canonical_name ? String(payload.canonical_name) : null,
+          effects: Array.isArray(payload.effects) ? payload.effects : [],
           runtime_event: raw,
         };
       }

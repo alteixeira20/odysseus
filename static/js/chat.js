@@ -29,7 +29,42 @@ import {
   stopToolNodeTimers,
   toolTerminalState,
 } from './agentToolLifecycle.js?v=20260731bash1';
-import { appendAgentToolRequestFields } from './agentToolRequest.js?v=20260731runtime1';
+import { appendAgentToolRequestFields } from './agentToolRequest.js?v=20260801runtime3';
+
+const _decidedEffectApprovals = new Set();
+
+async function _decideEffectApproval(event) {
+  const approvalId = String(event?.approval_id || '');
+  if (!approvalId || _decidedEffectApprovals.has(approvalId)) return;
+  _decidedEffectApprovals.add(approvalId);
+  const tool = String(event?.canonical_name || 'the requested tool');
+  const effects = Array.isArray(event?.effects) ? event.effects : [];
+  const effectSummary = effects.slice(0, 8).map((effect) => {
+    const kind = String(effect?.kind || 'effect');
+    const target = String(effect?.target || 'unknown target');
+    return `• ${kind}: ${target}`;
+  }).join('\n');
+  const allowed = window.confirm(
+    `Approve the exact pending ${tool} effect?` +
+    (effectSummary ? `\n\n${effectSummary}` : '') +
+    '\n\nThis approval is bound to this call, arguments, authority, workspace revision, expiry, and is consumed once.'
+  );
+  try {
+    const response = await fetch(`/api/chat/approvals/${encodeURIComponent(approvalId)}`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ decision: allowed ? 'allow' : 'deny' }),
+    });
+    if (!response.ok) {
+      const detail = await response.text();
+      throw new Error(detail || `HTTP ${response.status}`);
+    }
+  } catch (error) {
+    _decidedEffectApprovals.delete(approvalId);
+    console.error('Effect approval decision failed:', error);
+  }
+}
 import { createRuntimeEventReducer, runtimeStateToolStatus } from './runtimeEvents.js?v=20260801runtime2';
 
   const RESEARCH_TIMEOUT_MS = 360000;
@@ -1699,6 +1734,7 @@ import { createRuntimeEventReducer, runtimeStateToolStatus } from './runtimeEven
         shellEnabled: !!el('bash-toggle').checked,
         hostShellEnabled: _hostShellEnabled,
         hostAuthorization: _hostAuthorization,
+        workspaceWriteEnabled: !!el('workspace-write-toggle')?.checked,
         workspace: _ws,
       });
       // Full host authority is deliberately one-shot. It remains captured in
@@ -2432,6 +2468,11 @@ import { createRuntimeEventReducer, runtimeStateToolStatus } from './runtimeEven
                 if ((json.runtime_state || json.state) === 'cancelled' && !_isBg && !accumulated) {
                   _renderCancelledBubble(holder);
                 }
+                continue;
+              }
+              if (json.type === 'run_state' && json.runtime_state === 'waiting_approval') {
+                _showRunStatus('Waiting for exact effect approval');
+                void _decideEffectApproval(json);
                 continue;
               }
               if (json.delta) {
@@ -4515,6 +4556,11 @@ import { createRuntimeEventReducer, runtimeStateToolStatus } from './runtimeEven
             if (json.type === 'run_state' && json.terminal) {
               semanticTerminal = true;
               if (json.runtime_state !== 'completed') rich = true;
+              continue;
+            }
+            if (json.type === 'run_state' && json.runtime_state === 'waiting_approval') {
+              void _decideEffectApproval(json);
+              rich = true;
               continue;
             }
           }

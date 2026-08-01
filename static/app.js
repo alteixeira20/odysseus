@@ -4,13 +4,13 @@
 // ============================================
 import Storage from './js/storage.js';
 import uiModule from './js/ui.js';
-import workspaceModule from './js/workspace.js';
+import workspaceModule from './js/workspace.js?v=20260801runtime3';
 import fileHandlerModule from './js/fileHandler.js';
 import modelsModule from './js/models.js?v=20260715startupcalm2';
 import ragModule from './js/rag.js';
 import presetsModule from './js/presets.js';
 import searchModule from './js/search.js';
-import chatModule from './js/chat.js?v=20260722ctxheader4';
+import chatModule from './js/chat.js?v=20260801runtime3';
 import compareModule from './js/compare/index.js?v=20260723compareicon2';
 import documentModule from './js/document.js?v=20260722emailfastindex1';
 import searchChatModule from './js/search-chat.js';
@@ -874,6 +874,8 @@ function initializeEventListeners() {
     const bashBtn = el('bash-toggle-btn');
     const hostShellChk = el('host-shell-toggle');
     const hostShellBtn = el('host-shell-toggle-btn');
+    const workspaceWriteChk = el('workspace-write-toggle');
+    const workspaceWriteBtn = el('workspace-write-toggle-btn');
     if (active) {
       if (bashChk && bashChk.checked) {
         bashChk.checked = false;
@@ -888,6 +890,11 @@ function initializeEventListeners() {
           hostShellBtn.classList.remove('active');
           hostShellBtn.setAttribute('aria-pressed', 'false');
         }
+      }
+      if (workspaceWriteChk) workspaceWriteChk.checked = false;
+      if (workspaceWriteBtn) {
+        workspaceWriteBtn.classList.remove('active');
+        workspaceWriteBtn.setAttribute('aria-pressed', 'false');
       }
     }
     const s = loadToggleState(); s.research = active; saveToggleState(s);
@@ -1726,6 +1733,7 @@ function initializeEventListeners() {
   const MODE_TOOLS = [
     { btnId: 'web-toggle-btn',  checkboxId: 'web-toggle',  stateKey: 'web' },
     { btnId: 'bash-toggle-btn', checkboxId: 'bash-toggle', stateKey: 'bash' },
+    { btnId: 'workspace-write-toggle-btn', checkboxId: 'workspace-write-toggle', stateKey: 'workspace_write' },
   ];
 
   function _modeKey(stateKey, mode) { return `${stateKey}_${mode}`; }
@@ -1734,6 +1742,7 @@ function initializeEventListeners() {
     const state = loadToggleState();
     const key = _modeKey(stateKey, mode);
     if (Object.prototype.hasOwnProperty.call(state, key)) return !!state[key];
+    if (stateKey === 'workspace_write') return false;
     return mode === 'agent'; // default: ON in agent, OFF in chat
   }
 
@@ -1980,6 +1989,20 @@ function initializeEventListeners() {
   }
   setupToggle('web-toggle-btn', 'web-toggle', 'web');
   setupToggle('bash-toggle-btn', 'bash-toggle', 'bash');
+  setupToggle('workspace-write-toggle-btn', 'workspace-write-toggle', 'workspace_write');
+  window.addEventListener('odysseus:workspace-change', () => {
+    const chk = el('workspace-write-toggle');
+    const btn = el('workspace-write-toggle-btn');
+    if (chk) chk.checked = false;
+    if (btn) {
+      btn.classList.remove('active');
+      btn.setAttribute('aria-pressed', 'false');
+    }
+    const state = loadToggleState();
+    state.workspace_write_agent = false;
+    state.workspace_write_chat = false;
+    saveToggleState(state);
+  });
   (function setupHostShellAuthorization() {
     const btn = el('host-shell-toggle-btn');
     const chk = el('host-shell-toggle');

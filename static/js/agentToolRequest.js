@@ -2,7 +2,7 @@
 // Workspace identity and shell authorization are independent axes: selecting a
 // workspace changes the starting directory, never the visible shell toggle.
 
-export function agentToolRequestFields({ shellEnabled, hostShellEnabled, hostAuthorization, workspace }) {
+export function agentToolRequestFields({ shellEnabled, hostShellEnabled, hostAuthorization, workspaceWriteEnabled, workspace }) {
   const authorizedHost = !!hostShellEnabled && !!String(hostAuthorization || '').trim();
   const shellMode = authorizedHost
     ? 'host'
@@ -12,6 +12,9 @@ export function agentToolRequestFields({ shellEnabled, hostShellEnabled, hostAut
     // sandboxed mode server-side; host authority always needs shell_mode=host.
     allow_bash: shellMode === 'disabled' ? 'false' : 'true',
     shell_mode: shellMode,
+    // Workspace selection is inspection-only. Mutation is a separate,
+    // explicit authenticated grant and never follows from host writability.
+    allow_workspace_write: workspaceWriteEnabled ? 'true' : 'false',
   };
   if (authorizedHost) fields.host_authorization = String(hostAuthorization).trim();
   const selectedWorkspace = String(workspace || '').trim();
