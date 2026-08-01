@@ -162,7 +162,7 @@ async def test_ordinary_runtime_turn_exposes_only_relevant_mcp_tool(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_explicit_named_server_exposes_every_enabled_tool_to_provider(monkeypatch):
+async def test_explicit_named_server_exposes_read_only_tools_but_withholds_mutators(monkeypatch):
     manager = _manager()
     captured = await _capture_runtime(
         monkeypatch,
@@ -175,22 +175,23 @@ async def test_explicit_named_server_exposes_every_enabled_tool_to_provider(monk
         },
     )
 
-    expected = {_qualified(SERENA_ID, name) for name in SERENA_TOOL_NAMES}
-    assert expected <= _schema_names(captured)
-    assert {
+    read_only = {
         _qualified(SERENA_ID, "read_file"),
         _qualified(SERENA_ID, "find_symbol"),
         _qualified(SERENA_ID, "find_referencing_symbols"),
         _qualified(SERENA_ID, "search_for_pattern"),
         _qualified(SERENA_ID, "read_memory"),
-    } <= _schema_names(captured)
+    }
+    assert read_only <= _schema_names(captured)
+    assert _qualified(SERENA_ID, "replace_symbol_body") not in _schema_names(captured)
+    assert _qualified(SERENA_ID, "check_onboarding_performed") not in _schema_names(captured)
     activation = next(e for e in captured["events"] if e.get("type") == "mcp_activation")
     assert activation["exclusive"] is False
-    assert activation["diagnostics"][0]["code"] == "activated"
+    assert activation["diagnostics"][0]["code"] == "partial_effect_scope"
 
 
 @pytest.mark.asyncio
-async def test_exclusive_named_server_excludes_other_mcp_but_keeps_controls(monkeypatch):
+async def test_exclusive_named_server_keeps_only_readonly_server_tools_and_ask_user(monkeypatch):
     manager = _manager()
     other = _qualified(OTHER_ID, "inspect_repository")
     captured = await _capture_runtime(
@@ -202,8 +203,11 @@ async def test_exclusive_named_server_excludes_other_mcp_but_keeps_controls(monk
 
     names = _schema_names(captured)
     assert other not in names
-    assert {_qualified(SERENA_ID, name) for name in SERENA_TOOL_NAMES} <= names
-    assert {"ask_user", "update_plan"} <= names
+    assert _qualified(SERENA_ID, "find_symbol") in names
+    assert _qualified(SERENA_ID, "replace_symbol_body") not in names
+    assert "ask_user" in names
+    assert "update_plan" not in names
+    assert not {"bash", "python", "write_file", "edit_file", "apply_patch"} & names
     assert "Exclusive MCP scope is active" in captured["activation_notice"]
 
 
@@ -225,7 +229,7 @@ async def test_disabled_server_and_run_tools_remain_absent(monkeypatch):
     assert _qualified(SERENA_ID, server_disabled) not in names
     assert run_disabled not in names
     activation = next(e for e in captured["events"] if e.get("type") == "mcp_activation")
-    assert activation["diagnostics"][0]["code"] == "partial_disabled"
+    assert activation["diagnostics"][0]["code"] == "partial_effect_scope"
 
 
 @pytest.mark.asyncio
@@ -252,15 +256,74 @@ async def test_same_named_mcp_tool_cannot_shadow_local_bash(tmp_path, monkeypatc
     manager._tools[SERENA_ID].append(_tool("bash"))
     catalog = manager.get_server_catalog()
     decision = resolve_mcp_activation("Use Serena", catalog)
-    assert _qualified(SERENA_ID, "bash") in decision.activated_tool_names
+    assert _qualified(SERENA_ID, "bash") not in decision.activated_tool_names
+    assert _qualified(SERENA_ID, "bash") in decision.withheld_tool_names
 
     monkeypatch.setattr(tool_execution, "_owner_is_admin", lambda owner: True)
+    async def local_bash(*args, **kwargs):
+        return {"output": str(tmp_path.resolve()), "exit_code": 0}
+    monkeypatch.setattr(tool_execution, "_direct_fallback", local_bash)
     description, result = await tool_execution.execute_tool_block(
         ToolBlock("bash", "pwd"),
         owner="admin",
         workspace=str(tmp_path),
         allowed_tools={"bash", _qualified(SERENA_ID, "bash")},
+        execution_mode="sandboxed",
     )
     assert description.startswith("bash:")
     assert result["exit_code"] == 0
     assert str(tmp_path.resolve()) in result["output"]
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Do not use Serena.",
+        "Never use Serena.",
+        "Don't use Serena for this.",
+        "Use anything except Serena.",
+        "Avoid Serena.",
+        "Work without Serena.",
+    ],
+)
+def test_negated_server_directives_activate_no_tools(message):
+    manager = _manager(include_other=False)
+    decision = resolve_mcp_activation(message, manager.get_server_catalog())
+
+    assert decision.explicit is True
+    assert decision.requested_server_ids == frozenset()
+    assert decision.excluded_server_ids == {SERENA_ID}
+    assert decision.activated_tool_names == frozenset()
+
+
+def test_latest_scope_correction_wins():
+    manager = _manager(include_other=False)
+    decision = resolve_mcp_activation(
+        "Do not use Serena. Actually, use Serena to inspect the repository.",
+        manager.get_server_catalog(),
+    )
+
+    assert decision.requested_server_ids == {SERENA_ID}
+    assert decision.excluded_server_ids == frozenset()
+    assert _qualified(SERENA_ID, "find_symbol") in decision.activated_tool_names
+
+
+def test_explicit_mutation_intent_can_authorize_non_destructive_server_mutator():
+    manager = _manager(include_other=False)
+    decision = resolve_mcp_activation(
+        "Use Serena to replace the symbol body and implement the requested fix.",
+        manager.get_server_catalog(),
+    )
+
+    assert _qualified(SERENA_ID, "replace_symbol_body") in decision.activated_tool_names
+
+
+def test_negated_mutation_intent_withholds_server_mutators():
+    manager = _manager(include_other=False)
+    decision = resolve_mcp_activation(
+        "Use Serena to inspect. Do not edit or delete anything.",
+        manager.get_server_catalog(),
+    )
+
+    assert _qualified(SERENA_ID, "find_symbol") in decision.activated_tool_names
+    assert _qualified(SERENA_ID, "replace_symbol_body") not in decision.activated_tool_names

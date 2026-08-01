@@ -156,6 +156,7 @@ async def test_replay_matches_golden_event_sequence(
             replay["messages"],
             relevant_tools=set(replay["relevant_tools"]),
             shell_enabled=replay["shell_enabled"],
+            workspace=replay.get("workspace"),
             owner=replay.get("owner"),
             max_rounds=len(replay["provider_rounds"]) + 1,
         )
@@ -180,8 +181,8 @@ async def test_replay_matches_golden_event_sequence(
             # domain_rules_for_tools in src/agent/routing/tool_domains.py.
             {"ask_user", "update_plan", "bash", "manage_bg_jobs"},
             True,
-            4215,
-            "af00f499e88b871d91f5de2b19857816920c7c63f9aba7a7385d02c8558dc6d9",
+                4134,
+                "e090dd0d333adbc45783d341f298263e474e416c29b65cf1f6f3b9bff719f7eb",
         ),
         (
             {

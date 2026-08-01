@@ -18,9 +18,19 @@ available this turn.
 
 from __future__ import annotations
 
+SANDBOX_SHELL_AUTHORITY = """\
+## Process authority: sandboxed workspace shell
+The user granted the safe workspace shell for this run. `bash`, `python`, and background commands run in an isolated Linux namespace with no network, a read-only host root, a minimal secret-free environment, and resource limits. The selected workspace is the writable execution root; when none is selected, the Odysseus server working tree is used. Network, credential helpers, Docker, host services, keyrings, SSH agents, and writes outside that execution root are intentionally unavailable. If the task requires them, explain that the user must explicitly grant Full host shell on a new run; do not pretend a denied operation succeeded."""
+
+
+HOST_SHELL_AUTHORITY = """\
+## Process authority: full host shell
+The user explicitly granted Full host shell for this run. `bash`, `python`, and background commands execute with the normal host environment, network, credential helpers, sockets, and filesystem visibility available to the Odysseus process. This is powerful authority, not a sandbox. Stay within the user's request and active workspace when one is bound; otherwise begin by inspecting the current directory. Prefer read-only inspection, never print credentials, and obtain specific authorization before destructive filesystem/git actions, privilege escalation, package installation, service changes, pushes, or other consequential external writes."""
+
+
 SHELL_GUIDANCE = """\
 ## Shell rules
-`bash` runs as a full host shell under the service user — it is NOT a sandbox. Confirm workspace identity (`get_workspace`) before acting if you are unsure where you are. Prefer `read_file`/`grep`/`glob`/`ls`/`edit_file`/`apply_patch` for ordinary source work; use `bash` when those don't fit (builds, tests, git, process/service inspection, one-off pipelines). Once you decide to act, emit the tool call immediately — never end a turn with "Now I'll check..." and no tool call. Keep any prose before a tool call to zero or one short sentence. Use bounded, non-interactive commands; never request or print passwords/secrets. Never run destructive git or filesystem operations (`reset --hard`, `clean -f`, `rm -rf`, force-push, `checkout --`/`restore` over uncommitted work) without the user's explicit authorization for that specific action.
+Confirm the working directory with `pwd` before acting if you are unsure where you are. Prefer `read_file`/`grep`/`glob`/`ls`/`edit_file`/`apply_patch` for ordinary source work when those tools are available; use `bash` when they don't fit (builds, tests, git, one-off pipelines). Once you decide to act, emit the tool call immediately — never end a turn with "Now I'll check..." and no tool call. Keep any prose before a tool call to zero or one short sentence. Use bounded, non-interactive commands; never request or print passwords/secrets. Never run destructive git or filesystem operations (`reset --hard`, `clean -f`, `rm -rf`, force-push, `checkout --`/`restore` over uncommitted work) without the user's explicit authorization for that specific action.
 
 **find**: quote glob patterns, give an explicit root and `-type`, preview with `-print` before acting. With arbitrary filenames use `-print0` piped to `xargs -0`, or prefer `-exec ... {} +`. Never run `-delete` (or any destructive `-exec`) before first previewing the identical predicate with `-print`.
   `find src tests -type f \\( -name '*.py' -o -name '*.pyi' \\) -print`
@@ -43,3 +53,12 @@ def shell_guidance_if_available(tool_names) -> str | None:
 
     names = set(tool_names or ())
     return SHELL_GUIDANCE if "bash" in names else None
+
+
+def execution_authority_guidance(mode: object) -> str | None:
+    normalized = getattr(mode, "value", mode)
+    if normalized == "sandboxed":
+        return SANDBOX_SHELL_AUTHORITY
+    if normalized == "host":
+        return HOST_SHELL_AUTHORITY
+    return None

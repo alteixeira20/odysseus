@@ -13,17 +13,24 @@ from types import MappingProxyType
 from typing import Iterable, Mapping, Optional
 
 
-WORKSPACE_FOUNDATIONAL_TOOLS = frozenset({
+WORKSPACE_INSPECTION_TOOLS = frozenset({
     "get_workspace",
     "read_file",
-    "write_file",
-    "edit_file",
-    "apply_patch",
     "ls",
     "glob",
     "grep",
+})
+
+WORKSPACE_MUTATION_TOOLS = frozenset({
+    "write_file",
+    "edit_file",
+    "apply_patch",
     "todowrite",
 })
+
+# Compatibility name: a workspace makes inspection foundational.  Mutation is
+# selected/authorized independently from the presence of a path.
+WORKSPACE_FOUNDATIONAL_TOOLS = WORKSPACE_INSPECTION_TOOLS
 
 SHELL_FOUNDATIONAL_TOOLS = frozenset({
     "bash",
@@ -68,6 +75,7 @@ def calculate_effective_tools(
     workspace_enabled: bool = False,
     shell_enabled: bool = False,
     fallback_tools: Optional[Iterable[str]] = None,
+    exclusive_tools: Optional[Iterable[str]] = None,
 ) -> EffectiveToolSet:
     """Return the exact executable tool set for one run.
 
@@ -97,7 +105,17 @@ def calculate_effective_tools(
     if shell_enabled:
         foundational.update(SHELL_FOUNDATIONAL_TOOLS)
 
-    requested = selected | forced | foundational | set(LOOP_PRIMITIVE_TOOLS)
+    if exclusive_tools is not None:
+        # An explicit "use <MCP> only" boundary is stronger than relevance,
+        # foundational convenience, and frontend-forced integrations.  Keep
+        # only the explicitly scoped tools plus the non-effectful ask_user
+        # escape hatch.
+        exclusive = {str(name) for name in exclusive_tools if name}
+        requested = exclusive | {"ask_user"}
+        foundational.clear()
+        forced.clear()
+    else:
+        requested = selected | forced | foundational | set(LOOP_PRIMITIVE_TOOLS)
     names = (requested & available) - disabled
 
     excluded: dict[str, str] = {}

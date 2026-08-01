@@ -7,7 +7,9 @@ import logging
 import re
 from typing import Any
 
-from src.agent_tools import TOOL_TAGS
+from src.agent.tools.bootstrap import TOOL_REGISTRY
+
+TOOL_TAGS = TOOL_REGISTRY.accepted_names()
 
 logger = logging.getLogger(__name__)
 
@@ -154,11 +156,11 @@ def resolve_round_tool_calls(
     # tests import agent_loop under temporary dependency stubs; lazy resolution
     # prevents those stubs from becoming permanently captured by this module.
     from src.agent_tools import (
-        TOOL_TAGS,
         ToolBlock,
         function_call_to_tool_block,
         parse_tool_blocks,
     )
+    tool_tags = TOOL_REGISTRY.accepted_names()
 
     used_native = False
     converted_calls = []
@@ -187,13 +189,13 @@ def resolve_round_tool_calls(
                 is_unknown = bool(
                     tool_name
                     and not tool_name.startswith("mcp__")
-                    and tool_name not in TOOL_TAGS
+                    and tool_name not in tool_tags
                 )
                 if is_unknown and recover_unknown:
                     suggestions = tuple(
                         get_close_matches(
                             tool_name,
-                            sorted(TOOL_TAGS),
+                            sorted(tool_tags),
                             n=3,
                             cutoff=0.55,
                         )

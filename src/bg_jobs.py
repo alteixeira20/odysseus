@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import base64
 import shlex
 import subprocess
 import time
@@ -39,6 +40,8 @@ from core.platform_compat import (
 )
 
 from src.constants import BG_JOBS_DIR, BG_JOBS_FILE
+from src.execution_policy import ExecutionMode, normalize_execution_mode
+from src.process_sandbox import minimal_environment, sandbox_command
 
 _JOBS_DIR = Path(BG_JOBS_DIR)
 _STORE = Path(BG_JOBS_FILE)
@@ -52,6 +55,9 @@ _MAX_OUTPUT_CHARS = 16000
 # files) is kept before pruning, so neither the store nor data/bg_jobs/ grows
 # without bound. The agent has already consumed the result by then.
 _RETENTION_S = 3600  # 1 hour after follow-up
+MAX_RUNNING_JOBS_GLOBAL = 16
+MAX_RUNNING_JOBS_PER_OWNER = 8
+MAX_RUNNING_JOBS_PER_SESSION = 4
 
 
 def _load() -> Dict[str, Dict[str, Any]]:
@@ -78,70 +84,118 @@ def _pid_alive(pid: Optional[int]) -> bool:
     return pid_alive(pid)
 
 
-def launch(command: str, session_id: str, cwd: Optional[str] = None,
-           max_runtime_s: int = DEFAULT_MAX_RUNTIME_S) -> Dict[str, Any]:
+def launch(
+    command: str,
+    session_id: str,
+    cwd: Optional[str] = None,
+    max_runtime_s: int = DEFAULT_MAX_RUNTIME_S,
+    *,
+    owner: Optional[str] = None,
+    execution_mode: str = "disabled",
+) -> Dict[str, Any]:
     """Launch `command` detached. Returns the job record (status='running').
 
     Output + the final exit code are written to files so status survives a
     server restart. The process is put in its own session (setsid) so it
     outlives the request/stream that started it.
     """
+    mode = normalize_execution_mode(execution_mode)
+    if not mode.enabled:
+        raise RuntimeError("background execution has no process authority")
+    active_jobs = [
+        record for record in refresh().values()
+        if record.get("status") == "running"
+    ]
+    if len(active_jobs) >= MAX_RUNNING_JOBS_GLOBAL:
+        raise RuntimeError("server background-job limit reached")
+    if sum(record.get("session_id") == session_id for record in active_jobs) >= MAX_RUNNING_JOBS_PER_SESSION:
+        raise RuntimeError("session background-job limit reached")
+    if owner and sum(record.get("owner") == owner for record in active_jobs) >= MAX_RUNNING_JOBS_PER_OWNER:
+        raise RuntimeError("owner background-job limit reached")
+
     _JOBS_DIR.mkdir(parents=True, exist_ok=True)
     job_id = uuid.uuid4().hex[:12]
     log_path = _JOBS_DIR / f"{job_id}.log"
     exit_path = _JOBS_DIR / f"{job_id}.exit"
 
-    # The user command goes in its OWN script file, run as a child `bash`. This
-    # is what isolates it: an `exit` inside it only ends that child (so the
-    # wrapper still records the exit code), and — unlike textually wrapping the
-    # command in `( … )` — the wrapper can't be broken by an unbalanced paren or
-    # a trailing line-continuation in the command. `$?` is the child's real
-    # exit status.
+    if not cwd or not os.path.isdir(os.path.realpath(cwd)):
+        raise ValueError("background execution requires an explicit workspace")
+
     bash = find_bash()
-    if bash:
-        # POSIX, or Windows with Git Bash/WSL. The user command goes in its OWN
-        # script file, run as a child `bash` — an `exit` inside it only ends
-        # that child (so the wrapper still records the exit code), and an
-        # unbalanced paren / trailing line-continuation in the command can't
-        # break the wrapper. `$?` is the child's real exit status. Paths are
-        # emitted as POSIX (forward-slash) + shell-quoted so Git Bash on Windows
-        # handles drive paths and spaces correctly.
-        cmd_path = _JOBS_DIR / f"{job_id}.cmd.sh"
-        cmd_path.write_text(command + "\n", encoding="utf-8")
-        lp, xp, cp = (shlex.quote(git_bash_path(p)) for p in (log_path, exit_path, cmd_path))
+    if not bash:
+        raise RuntimeError("background Bash requires an installed Bash executable")
+
+    if mode is ExecutionMode.SANDBOXED and os.name == "posix":
+        # Only this fixed wrapper runs on the host. The model-authored command
+        # is encoded into Bubblewrap and inherits the foreground sandbox.
+        encoded = base64.b64encode(command.encode("utf-8", errors="surrogatepass")).decode("ascii")
+        sandbox_argv, _sandbox_env = sandbox_command(
+            [
+                "/bin/bash", "--noprofile", "--norc", "-c",
+                'eval "$(printf "%s" "$ODY_COMMAND_B64" | base64 -d)"',
+            ],
+            cwd=os.path.realpath(cwd),
+            environment={},
+            runtime_environment={"ODY_COMMAND_B64": encoded},
+            timeout_seconds=max_runtime_s,
+        )
+        lp, xp = (shlex.quote(git_bash_path(p)) for p in (log_path, exit_path))
         script_path = _JOBS_DIR / f"{job_id}.sh"
         script_path.write_text(
-            f"bash {cp} > {lp} 2>&1\n"
-            f"echo $? > {xp}\n",
+            f"{shlex.join(sandbox_argv)} > {lp} 2>&1\n"
+            f"printf '%s' $? > {xp}\n",
             encoding="utf-8",
         )
         argv = [bash, str(script_path)]
-    else:
-        # Windows without any bash installed: cmd.exe wrapper. The command runs
-        # in its own child .cmd so %ERRORLEVEL% is the command's real exit code.
-        child_path = _JOBS_DIR / f"{job_id}.child.cmd"
-        child_path.write_text("@echo off\r\n" + command + "\r\n", encoding="utf-8")
-        script_path = _JOBS_DIR / f"{job_id}.cmd"
+        popen_stdout = subprocess.DEVNULL
+        popen_stderr = subprocess.DEVNULL
+        child_environment = minimal_environment({})
+    elif mode is ExecutionMode.HOST:
+        # Full host mode is intentionally useful: inherit network, PATH,
+        # credential helpers, SSH agents, Docker sockets and platform tooling
+        # from the Odysseus process. A trap persists the exit status even when
+        # the command itself calls `exit`.
+        encoded = base64.b64encode(command.encode("utf-8", errors="surrogatepass")).decode("ascii")
+        exit_target = git_bash_path(exit_path)
+        script_path = _JOBS_DIR / f"{job_id}.sh"
         script_path.write_text(
-            "@echo off\r\n"
-            f'call "{child_path}" > "{log_path}" 2>&1\r\n'
-            f'echo %ERRORLEVEL%> "{exit_path}"\r\n',
+            "__ody_finish() { __ody_rc=$?; "
+            f"printf '%s' \"$__ody_rc\" > {shlex.quote(exit_target)}; }}\n"
+            "trap __ody_finish EXIT\n"
+            f"ODY_COMMAND_B64={shlex.quote(encoded)}\n"
+            'eval "$(printf "%s" "$ODY_COMMAND_B64" | base64 -d)"\n',
             encoding="utf-8",
         )
-        argv = [os.environ.get("ComSpec", "cmd.exe"), "/c", str(script_path)]
+        argv = [bash, str(script_path)]
+        log_handle = log_path.open("ab")
+        popen_stdout = log_handle
+        popen_stderr = subprocess.STDOUT
+        child_environment = os.environ.copy()
+    else:
+        raise RuntimeError(
+            "Safe workspace background shell requires Linux Bubblewrap; "
+            "use an explicitly authorized Full host shell on this platform"
+        )
 
-    proc = subprocess.Popen(
-        argv,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        stdin=subprocess.DEVNULL,
-        cwd=cwd or None,
-        **detached_popen_kwargs(),  # detach from the request lifecycle (setsid / DETACHED_PROCESS)
-    )
+    try:
+        proc = subprocess.Popen(
+            argv,
+            stdout=popen_stdout,
+            stderr=popen_stderr,
+            stdin=subprocess.DEVNULL,
+            cwd=cwd or None,
+            env=child_environment,
+            **detached_popen_kwargs(),  # setsid / DETACHED_PROCESS
+        )
+    finally:
+        if mode is ExecutionMode.HOST:
+            log_handle.close()
 
     rec = {
         "id": job_id,
         "session_id": session_id,
+        "owner": owner,
+        "execution_mode": mode.value,
         "command": command,
         "status": "running",       # running | done | failed
         "pid": proc.pid,

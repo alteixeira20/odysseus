@@ -8,6 +8,7 @@ import secrets
 import shlex
 import shutil
 import signal
+import subprocess
 import sys
 import tempfile
 import time
@@ -17,6 +18,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Callable, Awaitable, Tuple, Dict
 from src.constants import MAX_OUTPUT_CHARS
+from src.execution_policy import ExecutionMode, normalize_execution_mode
+from src.process_sandbox import SandboxUnavailable, sandbox_command
+from core.platform_compat import find_bash, git_bash_path, kill_process_tree
 
 DEFAULT_BASH_TIMEOUT = 120
 MIN_BASH_TIMEOUT = 1
@@ -94,7 +98,7 @@ def normalize_bash_timeout(value) -> float:
 _TMUX_LOCKS: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, dict[str, asyncio.Lock]]" = (
     weakref.WeakKeyDictionary()
 )
-_FALLBACK_CWDS: Dict[Tuple[str, str], str] = {}
+_FALLBACK_CWDS: Dict[Tuple[str, str, str], str] = {}
 
 
 def _tmux_lock(name: str) -> asyncio.Lock:
@@ -569,7 +573,11 @@ async def _run_subprocess_streaming(
             except Exception:
                 pass
         if terminate_process_group:
-            escalation = await _terminate_owned_group(proc.pid)
+            if os.name == "posix":
+                escalation = await _terminate_owned_group(proc.pid)
+            else:
+                await asyncio.to_thread(kill_process_tree, proc.pid)
+                escalation = ("process_tree_killed",)
         elif proc.returncode is None:
             proc.kill()
         try:
@@ -578,7 +586,12 @@ async def _run_subprocess_streaming(
             pass
     except asyncio.CancelledError:
         if terminate_process_group:
-            await asyncio.shield(_terminate_owned_group(proc.pid))
+            if os.name == "posix":
+                await asyncio.shield(_terminate_owned_group(proc.pid))
+            else:
+                await asyncio.shield(
+                    asyncio.to_thread(kill_process_tree, proc.pid)
+                )
         elif proc.returncode is None:
             proc.kill()
         try:
@@ -621,19 +634,32 @@ async def _run_direct_bash(
     timeout: float,
     progress_cb: Optional[Callable[[Dict], Awaitable[None]]],
     invocation_id: str,
+    execution_mode: ExecutionMode = ExecutionMode.SANDBOXED,
 ) -> BashExecutionResult:
     canonical = os.path.realpath(cwd)
-    state_key = (str(session_id or "default"), canonical)
+    state_key = (
+        str(session_id or "default"),
+        canonical,
+        execution_mode.value,
+    )
     run_cwd = _FALLBACK_CWDS.get(state_key, canonical)
     if not os.path.isdir(run_cwd):
         run_cwd = canonical
+    if execution_mode is ExecutionMode.SANDBOXED:
+        try:
+            inside_workspace = os.path.commonpath(
+                (os.path.realpath(run_cwd), canonical)
+            ) == canonical
+        except ValueError:
+            inside_workspace = False
+        if not inside_workspace:
+            run_cwd = canonical
 
     temp_dir = Path(tempfile.mkdtemp(prefix=f"odysseus-bash-{invocation_id[:12]}-"))
     cwd_path = temp_dir / "cwd"
     rc_path = temp_dir / "rc"
     pid_path = temp_dir / "pid"
-    child_env = {
-        **(env or os.environ),
+    runtime_environment = {
         "ODY_COMMAND_B64": base64.b64encode(
             content.encode("utf-8", errors="surrogatepass")
         ).decode("ascii"),
@@ -643,18 +669,56 @@ async def _run_direct_bash(
         "ODY_RC_FILE": str(rc_path),
     }
     try:
+        if execution_mode is ExecutionMode.HOST:
+            bash_executable = find_bash()
+            if not bash_executable:
+                raise SandboxUnavailable(
+                    "Full host shell was authorized, but no Bash executable is installed"
+                )
+            if os.name == "nt":
+                for key in ("ODY_PID_FILE", "ODY_CWD_FILE", "ODY_RC_FILE"):
+                    runtime_environment[key] = git_bash_path(
+                        Path(runtime_environment[key])
+                    )
+            sandbox_argv = [
+                bash_executable,
+                "--noprofile",
+                "--norc",
+                "-c",
+                _isolated_shell_script(),
+            ]
+            child_env = os.environ.copy()
+            child_env.update({
+                key: str(value) for key, value in runtime_environment.items()
+            })
+        else:
+            sandbox_argv, child_env = sandbox_command(
+                [
+                    "/bin/bash",
+                    "--noprofile",
+                    "--norc",
+                    "-c",
+                    _isolated_shell_script(),
+                ],
+                cwd=run_cwd,
+                writable_paths=(canonical, temp_dir),
+                environment=env,
+                runtime_environment=runtime_environment,
+                timeout_seconds=timeout,
+            )
+        process_kwargs = {}
+        if os.name == "posix":
+            process_kwargs["start_new_session"] = True
+        elif os.name == "nt":
+            process_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
         proc = await asyncio.create_subprocess_exec(
-            "/bin/bash",
-            "--noprofile",
-            "--norc",
-            "-c",
-            _isolated_shell_script(),
+            *sandbox_argv,
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=child_env,
             cwd=run_cwd,
-            start_new_session=True,
+            **process_kwargs,
         )
         stdout, stderr, rc, timed_out, escalation = await _run_subprocess_streaming(
             proc,
@@ -667,7 +731,16 @@ async def _run_direct_bash(
         except OSError:
             final_cwd = ""
         if final_cwd and os.path.isdir(final_cwd):
-            _FALLBACK_CWDS[state_key] = final_cwd
+            if execution_mode is ExecutionMode.HOST:
+                _FALLBACK_CWDS[state_key] = final_cwd
+            else:
+                try:
+                    if os.path.commonpath(
+                        (os.path.realpath(final_cwd), canonical)
+                    ) == canonical:
+                        _FALLBACK_CWDS[state_key] = final_cwd
+                except ValueError:
+                    pass
         return BashExecutionResult(
             stdout=stdout,
             stderr=stderr,
@@ -722,20 +795,10 @@ class BashTool:
             if re.fullmatch(r"[A-Za-z0-9_-]{12,128}", requested_invocation_id)
             else secrets.token_urlsafe(24)
         )
-        cwd = agent_cwd()
+        cwd = str(ctx.get("workspace") or agent_cwd())
+        execution_mode = normalize_execution_mode(ctx.get("execution_mode"))
 
-        if session_id and shutil.which("tmux"):
-            outcome = await _run_tmux_bash(
-                content,
-                session_id=str(session_id),
-                cwd=cwd,
-                env=_subproc_env,
-                timeout=timeout,
-                progress_cb=progress_cb,
-                invocation_id=invocation_id,
-            )
-            tmux_session = _tmux_session_name(str(session_id), cwd)
-        else:
+        try:
             outcome = await _run_direct_bash(
                 content,
                 session_id=str(session_id) if session_id else None,
@@ -744,8 +807,16 @@ class BashTool:
                 timeout=timeout,
                 progress_cb=progress_cb,
                 invocation_id=invocation_id,
+                execution_mode=execution_mode,
             )
-            tmux_session = None
+        except SandboxUnavailable as exc:
+            return {
+                "error": str(exc),
+                "error_type": "sandbox_unavailable",
+                "exit_code": 126,
+                "completion_state": "blocked",
+            }
+        tmux_session = None
 
         _raw_stdout_len = len(outcome.stdout or "")
         _raw_stderr_len = len(outcome.stderr or "")
@@ -769,6 +840,7 @@ class BashTool:
             "invocation_id": outcome.invocation_id,
             "escalation": list(outcome.escalation),
             "shell_recovery": outcome.session_recovery,
+            "execution_mode": execution_mode.value,
         }
         if tmux_session:
             common["tmux_session"] = tmux_session
@@ -794,23 +866,51 @@ class PythonTool:
         from src.tool_execution import agent_cwd, _truncate
         progress_cb = ctx.get("progress_cb")
         _subproc_env = ctx.get("subproc_env")
+        cwd = str(ctx.get("workspace") or agent_cwd())
+        execution_mode = normalize_execution_mode(ctx.get("execution_mode"))
+        try:
+            python_executable = os.path.realpath(sys.executable or "python")
+            if execution_mode is ExecutionMode.HOST:
+                sandbox_argv = [python_executable, "-I", "-c", content]
+                child_env = os.environ.copy()
+            else:
+                sandbox_argv, child_env = sandbox_command(
+                    [python_executable, "-I", "-c", content],
+                    cwd=cwd,
+                    environment=_subproc_env,
+                    timeout_seconds=DEFAULT_PYTHON_TIMEOUT,
+                )
+        except SandboxUnavailable as exc:
+            return {
+                "error": str(exc),
+                "error_type": "sandbox_unavailable",
+                "exit_code": 126,
+                "completion_state": "blocked",
+            }
+        process_kwargs = {}
+        if os.name == "posix":
+            process_kwargs["start_new_session"] = True
+        elif os.name == "nt":
+            process_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
         proc = await asyncio.create_subprocess_exec(
-            (sys.executable or "python"), "-I", "-c", content,
+            *sandbox_argv,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env=_subproc_env,
-            cwd=agent_cwd(),
+            env=child_env,
+            cwd=cwd,
+            **process_kwargs,
         )
         stdout, stderr, rc, timed_out, _escalation = await _run_subprocess_streaming(
             proc,
             timeout=DEFAULT_PYTHON_TIMEOUT,
             progress_cb=progress_cb,
+            terminate_process_group=True,
         )
         if timed_out:
-            return {"error": f"python: timed out after {DEFAULT_PYTHON_TIMEOUT}s — process killed", "exit_code": 124, "stdout": _truncate(stdout, MAX_OUTPUT_CHARS), "stderr": _truncate(stderr, MAX_OUTPUT_CHARS)}
+            return {"error": f"python: timed out after {DEFAULT_PYTHON_TIMEOUT}s — process killed", "exit_code": 124, "stdout": _truncate(stdout, MAX_OUTPUT_CHARS), "stderr": _truncate(stderr, MAX_OUTPUT_CHARS), "execution_mode": execution_mode.value}
         output = stdout.rstrip()
         err = stderr.rstrip()
         if err:
             output = (output + "\nSTDERR: " + err).strip() if output else "STDERR: " + err
         output = _truncate(output, MAX_OUTPUT_CHARS)
-        return {"output": output or "(no output)", "exit_code": rc or 0}
+        return {"output": output or "(no output)", "exit_code": rc or 0, "execution_mode": execution_mode.value}

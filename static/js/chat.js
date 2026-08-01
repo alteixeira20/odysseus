@@ -1690,8 +1690,20 @@ import { appendAgentToolRequestFields } from './agentToolRequest.js?v=20260731ru
       const _ws = (Storage.KEYS && Storage.get(Storage.KEYS.WORKSPACE, '')) || '';
       appendAgentToolRequestFields(fd, {
         shellEnabled: !!el('bash-toggle').checked,
+        hostShellEnabled: !!el('host-shell-toggle')?.checked,
         workspace: _ws,
       });
+      // Full host authority is deliberately one-shot. It remains captured in
+      // this request/run, including detached work and continuation rounds, but
+      // is never silently reused by the next user message.
+      const _hostShell = el('host-shell-toggle');
+      if (_hostShell?.checked) {
+        if (typeof window.__odysseusClearHostShellAuthorization === 'function') {
+          window.__odysseusClearHostShellAuthorization();
+        } else {
+          _hostShell.checked = false;
+        }
+      }
       const ragChk = el('rag-toggle');
       if (ragChk && !ragChk.checked) {
         fd.append('use_rag', 'false');
@@ -2814,6 +2826,11 @@ import { appendAgentToolRequestFields } from './agentToolRequest.js?v=20260731ru
                   _sourcesData = json.data; _sourcesType = 'web';
                   _sourcesHtml = _buildSourcesBox(json.data, 'web');
                 }
+              } else if (json.type === 'execution_authority') {
+                if (json.mode === 'disabled' && json.reason && json.reason !== 'requested') {
+                  uiModule.showToast(`Shell unavailable: ${json.reason}`, 7000);
+                }
+                continue;
               } else if (json.type === 'workspace_rejected') {
                 // Server refused to bind the posted workspace (deleted folder,
                 // file path, sensitive dir, filesystem root). Clear the stored

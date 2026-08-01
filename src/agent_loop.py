@@ -24,6 +24,7 @@ from src.settings import get_setting
 from src.prompt_security import untrusted_context_message
 from src.tool_security import blocked_tools_for_owner, plan_mode_disabled_tools
 from src.tool_policy import GUIDE_ONLY_DIRECTIVE, WEB_TOOL_NAMES, ToolPolicy
+from src.execution_policy import ExecutionMode, normalize_execution_mode
 from src.effective_tools import calculate_effective_tools
 from src.tool_utils import _truncate, get_mcp_manager
 from src.agent.conversation import (
@@ -86,7 +87,10 @@ from src.agent.providers.finish_reason import (
 )
 from src.agent.providers.termination import classify_stream_termination
 from src.agent.context.budget import ContextBudgetManager
-from src.agent.supervision.continuation import evaluate_truncation_continuation
+from src.agent.supervision.continuation import (
+    ContinuationDisposition,
+    evaluate_truncation_continuation,
+)
 from src.agent.routing.classifier import (
     EXPLICIT_CONTINUATION_RE,
     assistant_requested_followup,
@@ -110,10 +114,12 @@ from src.agent.prompting.contexts.uploads import (
     uploaded_files_context_message as _uploaded_files_context_message,
 )
 from src.agent.prompting.contexts.shell_guidance import (
+    execution_authority_guidance as _execution_authority_guidance,
     shell_guidance_if_available as _shell_guidance_if_available,
 )
 from src.agent.tools.mcp_activation import (
     McpActivationDecision,
+    mcp_tool_allowed_for_turn,
     resolve_mcp_activation,
 )
 from src.agent.prompting.contexts.skills import skill_index_context
@@ -174,7 +180,7 @@ from src.agent.supervision.finalizer import (
     empty_response_fallback as _empty_response_fallback,
     select_deterministic_tool_summary,
 )
-from src.agent.contracts import SupervisorAction
+from src.agent.contracts import RunDisposition, SupervisorAction
 from src.agent.supervision.intent_nudge import (
     evaluate_intent_without_action,
 )
@@ -196,6 +202,12 @@ from src.agent_tools import (
     ToolBlock,
     MAX_AGENT_ROUNDS,
 )
+from src.agent.tools.bootstrap import TOOL_REGISTRY
+
+# Compatibility modules are bootstrap inputs only. Runtime provider schemas
+# and recognized local names come from the validated typed registry.
+FUNCTION_TOOL_SCHEMAS = TOOL_REGISTRY.function_schemas()
+TOOL_TAGS = set(TOOL_REGISTRY.accepted_names())
 
 logger = logging.getLogger(__name__)
 
@@ -369,7 +381,7 @@ Edit an EXISTING file by exact string replacement. PREFER this over bash (sed/ec
 +<new line>
 *** End Patch
 ```
-Apply a source-code patch to real workspace files. Use this for multi-file implementation/refactor/debug work where the edits belong together. The patch is workspace-confined, exact-context based, and returns a diff. Supported sections: `*** Add File:`, `*** Update File:`, `*** Delete File:`. Do NOT use bash redirects/heredocs/sed to edit files.""",
+Apply a staged source-code transaction to real workspace files. Use this for multi-file implementation/refactor/debug work where the edits belong together. Each replacement is atomic and ordinary commit failures roll back, but the collection is not globally crash-atomic. The patch is workspace-confined, exact-context based, and returns a diff. Supported sections: `*** Add File:`, `*** Update File:`, `*** Delete File:`. Do NOT use bash redirects/heredocs/sed to edit files.""",
 
     "todowrite": """\
 ```todowrite
@@ -386,7 +398,7 @@ Inspect or stop background shell jobs belonging to this chat.""",
     "get_workspace": """\
 ```get_workspace
 ```
-Return the absolute path of the active workspace folder. File tools are CONFINED to it (paths can be RELATIVE to it); the shell starts there (cwd) but is NOT sandboxed. Call this first when the user says "the project"/"the code"/"this folder" without a path, instead of asking them. No arguments.""",
+Return the absolute path of the active workspace folder. File tools are CONFINED to it (paths can be RELATIVE to it). Process execution is authorized independently as safe workspace or full host mode; the workspace itself grants neither. Call this first when the user says "the project"/"the code"/"this folder" without a path, instead of asking them. No arguments.""",
 
     "create_document": """\
 ```create_document
@@ -601,6 +613,20 @@ def _apply_context_budget(
     )
 
 
+def _provider_message_projection(messages: list[dict]) -> list[dict]:
+    """Return a one-request copy with runtime-only metadata removed.
+
+    The canonical conversation must retain ``_protected`` and any future
+    underscore-prefixed orchestration fields so later-round compaction sees
+    the same protection boundary as round one.
+    """
+
+    return [
+        {key: value for key, value in message.items() if not key.startswith("_")}
+        for message in messages
+    ]
+
+
 def _domain_rules_with_shell_guidance(tool_names: set[str]) -> list[str]:
     """domain_rules_for_tools, plus the shell-literacy fragment when `bash`
     is available.
@@ -705,6 +731,7 @@ def _build_system_prompt(
     workspace: Optional[str] = None,
     effective_tool_names: Optional[Set[str]] = None,
     mcp_activation_notice: str = "",
+    execution_mode: str = "disabled",
 ) -> List[Dict]:
     """Build agent system prompt, inject MCP/document context, merge consecutive system msgs."""
     global _cached_base_prompt, _cached_base_prompt_key
@@ -753,6 +780,11 @@ def _build_system_prompt(
         if not active_document:
             _cached_base_prompt = agent_prompt
             _cached_base_prompt_key = cache_key
+
+    if "bash" in set(effective_tool_names or relevant_tools or ()):
+        _authority_guidance = _execution_authority_guidance(execution_mode)
+        if _authority_guidance:
+            agent_prompt += "\n\n" + _authority_guidance
 
     # Dynamic parts that change per request
     mcp_schemas = []
@@ -1394,7 +1426,7 @@ async def stream_agent_loop(
     uploaded_files: Optional[List[Dict]] = None,
     workload: str = "foreground",
     _is_teacher_run: bool = False,
-    shell_enabled: Optional[bool] = None,
+    shell_enabled: Optional[bool | str] = None,
 ) -> AsyncGenerator[str, None]:
     """Streaming agent loop generator.
 
@@ -1518,7 +1550,11 @@ async def stream_agent_loop(
             "missing_workspace": True,
         }
         yield f"data: {json.dumps({'type': 'metrics', 'data': metrics})}\n\n"
-        yield _run_state_event("completed", reason="missing_workspace")
+        yield _run_state_event(
+            RunDisposition.BLOCKED,
+            reason="missing_workspace",
+            resumable=True,
+        )
         yield "data: [DONE]\n\n"
         return
     logger.info(
@@ -1551,6 +1587,8 @@ async def stream_agent_loop(
             requested_model=model,
             actual_model=model,
         )
+        _direct_protocol_done = False
+        _direct_error = False
         try:
             async for chunk in stream_llm_with_fallback(
                 [(endpoint_url, model, headers)] + list(fallbacks or []),
@@ -1584,10 +1622,15 @@ async def stream_agent_loop(
                             + "\n\n"
                         )
                         continue
+                elif chunk.startswith("data: [DONE]"):
+                    _direct_protocol_done = True
                 elif chunk.startswith("event: "):
+                    if chunk.startswith("event: error"):
+                        _direct_error = True
                     yield chunk
         except Exception as _direct_err:
             logger.warning("[agent] direct low-signal path failed: %s", _direct_err)
+            _direct_error = True
             fallback = "Hey."
             _direct_stream.text += fallback
             yield f"data: {json.dumps({'delta': fallback})}\n\n"
@@ -1616,7 +1659,26 @@ async def stream_agent_loop(
             "direct_low_signal": True,
         }
         yield f"data: {json.dumps({'type': 'metrics', 'data': metrics})}\n\n"
-        yield _run_state_event("completed", reason="direct_response")
+        if _direct_error:
+            _direct_disposition = RunDisposition.ERROR
+            _direct_reason = "direct_provider_error"
+        elif (
+            _direct_stream.normalized_finish_reason
+            is ProviderFinishReason.LENGTH
+        ):
+            _direct_disposition = RunDisposition.INCOMPLETE
+            _direct_reason = "direct_response_truncated"
+        elif not _direct_protocol_done:
+            _direct_disposition = RunDisposition.INCOMPLETE
+            _direct_reason = "direct_protocol_incomplete"
+        else:
+            _direct_disposition = RunDisposition.COMPLETED
+            _direct_reason = "direct_response"
+        yield _run_state_event(
+            _direct_disposition,
+            reason=_direct_reason,
+            resumable=_direct_disposition is RunDisposition.INCOMPLETE,
+        )
         yield "data: [DONE]\n\n"
         return
 
@@ -1928,10 +1990,23 @@ async def stream_agent_loop(
     _mcp_activation = McpActivationDecision()
     if mcp_mgr:
         try:
+            _mcp_catalog = mcp_mgr.get_server_catalog(_mcp_disabled_map or {})
             _mcp_activation = resolve_mcp_activation(
                 _last_user,
-                mcp_mgr.get_server_catalog(_mcp_disabled_map or {}),
+                _mcp_catalog,
             )
+            # Namespace/relevance selection never grants effects by itself.
+            # Apply the same fail-closed effect policy to ordinary MCP RAG
+            # selection as to an explicitly named server.
+            for _server in _mcp_catalog:
+                for _mcp_tool in (_server.get("tools") or ()):
+                    _qualified = str(_mcp_tool.get("qualified_name") or "")
+                    if (
+                        _qualified
+                        and not _mcp_tool.get("is_disabled")
+                        and not mcp_tool_allowed_for_turn(_mcp_tool, _last_user)
+                    ):
+                        disabled_tools.add(_qualified)
             if _mcp_activation.explicit:
                 _relevant_tools = _mcp_activation.apply(_relevant_tools)
                 logger.info(
@@ -2020,11 +2095,16 @@ async def stream_agent_loop(
         if _provider_uses_native_tools
         else (set(TOOL_SECTIONS) | _mcp_schema_names)
     )
-    _shell_is_enabled = (
-        bool(shell_enabled)
-        if shell_enabled is not None
-        else "bash" not in disabled_tools
+    # None is not consent. Legacy direct callers can opt into sandboxing with
+    # shell_enabled=True, but only an explicit typed mode can grant host access.
+    _execution_mode = normalize_execution_mode(
+        shell_enabled,
+        shell_enabled=shell_enabled,
     )
+    _shell_is_enabled = _execution_mode.enabled
+    if not _shell_is_enabled:
+        from src.effective_tools import SHELL_FOUNDATIONAL_TOOLS
+        disabled_tools.update(SHELL_FOUNDATIONAL_TOOLS)
     _effective_tools = calculate_effective_tools(
         registered_tools=_registered_tool_names,
         provider_usable_tools=_provider_usable_tool_names,
@@ -2036,6 +2116,11 @@ async def stream_agent_loop(
         workspace_enabled=bool(workspace),
         shell_enabled=_shell_is_enabled,
         fallback_tools=_fallback_tool_names,
+        exclusive_tools=(
+            set(_mcp_activation.activated_tool_names) | {"ask_user"}
+            if _mcp_activation.exclusive
+            else None
+        ),
     )
     _relevant_tools = set(_effective_tools.names)
     logger.info(
@@ -2046,7 +2131,12 @@ async def stream_agent_loop(
         sorted(_effective_tools.names),
         dict(_effective_tools.excluded_foundational),
     )
-    yield f"data: {json.dumps(_effective_tools.diagnostic_event())}\n\n"
+    _effective_diagnostic = _effective_tools.diagnostic_event()
+    _effective_diagnostic.update({
+        "execution_mode": _execution_mode.value,
+        "shell_available": _shell_is_enabled,
+    })
+    yield f"data: {json.dumps(_effective_diagnostic)}\n\n"
 
     messages, mcp_schemas = _build_system_prompt(
         messages, model, _prompt_active_document, mcp_mgr, disabled_tools,
@@ -2060,6 +2150,7 @@ async def stream_agent_loop(
         workspace=workspace,
         effective_tool_names=set(_effective_tools.names),
         mcp_activation_notice=_mcp_activation.prompt_notice(),
+        execution_mode=_execution_mode.value,
     )
     if _ody_doc_finetune_mode and not plan_mode and not approved_plan and not guide_only:
         messages = _minimal_odysseus_doc_messages(
@@ -2142,16 +2233,20 @@ async def stream_agent_loop(
         logger.warning("[agent] Soft context trim skipped: %s", e)
     prep_timings["context_trim"] = time.time() - _t3
 
-    # Strip internal metadata keys before sending to the LLM API
-    messages = [{k: v for k, v in msg.items() if k != "_protected"} for msg in messages]
-
-    agent_prompt_tokens = estimate_tokens(messages)
+    # Keep this canonical list for the full run.  Provider projections are
+    # sanitized per attempt below; replacing the canonical list here used to
+    # destroy active-document/email protection after round one.
+    _initial_provider_messages = _provider_message_projection(messages)
+    agent_prompt_tokens = estimate_tokens(_initial_provider_messages)
     logger.info(
         "[agent-timing] prep_done session=%s model=%s prompt_tokens=%s prompt_chars=%s context_length=%s prep=%s",
         session_id,
         model,
         agent_prompt_tokens,
-        sum(len(str(message.get("content") or "")) for message in messages),
+        sum(
+            len(str(message.get("content") or ""))
+            for message in _initial_provider_messages
+        ),
         context_length,
         {k: round(v, 3) for k, v in prep_timings.items()},
     )
@@ -2190,6 +2285,15 @@ async def stream_agent_loop(
     requested_model = model
     actual_model = model
     total_tool_calls = 0  # for budget enforcement
+    # A configured 0 historically meant unlimited. Detached execution makes
+    # that unsafe, so 0 now means "use the hard safety ceiling" while smaller
+    # explicit budgets remain honored.
+    _effective_max_tool_calls = min(
+        max_tool_calls if max_tool_calls and max_tool_calls > 0 else 256,
+        256,
+    )
+    _provider_requests = 0
+    _max_provider_requests = min(max(max_rounds * 3, 1), 128)
     _stall_supervisor = StallSupervisor()
     _force_answer = False  # set by loop-breaker → next round runs with NO tools
     # Supervisor: how many times we've nudged the model after it announced
@@ -2212,8 +2316,14 @@ async def stream_agent_loop(
     # using tools — i.e. it was cut off, not finished. Drives a "Continue" event
     # so the user can resume instead of the turn silently stalling.
     _exhausted_rounds = False
+    _run_disposition: Optional[RunDisposition] = None
+    _run_disposition_reason = ""
 
     for round_num in range(1, max_rounds + 1):
+        if _provider_requests >= _max_provider_requests:
+            _run_disposition = RunDisposition.BUDGET_EXHAUSTED
+            _run_disposition_reason = "provider_request_budget_exhausted"
+            break
         # Re-check the context budget before every round's provider call —
         # not only once before round 1 — since messages keeps growing every
         # round (assistant turns, tool calls, tool results). See
@@ -2245,6 +2355,11 @@ async def stream_agent_loop(
                     round_num,
                     e,
                 )
+        # This is the only representation sent to a provider for this round.
+        # It is a copy, so retry/provider adapters cannot mutate canonical
+        # orchestration metadata either.
+        provider_messages = _provider_message_projection(messages)
+
         _document_stream = DocumentStreamProjector(
             odysseus_create_mode=_ody_doc_stream_create_mode,
         )
@@ -2286,7 +2401,7 @@ async def stream_agent_loop(
             round_num,
             model,
             endpoint_url,
-            estimate_tokens(messages),
+            estimate_tokens(provider_messages),
             len(_tool_names_sent),
             _schema_bytes,
             bool(all_tool_schemas),
@@ -2296,7 +2411,7 @@ async def stream_agent_loop(
         def _provider_stream_factory():
             return stream_llm_with_fallback(
                 _candidates,
-                messages,
+                provider_messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
                 prompt_type=prompt_type if round_num == 1 else None,
@@ -2324,6 +2439,10 @@ async def stream_agent_loop(
                     tool_policy
                     and tool_policy.blocks("create_document")
                 ),
+                max_attempts=min(
+                    3,
+                    _max_provider_requests - _provider_requests,
+                ),
             ),
             _round_stream,
             _provider_stream_factory,
@@ -2342,6 +2461,7 @@ async def stream_agent_loop(
         _provider_outcome = _provider_runner.outcome
         if _provider_outcome is None:
             raise RuntimeError("provider attempt runner produced no outcome")
+        _provider_requests += _provider_outcome.attempts
 
         provider_capacity_wait_s += (
             _provider_outcome.provider_capacity_wait
@@ -2505,7 +2625,7 @@ async def stream_agent_loop(
                 _synth = ""
                 try:
                     from src.llm_core import llm_call_async
-                    _synth_messages = list(messages) + [{
+                    _synth_messages = _provider_message_projection(messages) + [{
                         "role": "user",
                         "content": (
                             "Using ONLY the information already gathered above, write "
@@ -2609,13 +2729,19 @@ async def stream_agent_loop(
                 had_unclosed_fenced_call=_resolved_calls.fenced_call_unclosed,
                 termination=_stream_termination,
             )
-            _continuation_decision = evaluate_truncation_continuation(
+            _continuation_evaluation = evaluate_truncation_continuation(
                 _finish_info,
                 continuation_count=_truncation_continuation_count,
                 force_answer=_force_answer,
                 max_continuations=_MAX_TRUNCATION_CONTINUATIONS,
             )
-            if _continuation_decision is not None:
+            if (
+                _continuation_evaluation.disposition
+                is ContinuationDisposition.RETRY
+            ):
+                _continuation_decision = _continuation_evaluation.decision
+                if _continuation_decision is None:
+                    raise RuntimeError("retry disposition missing supervisor decision")
                 _truncation_continuation_count = int(
                     _continuation_decision.metadata["attempt"]
                 )
@@ -2654,6 +2780,23 @@ async def stream_agent_loop(
                 })
                 yield f'data: {json.dumps({"type": "agent_step", "round": round_num + 1})}\n\n'
                 continue
+            if _continuation_evaluation.disposition in {
+                ContinuationDisposition.RETRY_EXHAUSTED,
+                ContinuationDisposition.UNSAFE_TO_RETRY,
+            }:
+                _run_disposition = RunDisposition.INCOMPLETE
+                _run_disposition_reason = (
+                    "truncation_retries_exhausted"
+                    if _continuation_evaluation.disposition
+                    is ContinuationDisposition.RETRY_EXHAUSTED
+                    else "truncation_unsafe_to_retry"
+                )
+                logger.warning(
+                    "[agent] round %s ended incomplete: %s",
+                    round_num,
+                    _run_disposition_reason,
+                )
+                break
             # ── Completion verifier (mechanism 3a) ────────────────────
             # The model is finishing. If this was an effectful agentic turn,
             # have a fresh-context verifier independently check the work
@@ -2766,8 +2909,12 @@ async def stream_agent_loop(
                     })
                     + "\n\n"
                 )
+                _run_disposition = RunDisposition.BLOCKED
+                _run_disposition_reason = "intent_without_action_exhausted"
                 break
-            break  # no tools — done
+            _run_disposition = RunDisposition.COMPLETED
+            _run_disposition_reason = "completed"
+            break  # deliberate tool-free provider stop
 
         # ── Loop-breaker (Terminus-style stall detector) ──────────────
         # Stall detector for repeated no-progress tool loops.
@@ -2857,10 +3004,11 @@ async def stream_agent_loop(
                 round_response=round_response,
                 round_reasoning=round_reasoning,
                 round_number=round_num,
-                max_tool_calls=max_tool_calls,
+                max_tool_calls=_effective_max_tool_calls,
                 session_id=session_id,
                 owner=owner,
                 workspace=workspace,
+                execution_mode=_execution_mode.value,
                 disabled_tools=set(disabled_tools or set()),
                 allowed_tools=set(_effective_tools.names),
                 tool_policy=tool_policy,
@@ -2895,26 +3043,36 @@ async def stream_agent_loop(
         _relevant_tools = _batch_state.relevant_tools
         _batch_disposition = _batch_runner.outcome.disposition
         if _batch_disposition is BatchDisposition.BUDGET_EXHAUSTED:
+            _run_disposition = RunDisposition.BUDGET_EXHAUSTED
+            _run_disposition_reason = "tool_call_budget_exhausted"
             break
         if _batch_disposition is BatchDisposition.AWAIT_USER:
+            _run_disposition = RunDisposition.AWAITING_INPUT
+            _run_disposition_reason = "awaiting_user_input"
             break
         if _batch_disposition is BatchDisposition.DOCUMENT_CREATE_COMPLETE:
             logger.info(
                 "[agent] odysseus doc stream-create completed "
                 "after one create_document"
             )
+            _run_disposition = RunDisposition.COMPLETED
+            _run_disposition_reason = "document_created"
             break
         if _batch_disposition is BatchDisposition.DOCUMENT_TOOL_COMPLETE:
             logger.info(
                 "[agent] odysseus doc tool completed after one "
                 "textual tool block"
             )
+            _run_disposition = RunDisposition.COMPLETED
+            _run_disposition_reason = "document_tool_completed"
             break
         if _batch_disposition is BatchDisposition.DETERMINISTIC_COMPLETE:
             logger.info(
                 "[agent] odysseus completed from deterministic "
                 "tool output"
             )
+            _run_disposition = RunDisposition.COMPLETED
+            _run_disposition_reason = "deterministic_tool_completed"
             break
     else:
         # The for-loop completed every allowed round WITHOUT an early `break`
@@ -2924,6 +3082,8 @@ async def stream_agent_loop(
         # paths, including a verifier `continue` on the final round (the old
         # bottom-of-loop flag missed those).
         _exhausted_rounds = True
+        _run_disposition = RunDisposition.ROUNDS_EXHAUSTED
+        _run_disposition_reason = "rounds_exhausted"
 
     # If the loop hit the round cap while still working, tell the client so it
     # can show a "Continue" affordance instead of the turn just stopping.
@@ -2968,7 +3128,7 @@ async def stream_agent_loop(
 
     # --- Final metrics ---
     total_duration = time.time() - total_start
-    final_context_tokens = estimate_tokens(messages)
+    final_context_tokens = estimate_tokens(_provider_message_projection(messages))
     metrics = _compute_final_metrics(
         messages, full_response, total_duration, time_to_first_token,
         context_length, real_input_tokens, real_output_tokens,
@@ -2990,6 +3150,9 @@ async def stream_agent_loop(
         "native_schema_count": len(_tool_names_sent),
         "native_schema_bytes": _schema_bytes,
         "effective_tool_count": len(_effective_tools.names),
+        "provider_requests": _provider_requests,
+        "provider_request_limit": _max_provider_requests,
+        "tool_call_limit": _effective_max_tool_calls,
         "visible_chars_per_second": round(
             visible_chars / max(total_duration - (first_visible_s or 0), 0.001),
             2,
@@ -3015,12 +3178,16 @@ async def stream_agent_loop(
     # gets a turn (with its own tool calls forwarded to the user) and
     # a skill is saved ONLY if the teacher actually succeeds. Skipped
     # when we ARE the teacher to avoid recursion.
-    if not _is_teacher_run and not guide_only:
+    if (
+        _run_disposition is RunDisposition.COMPLETED
+        and not _is_teacher_run
+        and not guide_only
+    ):
         try:
             from src.teacher_escalation import run_teacher_inline
             async for evt in run_teacher_inline(
                 student_endpoint_url=endpoint_url,
-                student_messages=messages,
+                student_messages=_provider_message_projection(messages),
                 student_tool_events=tool_events,
                 student_reply=full_response,
                 owner=owner,
@@ -3029,8 +3196,22 @@ async def stream_agent_loop(
         except Exception as _esc_err:
             logger.warning(f"teacher escalation hook failed: {_esc_err}", exc_info=True)
 
+    if _run_disposition is None:
+        # Defensive fail-closed fallback for any future break site that forgets
+        # to select a semantic outcome.
+        _run_disposition = RunDisposition.INCOMPLETE
+        _run_disposition_reason = "terminal_disposition_missing"
+        logger.error("[agent] terminal path did not select a run disposition")
+    _resumable = _run_disposition in {
+        RunDisposition.INCOMPLETE,
+        RunDisposition.BUDGET_EXHAUSTED,
+        RunDisposition.ROUNDS_EXHAUSTED,
+        RunDisposition.AWAITING_INPUT,
+        RunDisposition.BLOCKED,
+    }
     yield _run_state_event(
-        "completed",
-        reason="rounds_exhausted" if _exhausted_rounds else "completed",
+        _run_disposition,
+        reason=_run_disposition_reason or _run_disposition.value,
+        resumable=_resumable,
     )
     yield "data: [DONE]\n\n"

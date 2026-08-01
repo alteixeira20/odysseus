@@ -32,7 +32,8 @@ class ToolPolicySnapshot:
     disabled_tools: Optional[frozenset[str]] = None
     relevant_tools: Optional[frozenset[str]] = None
     forced_tools: Optional[frozenset[str]] = None
-    shell_enabled: Optional[bool] = None
+    shell_enabled: Optional[bool | str] = None
+    execution_mode: Optional[str] = None
     policy: Any = None
 
 
@@ -92,7 +93,8 @@ class AgentRunRequest:
         uploaded_files: Optional[Sequence[Mapping[str, Any]]] = None,
         workload: str = "foreground",
         _is_teacher_run: bool = False,
-        shell_enabled: Optional[bool] = None,
+        shell_enabled: Optional[bool | str] = None,
+        execution_mode: Optional[str] = None,
     ) -> "AgentRunRequest":
         return cls(
             endpoint_url=endpoint_url,
@@ -133,6 +135,7 @@ class AgentRunRequest:
                     else None
                 ),
                 shell_enabled=shell_enabled,
+                execution_mode=execution_mode,
                 policy=tool_policy,
             ),
             model_options=ModelOptions(
@@ -210,6 +213,24 @@ class SupervisorAction(str, Enum):
     RETRY_WITH_INSTRUCTION = "retry_with_instruction"
     AWAIT_USER = "await_user"
     EXHAUSTED = "exhausted"
+
+
+class RunDisposition(str, Enum):
+    """Semantic outcome of a run, distinct from its stream ending.
+
+    Every terminal path must select one of these values.  In particular,
+    hitting an orchestration/provider limit is never represented as a
+    successful completion merely because no more events will be emitted.
+    """
+
+    COMPLETED = "completed"
+    INCOMPLETE = "incomplete"
+    BUDGET_EXHAUSTED = "budget_exhausted"
+    ROUNDS_EXHAUSTED = "rounds_exhausted"
+    AWAITING_INPUT = "awaiting_input"
+    BLOCKED = "blocked"
+    CANCELLED = "cancelled"
+    ERROR = "error"
 
 
 @dataclass(frozen=True)

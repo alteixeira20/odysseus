@@ -269,7 +269,17 @@ def test_truncation_continuations_are_bounded_per_run(monkeypatch):
 
     continuations = [e for e in events if e.get("type") == "truncation_continuation"]
     # Bounded by agent_loop._MAX_TRUNCATION_CONTINUATIONS (4): the 5th
-    # truncated round must fall through to normal completion handling
-    # instead of continuing indefinitely.
+    # truncated round must terminate explicitly as resumable incomplete.
     assert len(continuations) == 4
     assert calls["n"] == 5
+    terminal = next(
+        event for event in events
+        if event.get("type") == "run_state" and event.get("terminal")
+    )
+    assert terminal == {
+        "type": "run_state",
+        "state": "incomplete",
+        "terminal": True,
+        "reason": "truncation_retries_exhausted",
+        "resumable": True,
+    }

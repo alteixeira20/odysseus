@@ -1,13 +1,13 @@
 """Builds a ToolRegistry from the current legacy tool sources.
 
-This is the seam described in src/agent/tools/registry.py's module
-docstring: it derives ToolDefinition metadata (category/risk/autonomy/
-idempotency) FROM the existing scattered policy sources
+This is the compatibility bootstrap described in
+src/agent/tools/registry.py: it derives ToolDefinition metadata
+(category/risk/autonomy/idempotency) from the existing scattered sources
 (src/agent/routing/tool_domains.py's DOMAIN_TOOL_MAP, src/tool_security.py's
 plan-mode/admin sets, src/tool_index.py's descriptions) rather than those
-sources being generated from the registry — flipping that direction is
-follow-up work gated on the agent_tools/tool_schemas circular import
-(issue #4277). Classification here is heuristic where no more specific
+sources being generated from the registry. Production schema, name and local
+handler lookups use the normalized registry after this one-time build.
+Classification here is heuristic where no more specific
 override is given below: derived from which existing policy sets already
 mention a tool, not an independent per-tool audit. Foundational tools
 (PROTECTED_FOUNDATIONAL_NAMES) have hand-written overrides since those are
@@ -128,6 +128,7 @@ def build_default_registry() -> ToolRegistry:
         LOOP_PRIMITIVE_TOOLS,
         SHELL_FOUNDATIONAL_TOOLS,
         WORKSPACE_FOUNDATIONAL_TOOLS,
+        WORKSPACE_MUTATION_TOOLS,
     )
     from src.agent.routing.tool_domains import DOMAIN_TOOL_MAP
 
@@ -183,7 +184,11 @@ def build_default_registry() -> ToolRegistry:
             "delete_email", "manage_bg_jobs", "unsubscribe_email",
         }
 
-        if is_admin_gated:
+        if name in {"bash", "python"}:
+            # The per-turn shell toggle is the once-per-run approval boundary;
+            # neither tool is autonomous merely because it was retrieved.
+            autonomy = ToolAutonomy.CONFIRM_ONCE_PER_RUN
+        elif is_admin_gated:
             autonomy = ToolAutonomy.OWNER_ONLY
         else:
             autonomy = ToolAutonomy.AUTONOMOUS
@@ -211,7 +216,9 @@ def build_default_registry() -> ToolRegistry:
             foundational_for=_foundational_for(
                 name, WORKSPACE_FOUNDATIONAL_TOOLS, SHELL_FOUNDATIONAL_TOOLS, LOOP_PRIMITIVE_TOOLS
             ),
-            requires_workspace=name in WORKSPACE_FOUNDATIONAL_TOOLS,
+            requires_workspace=name in (
+                WORKSPACE_FOUNDATIONAL_TOOLS | WORKSPACE_MUTATION_TOOLS
+            ),
             requires_shell_enabled=name in SHELL_FOUNDATIONAL_TOOLS,
             requires_authenticated_user=False,
             requires_role="admin" if is_admin_gated else None,

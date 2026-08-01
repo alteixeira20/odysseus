@@ -28,6 +28,7 @@ from src.tool_security import (
     owner_is_admin_or_single_user,
 )
 from src.tool_policy import ToolPolicy
+from src.execution_policy import ExecutionMode, normalize_execution_mode
 from src.constants import MAX_OUTPUT_CHARS, MAX_READ_CHARS, MAX_DIFF_LINES, DATA_DIR
 from src.tool_utils import _truncate, get_mcp_manager
 
@@ -37,6 +38,35 @@ from src.tool_utils import _truncate, get_mcp_manager
 # Using this as cwd and HOME prevents the agent from silently creating files
 # in ephemeral container layers that are lost on the next rebuild.
 _AGENT_WORKDIR = DATA_DIR
+_SANDBOX_HOME = "/tmp/odysseus-home"
+
+_SAFE_SUBPROCESS_ENV_KEYS = frozenset({
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "PATH",
+    "TZ",
+})
+
+
+def _build_subprocess_env() -> Dict[str, str]:
+    """Build a minimal, secret-free environment for agent code execution."""
+
+    environment = {
+        key: str(os.environ[key])
+        for key in _SAFE_SUBPROCESS_ENV_KEYS
+        if os.environ.get(key)
+    }
+    environment.update({
+        "PATH": environment.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+        "TERM": "xterm-256color",
+        "COLUMNS": "120",
+        "LINES": "40",
+        "HOME": _SANDBOX_HOME,
+        "TMPDIR": "/tmp",
+        "PYTHONIOENCODING": "utf-8",
+    })
+    return environment
 
 
 
@@ -242,10 +272,18 @@ _active_workspace: contextvars.ContextVar = contextvars.ContextVar(
     "agent_active_workspace", default=None
 )
 
+_active_execution_mode: contextvars.ContextVar = contextvars.ContextVar(
+    "agent_execution_mode", default=ExecutionMode.DISABLED
+)
+
 
 def get_active_workspace() -> Optional[str]:
     """The folder the agent is confined to this turn, or None."""
     return _active_workspace.get()
+
+
+def get_active_execution_mode() -> ExecutionMode:
+    return _active_execution_mode.get()
 
 
 def vet_workspace(raw: str) -> Optional[str]:
@@ -274,8 +312,16 @@ def vet_workspace(raw: str) -> Optional[str]:
 
 def agent_cwd() -> str:
     """Working directory for agent subprocesses (bash/python/background jobs):
-    the active workspace when set, else the persistent data dir."""
-    return get_active_workspace() or _AGENT_WORKDIR
+    the active workspace when set; otherwise the server cwd for explicitly
+    authorized host execution, or the persistent data dir for non-host code."""
+    workspace = get_active_workspace()
+    if workspace:
+        return workspace
+    if get_active_execution_mode().enabled:
+        current = os.path.realpath(os.getcwd())
+        if os.path.isdir(current) and os.path.dirname(current) != current:
+            return current
+    return _AGENT_WORKDIR
 
 
 def get_mcp_manager():
@@ -525,15 +571,18 @@ async def _direct_fallback(
     arguments: Optional[Dict[str, Any]] = None,
     invocation_id: Optional[str] = None,
 ) -> Optional[Dict]:
-    _subproc_env = {
-        **os.environ,
-        "TERM": "xterm-256color",
-        "COLUMNS": "120",
-        "LINES": "40",
-        "HOME": _AGENT_WORKDIR,
-    }
+    _subproc_env = _build_subprocess_env()
 
     try:
+        # Resolve a process execution root once, at the same boundary that
+        # binds the run's execution authority.  Re-reading context-local state
+        # later inside an async handler is both unnecessary and fragile (for
+        # example, compatibility tests may replace handler/module globals).
+        # Non-process tools keep ``None`` here so their normal DATA_DIR path
+        # policy is not widened merely because shell access was approved.
+        handler_workspace = get_active_workspace()
+        if tool in {"bash", "python", "manage_bg_jobs"} and not handler_workspace:
+            handler_workspace = agent_cwd()
         ctx = {
             "progress_cb": progress_cb,
             "subproc_env": _subproc_env,
@@ -541,11 +590,14 @@ async def _direct_fallback(
             "owner": owner,
             "arguments": arguments,
             "invocation_id": invocation_id,
+            "execution_mode": get_active_execution_mode().value,
+            "workspace": handler_workspace,
         }
 
-        from src.agent_tools import TOOL_HANDLERS
-        if tool in TOOL_HANDLERS:
-            return await TOOL_HANDLERS[tool](content, ctx)
+        from src.agent.tools.bootstrap import TOOL_REGISTRY
+        definition = TOOL_REGISTRY.get(tool)
+        if definition is not None and definition.handler is not None:
+            return await definition.handler(content, ctx)
 
     except Exception as e:
         return {"error": f"{tool}: {e}", "exit_code": 1}
@@ -560,10 +612,11 @@ async def _document_tool_dispatch(
     owner: Optional[str] = None,
 ) -> Optional[Dict]:
     """Route a document tool through TOOL_HANDLERS with the right ctx shape."""
-    from src.agent_tools import TOOL_HANDLERS
+    from src.agent.tools.bootstrap import TOOL_REGISTRY
     ctx = {"session_id": session_id, "owner": owner}
-    if tool in TOOL_HANDLERS:
-        return await TOOL_HANDLERS[tool](content, ctx)
+    definition = TOOL_REGISTRY.get(tool)
+    if definition is not None and definition.handler is not None:
+        return await definition.handler(content, ctx)
     return None
 
 
@@ -578,6 +631,7 @@ async def execute_tool_block(
     owner: Optional[str] = None,
     progress_cb: Optional[Callable[[Dict], Awaitable[None]]] = None,
     workspace: Optional[str] = None,
+    execution_mode: Optional[str] = None,
     tool_policy: Optional[Any] = None,
     allowed_tools: Optional[set] = None,
     invocation_id: Optional[str] = None,
@@ -588,7 +642,17 @@ async def execute_tool_block(
     cwd confine to it) for the duration of this call, then delegate. Reset on the
     way out so the binding never leaks to the next tool call.
     """
-    token = _active_workspace.set(workspace or None)
+    bound_workspace = vet_workspace(workspace) if workspace else None
+    if workspace and not bound_workspace:
+        return "workspace: BLOCKED", {
+            "error": "The requested workspace is invalid or outside the allowed execution boundary.",
+            "error_type": "invalid_workspace",
+            "exit_code": 1,
+        }
+    token = _active_workspace.set(bound_workspace)
+    execution_token = _active_execution_mode.set(
+        normalize_execution_mode(execution_mode)
+    )
     try:
         output = await _execute_tool_block_impl(
             block,
@@ -602,6 +666,7 @@ async def execute_tool_block(
         )
         return output
     finally:
+        _active_execution_mode.reset(execution_token)
         _active_workspace.reset(token)
 
 
@@ -636,20 +701,10 @@ async def _execute_tool_block_impl(
         do_app_api,
     )
 
-    # HACK:
-    # This is a temporary workaround for a circular dependency between
-    # tool_execution.py and agent_tools.__init__.py.
-    #
-    # See issue #4277:
-    # refactor(tools): Move the registry from __init__.py into a
-    # dedicated registry.py module.
-    #
-    # Do not copy this pattern elsewhere. This import should be removed
-    # once the registry refactor is completed.
     try:
-        agent_tools_mod = __import__("src.agent_tools", fromlist=["TOOL_HANDLERS"])
-        dynamic_handlers = getattr(agent_tools_mod, "TOOL_HANDLERS", {})
-    except ImportError:
+        from src.agent.tools.bootstrap import TOOL_REGISTRY
+        dynamic_handlers = TOOL_REGISTRY.handlers()
+    except (ImportError, RuntimeError):
         dynamic_handlers = {}
 
     tool = block.tool_type
@@ -753,6 +808,39 @@ async def _execute_tool_block_impl(
         logger.warning("Tool policy blocked tool=%s", tool)
         return desc, result
 
+    try:
+        from src.agent.tools.bootstrap import TOOL_REGISTRY
+        from src.agent.tools.registry import ToolAutonomy
+
+        definition = TOOL_REGISTRY.get(tool)
+    except (ImportError, RuntimeError):
+        definition = None
+    if (
+        definition is not None
+        and definition.autonomy is ToolAutonomy.CONFIRM_ONCE_PER_RUN
+        and (allowed_tools is None or tool not in allowed_tools)
+    ):
+        return f"{tool}: BLOCKED", {
+            "error": (
+                f"Tool '{tool}' requires explicit approval for this run. "
+                "Enable process execution and retry."
+            ),
+            "error_type": "approval_required",
+            "exit_code": 1,
+        }
+
+    active_execution_mode = get_active_execution_mode()
+    if tool in {"bash", "python", "manage_bg_jobs"} and not active_execution_mode.enabled:
+        return f"{tool}: BLOCKED", {
+            "error": (
+                f"Tool '{tool}' has no process authority for this run. "
+                "Enable Safe workspace shell or explicitly grant Full host shell."
+            ),
+            "error_type": "approval_required",
+            "execution_mode": active_execution_mode.value,
+            "exit_code": 1,
+        }
+
     if tool in _ADMIN_TOOLS and not _owner_is_admin(owner):
         desc = f"{tool}: BLOCKED"
         result = {"error": f"Tool '{tool}' requires an admin user.", "exit_code": 1}
@@ -780,7 +868,25 @@ async def _execute_tool_block_impl(
         _is_bg, _bg_cmd = _split_bg_marker(content)
         if _is_bg and _bg_cmd:
             from src import bg_jobs
-            rec = bg_jobs.launch(_bg_cmd, session_id=session_id, cwd=agent_cwd())
+            try:
+                rec = bg_jobs.launch(
+                    _bg_cmd,
+                    session_id=session_id,
+                    cwd=agent_cwd(),
+                    owner=owner,
+                    execution_mode=active_execution_mode.value,
+                )
+            except (RuntimeError, ValueError) as exc:
+                return "bash (background): BLOCKED", {
+                    "error": str(exc),
+                    "error_type": (
+                        "execution_limit"
+                        if "limit reached" in str(exc)
+                        else "execution_unavailable"
+                    ),
+                    "execution_mode": active_execution_mode.value,
+                    "exit_code": 126,
+                }
             short = _bg_cmd.strip().split(chr(10))[0][:80]
             desc = f"bash (background): {short}"
             result = {

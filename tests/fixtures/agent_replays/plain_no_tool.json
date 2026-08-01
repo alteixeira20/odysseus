@@ -18,7 +18,7 @@
     {"type": "run_status", "phase": "contacting_provider", "label": "Contacting provider"},
     {"delta": "Plain answer."},
     {"type": "metrics", "model": "gpt-4o"},
-    {"type": "run_state", "state": "completed", "terminal": true, "reason": "completed"},
+    {"type": "run_state", "state": "completed", "terminal": true, "reason": "completed", "resumable": false},
     {"done": true}
   ]
 }

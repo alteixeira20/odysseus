@@ -112,6 +112,22 @@ async def test_dispatch_rejects_tool_outside_authoritative_allowlist(monkeypatch
     assert result["unavailable"] is True
 
 
+@pytest.mark.asyncio
+async def test_privileged_process_tool_requires_explicit_run_approval(tmp_path, monkeypatch):
+    from src import tool_execution
+
+    monkeypatch.setattr(tool_execution, "_owner_is_admin", lambda owner: True)
+    desc, result = await tool_execution.execute_tool_block(
+        ToolBlock("bash", "pwd"),
+        owner="admin",
+        workspace=str(tmp_path),
+    )
+
+    assert desc == "bash: BLOCKED"
+    assert result["error_type"] == "approval_required"
+    assert result["exit_code"] == 1
+
+
 def test_no_effective_name_lacks_an_executable_registration_or_provider_surface():
     effective = _effective(workspace_enabled=True, shell_enabled=True)
     assert effective.names <= ALL_CODING
@@ -235,6 +251,7 @@ async def test_real_tmux_shell_preserves_same_workspace_cd_and_rebinds_on_change
             session_id=session_id,
             workspace=str(workspace),
             allowed_tools={"bash"},
+            execution_mode="sandboxed",
         )
 
     try:
@@ -374,8 +391,9 @@ async def test_runtime_workspace_shell_provider_schema_matrix(
         schema["function"]["name"] for schema in captured["schemas"]
     }
 
-    assert ("bash" in schema_names) is shell_enabled
-    assert ("bash" in diagnostic["names"]) is shell_enabled
+    expected_shell = bool(shell_enabled)
+    assert ("bash" in schema_names) is expected_shell
+    assert ("bash" in diagnostic["names"]) is expected_shell
     assert (WORKSPACE_FOUNDATIONAL_TOOLS <= schema_names) is workspace_enabled
 
 
@@ -615,7 +633,7 @@ async def test_retry_after_sleep_is_cancellable(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_last_client_disconnect_cancels_provider_run(monkeypatch):
+async def test_last_client_disconnect_does_not_cancel_detached_provider_run(monkeypatch):
     session_id = "disconnect-contract"
     cancelled = asyncio.Event()
     monkeypatch.setattr(bg_jobs, "kill_for_session_since", lambda *args: 0)
@@ -631,10 +649,43 @@ async def test_last_client_disconnect_cancels_provider_run(monkeypatch):
     subscriber = agent_runs.subscribe(session_id)
     await subscriber.__anext__()
     await subscriber.aclose()
+    await asyncio.sleep(0.05)
+    assert cancelled.is_set() is False
+    assert run.status == "running"
+
+    assert agent_runs.stop(session_id) is True
     await asyncio.wait_for(cancelled.wait(), timeout=1)
     await asyncio.sleep(0)
     assert run.status == "stopped"
     assert any('"state": "cancelled"' in event for event in run.buffer)
+    agent_runs._RUNS.pop(session_id, None)
+
+
+@pytest.mark.asyncio
+async def test_attached_disconnect_cancels_provider_run(monkeypatch):
+    session_id = "attached-disconnect-contract"
+    cancelled = asyncio.Event()
+    monkeypatch.setattr(bg_jobs, "kill_for_session_since", lambda *args: 0)
+
+    async def provider():
+        try:
+            yield 'data: {"type": "run_status", "phase": "contacting_provider"}\n\n'
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    run = agent_runs.start(
+        session_id,
+        provider(),
+        mode=agent_runs.RunMode.ATTACHED,
+    )
+    subscriber = agent_runs.subscribe(session_id)
+    await subscriber.__anext__()
+    await subscriber.aclose()
+
+    await asyncio.wait_for(cancelled.wait(), timeout=1)
+    await asyncio.sleep(0)
+    assert run.status == "stopped"
     agent_runs._RUNS.pop(session_id, None)
 
 
@@ -668,5 +719,7 @@ def test_frontend_does_not_override_explicit_shell_toggle():
     source = Path("static/js/chat.js").read_text(encoding="utf-8")
     request_source = Path("static/js/agentToolRequest.js").read_text(encoding="utf-8")
     assert "appendAgentToolRequestFields(fd" in source
-    assert "allow_bash: shellEnabled ? 'true' : 'false'" in request_source
+    assert "shell_mode: shellMode" in request_source
+    assert "shellMode === 'disabled' ? 'false' : 'true'" in request_source
+    assert "hostShellEnabled" in request_source
     assert "fd.set('allow_bash', 'true')" not in source

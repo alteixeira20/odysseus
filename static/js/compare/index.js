@@ -204,7 +204,7 @@ async function deactivate(teardown) {
   if (_modeToggleR) { _modeToggleR.style.pointerEvents = ''; _modeToggleR.style.opacity = ''; }
 
   // Restore tool toggle pointer events
-  ['overflow-plus-btn', 'web-toggle-btn', 'bash-toggle-btn'].forEach(id => {
+  ['overflow-plus-btn', 'web-toggle-btn', 'bash-toggle-btn', 'host-shell-toggle-btn'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.style.pointerEvents = '';
   });
@@ -532,7 +532,7 @@ async function _buildCompareUI() {
   _setupEvalPicker();
 
   // 12. Hide tool buttons that don't apply during compare
-  ['overflow-tts-btn', 'overflow-attach-btn', 'overflow-rag-btn', 'overflow-research-btn', 'overflow-doc-btn', 'rag-indicator-btn', 'web-toggle-btn', 'bash-toggle-btn', 'overflow-plus-btn'].forEach(id => {
+  ['overflow-tts-btn', 'overflow-attach-btn', 'overflow-rag-btn', 'overflow-research-btn', 'overflow-doc-btn', 'rag-indicator-btn', 'web-toggle-btn', 'bash-toggle-btn', 'host-shell-toggle-btn', 'overflow-plus-btn'].forEach(id => {
     const el = document.getElementById(id);
     if (el) { el.style.display = 'none'; el.style.pointerEvents = 'none'; }
   });

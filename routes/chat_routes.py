@@ -734,11 +734,18 @@ def setup_chat_routes(
         allow_bash = form_data.get("allow_bash")
         if allow_bash is None:
             allow_bash = (body or {}).get("allow_bash")
-        shell_enabled = (
-            None
-            if allow_bash is None
-            else str(allow_bash).lower() == "true"
+        requested_shell_mode = form_data.get("shell_mode")
+        if requested_shell_mode is None:
+            requested_shell_mode = (body or {}).get("shell_mode")
+        from src.execution_policy import resolve_execution_mode
+        # Missing/false allow_bash is an immutable denial.  Legacy true maps
+        # only to sandboxed mode; host access requires shell_mode=host too.
+        execution_mode = resolve_execution_mode(
+            requested_shell_mode,
+            allow_bash=allow_bash,
         )
+        shell_enabled = execution_mode.enabled
+        shell_mode_reason = "requested"
         allow_web_search = form_data.get("allow_web_search") or (body or {}).get("allow_web_search")
         use_rag = form_data.get("use_rag")
         search_context = form_data.get("search_context")  # pre-fetched web search results (compare mode)
@@ -808,9 +815,6 @@ def setup_chat_routes(
             chat_mode = "agent"
             auto_escalated = True
             _workspace_agent_intent = _tool_intent.category in {"shell", "workspace"}
-            if _workspace_agent_intent and allow_bash is None:
-                allow_bash = "true"
-                shell_enabled = True
             logger.info(
                 "chat→agent auto-escalation: category=%s reason=%s",
                 _tool_intent.category,
@@ -946,7 +950,9 @@ def setup_chat_routes(
                     chat_mode = "agent"
                     auto_escalated = True
                     _workspace_agent_intent = True
-                    allow_bash = "true"
+                    # Binding a path establishes context/confinement only.  It
+                    # must never override an explicit allow_bash=false (or grant
+                    # process execution when the caller omitted that consent).
                     logger.info("chat→agent auto-escalation: explicit path workspace=%s", workspace)
         except SessionNotFoundError as e:
             raise HTTPException(404, str(e))
@@ -1107,14 +1113,47 @@ def setup_chat_routes(
         finally:
             _doc_db.close()
 
+        # Finalize process authority only after absolute-path auto-workspace
+        # detection has run. Safe execution requires a vetted workspace; host
+        # execution starts in the selected workspace, or the server working
+        # tree when none is selected. A workspace itself never grants either
+        # mode. Host mode
+        # is also restricted to an admin/single-user caller and an explicit
+        # request; a forged field from a public account is denied here.
+        from src.execution_policy import ExecutionMode
+        from src.tool_security import owner_is_admin_or_single_user
+        if (
+            execution_mode is ExecutionMode.HOST
+            and not owner_is_admin_or_single_user(get_current_user(request))
+        ):
+            execution_mode = ExecutionMode.DISABLED
+            shell_mode_reason = "host_mode_requires_admin"
+        elif execution_mode is ExecutionMode.SANDBOXED:
+            from src.constants import DATA_DIR
+            from src.process_sandbox import sandbox_capability
+            _sandbox_capability = sandbox_capability()
+            _safe_execution_root = os.path.realpath(workspace or os.getcwd())
+            if os.path.dirname(_safe_execution_root) == _safe_execution_root:
+                execution_mode = ExecutionMode.DISABLED
+                shell_mode_reason = "safe workspace shell refuses a filesystem root"
+            elif _safe_execution_root == os.path.realpath(DATA_DIR):
+                execution_mode = ExecutionMode.DISABLED
+                shell_mode_reason = (
+                    "safe workspace shell cannot use the Odysseus application-data root"
+                )
+            elif not _sandbox_capability.available:
+                execution_mode = ExecutionMode.DISABLED
+                shell_mode_reason = _sandbox_capability.reason
+        shell_enabled = execution_mode.enabled
+
         # Build disabled-tools set from frontend toggles + user privileges
         disabled_tools = set()
-        # Only disable bash when the caller *explicitly* set it to a falsy
-        # value. When unset (None), defer to per-user privilege checks below.
+        # Bash/Python/background execution require an explicit per-turn grant.
+        # Missing, false, and any unrecognized value all fail closed.
         # Web search is per-turn opt-in: either the chat pre-search setting
         # (`use_web=true`) or agent web toggle (`allow_web_search=true`) must
         # explicitly enable it.
-        if allow_bash is not None and str(allow_bash).lower() != "true":
+        if not shell_enabled:
             disabled_tools.update(SHELL_FOUNDATIONAL_TOOLS)
         _explicit_web_intent = _explicit_web_intent or bool(_tool_intent and _tool_intent.category == "web")
         if is_web_search_explicitly_denied(allow_web_search) or not _search_enabled:
@@ -1178,6 +1217,9 @@ def setup_chat_routes(
                 disabled_tools.update(
                     SHELL_FOUNDATIONAL_TOOLS | WORKSPACE_FOUNDATIONAL_TOOLS
                 )
+                execution_mode = ExecutionMode.DISABLED
+                shell_enabled = False
+                shell_mode_reason = "shell_privilege_denied"
             if not _privs.get("can_use_browser", True):
                 disabled_tools.update(_BROWSER_MCP_TOOLS)
             if not _privs.get("can_use_documents", True):
@@ -1691,6 +1733,8 @@ def setup_chat_routes(
                 _requested_model = sess.model
                 _actual_model = None
                 _agent_terminal_state = None
+                _agent_terminal_reason = None
+                _agent_terminal_resumable = False
                 try:
                     logger.info(
                         "[agent-timing] phase=agent_loop_start session=%s "
@@ -1726,6 +1770,14 @@ def setup_chat_routes(
                     elif _explicit_browser_intent:
                         _forced_tools = set(_BROWSER_MCP_TOOLS)
 
+                    yield "data: " + json.dumps({
+                        "type": "execution_authority",
+                        "mode": execution_mode.value,
+                        "reason": shell_mode_reason,
+                        "workspace": bool(workspace),
+                        "ephemeral": True,
+                    }) + "\n\n"
+
                     async for chunk in stream_agent_loop(
                         sess.endpoint_url,
                         sess.model,
@@ -1749,7 +1801,7 @@ def setup_chat_routes(
                         workspace=workspace or None,
                         forced_tools=_forced_tools,
                         uploaded_files=ctx.uploaded_files,
-                        shell_enabled=shell_enabled,
+                        shell_enabled=execution_mode.value,
                     ):
                         if chunk.startswith("data: ") and not chunk.startswith("data: [DONE]"):
                             try:
@@ -1788,6 +1840,8 @@ def setup_chat_routes(
                                         _agent_tool_calls += 1
                                     elif data.get("type") == "run_state" and data.get("terminal"):
                                         _agent_terminal_state = data.get("state")
+                                        _agent_terminal_reason = data.get("reason")
+                                        _agent_terminal_resumable = bool(data.get("resumable"))
                                     yield chunk
                                 elif data.get("type") == "fallback":
                                     # Selected model failed; a fallback answered.
@@ -1823,11 +1877,14 @@ def setup_chat_routes(
                             if full_response or _has_tool_events:
                                 _response_to_save = full_response or "Done."
                                 _metrics_to_save = dict(last_metrics or {})
-                                if _agent_terminal_state == "error":
+                                if _agent_terminal_state and _agent_terminal_state != "completed":
                                     _metrics_to_save.update({
-                                        "error": True,
-                                        "resumable": True,
-                                        "stopped": True,
+                                        "error": _agent_terminal_state == "error",
+                                        "incomplete": _agent_terminal_state not in {"error", "cancelled"},
+                                        "run_disposition": _agent_terminal_state,
+                                        "run_disposition_reason": _agent_terminal_reason,
+                                        "resumable": _agent_terminal_resumable,
+                                        "stopped": _agent_terminal_state == "cancelled",
                                     })
                                 if thinking_response.strip() and not _metrics_to_save.get("thinking"):
                                     _metrics_to_save["thinking"] = thinking_response.strip()
@@ -1841,7 +1898,7 @@ def setup_chat_routes(
                                 )
                                 if _saved_id:
                                     yield f'data: {json.dumps({"type": "message_saved", "id": _saved_id})}\n\n'
-                                if _agent_terminal_state != "error":
+                                if _agent_terminal_state == "completed":
                                     run_post_response_tasks(
                                         sess, session_manager, session, message, _response_to_save,
                                         _metrics_to_save, ctx.uprefs, memory_manager, memory_vector, webhook_manager,
@@ -1856,7 +1913,11 @@ def setup_chat_routes(
                                     )
                             _stream_set(
                                 session,
-                                status="error" if _agent_terminal_state == "error" else "done",
+                                status=(
+                                    "done"
+                                    if _agent_terminal_state == "completed"
+                                    else (_agent_terminal_state or "incomplete")
+                                ),
                             )
                             yield chunk
                 except (asyncio.CancelledError, GeneratorExit):
@@ -1917,8 +1978,26 @@ def setup_chat_routes(
         if compare_mode:
             return StreamingResponse(_safe_stream(), media_type="text/event-stream")
 
-        agent_runs.start(session, _safe_stream())
+        try:
+            agent_runs.start(
+                session,
+                _safe_stream(),
+                mode=agent_runs.RunMode.DETACHED,
+                owner=str(_user) if _user else None,
+            )
+        except agent_runs.RunCapacityError as exc:
+            raise HTTPException(429, str(exc))
         return StreamingResponse(agent_runs.subscribe(session), media_type="text/event-stream")
+
+    # ------------------------------------------------------------------ #
+    # GET /api/chat/runs — owner-scoped operational run listing. Buffered
+    # message content is intentionally excluded; callers can stop a listed
+    # run through the existing owner-checked /api/chat/stop/{session} route.
+    # ------------------------------------------------------------------ #
+    @router.get("/api/chat/runs")
+    async def chat_runs(request: Request) -> Dict[str, Any]:
+        owner = effective_user(request)
+        return {"runs": agent_runs.list_runs(str(owner) if owner else None)}
 
     # ------------------------------------------------------------------ #
     # GET /api/chat/resume — reconnect to a detached run that's still going

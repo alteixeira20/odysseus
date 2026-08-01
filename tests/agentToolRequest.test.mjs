@@ -8,10 +8,10 @@ import {
 
 
 for (const [workspace, shellEnabled, expected] of [
-  ['', false, { allow_bash: 'false' }],
-  ['', true, { allow_bash: 'true' }],
-  ['/work/repo', false, { allow_bash: 'false', workspace: '/work/repo' }],
-  ['/work/repo', true, { allow_bash: 'true', workspace: '/work/repo' }],
+  ['', false, { allow_bash: 'false', shell_mode: 'disabled' }],
+  ['', true, { allow_bash: 'true', shell_mode: 'sandboxed' }],
+  ['/work/repo', false, { allow_bash: 'false', shell_mode: 'disabled', workspace: '/work/repo' }],
+  ['/work/repo', true, { allow_bash: 'true', shell_mode: 'sandboxed', workspace: '/work/repo' }],
 ]) {
   test(`request fields keep workspace=${workspace || 'none'} and shell=${shellEnabled} independent`, () => {
     assert.deepEqual(
@@ -34,10 +34,25 @@ test('visible shell state is the exact allow_bash value appended to the request'
 
   assert.deepEqual(fields, {
     allow_bash: 'true',
+    shell_mode: 'sandboxed',
     workspace: '/selected/repository',
   });
   assert.deepEqual(appended, [
     ['allow_bash', 'true'],
+    ['shell_mode', 'sandboxed'],
     ['workspace', '/selected/repository'],
   ]);
+});
+
+
+test('full host shell is a distinct explicit request mode', () => {
+  assert.deepEqual(agentToolRequestFields({
+    shellEnabled: false,
+    hostShellEnabled: true,
+    workspace: '/selected/repository',
+  }), {
+    allow_bash: 'true',
+    shell_mode: 'host',
+    workspace: '/selected/repository',
+  });
 });

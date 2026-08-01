@@ -128,6 +128,18 @@ class ProviderAttemptRunner:
         ):
             attempt += 1
             attempt_error_chunk: Optional[str] = None
+            attempt_error_kind: Optional[str] = None
+            attempt_deadline_exceeded = False
+            # A pre-content retry must not inherit a previous attempt's
+            # provider terminal metadata.  Text/tool deltas make an attempt
+            # substantive and therefore non-retryable, so clearing these
+            # fields here cannot discard accepted output.
+            self.accumulator.raw_finish_reason = None
+            self.accumulator.normalized_finish_reason = (
+                ProviderFinishReason.UNKNOWN
+            )
+            self.accumulator.finish_event_seen = False
+            self.accumulator.protocol_terminal_seen = True
             yield run_status_event(
                 "contacting_provider",
                 "Contacting provider",
@@ -157,7 +169,7 @@ class ProviderAttemptRunner:
                         # not a deliberate stop. Never silently accept this
                         # as a finished answer (see termination.py); the
                         # tool-free continuation path re-checks this.
-                        deadline_exceeded = True
+                        attempt_deadline_exceeded = True
                     logger.warning(
                         "[agent-timing] round_deadline round=%s "
                         "elapsed=%.3fs deadline_s=%s substantive=%s",
@@ -169,8 +181,9 @@ class ProviderAttemptRunner:
                     break
                 if chunk.startswith("event: error"):
                     attempt_error_chunk = chunk
-                    terminal_error_chunk = chunk
-                    error_kind = self.error_details(chunk).get("error_kind")
+                    attempt_error_kind = self.error_details(chunk).get(
+                        "error_kind"
+                    )
                     if (
                         not substantive
                         and self.transient_error(chunk)
@@ -188,7 +201,7 @@ class ProviderAttemptRunner:
                         break
                     if (
                         substantive
-                        and error_kind_to_termination_kind(error_kind)
+                        and error_kind_to_termination_kind(attempt_error_kind)
                         is not None
                     ):
                         # Content already streamed this attempt and the
@@ -207,7 +220,7 @@ class ProviderAttemptRunner:
                             request.round_number,
                             attempt,
                             self.clock() - request.round_started_at,
-                            error_kind,
+                            attempt_error_kind,
                         )
                         break
                     fatal = True
@@ -373,6 +386,19 @@ class ProviderAttemptRunner:
                             yield chunk
                 elif chunk.startswith("event: "):
                     yield chunk
+
+            selected_attempt = bool(
+                substantive
+                or fatal
+                or attempt >= request.max_attempts
+                or not attempt_error_chunk
+            )
+            if selected_attempt:
+                error_kind = attempt_error_kind
+                deadline_exceeded = attempt_deadline_exceeded
+                terminal_error_chunk = (
+                    attempt_error_chunk if fatal else None
+                )
 
             if (
                 not substantive

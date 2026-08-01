@@ -2,9 +2,15 @@
 // Workspace identity and shell authorization are independent axes: selecting a
 // workspace changes the starting directory, never the visible shell toggle.
 
-export function agentToolRequestFields({ shellEnabled, workspace }) {
+export function agentToolRequestFields({ shellEnabled, hostShellEnabled, workspace }) {
+  const shellMode = hostShellEnabled
+    ? 'host'
+    : (shellEnabled ? 'sandboxed' : 'disabled');
   const fields = {
-    allow_bash: shellEnabled ? 'true' : 'false',
+    // Keep the legacy boolean for old servers/clients. It can enable only the
+    // sandboxed mode server-side; host authority always needs shell_mode=host.
+    allow_bash: shellMode === 'disabled' ? 'false' : 'true',
+    shell_mode: shellMode,
   };
   const selectedWorkspace = String(workspace || '').trim();
   if (selectedWorkspace) fields.workspace = selectedWorkspace;

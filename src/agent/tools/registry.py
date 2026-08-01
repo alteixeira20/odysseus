@@ -12,20 +12,12 @@ cross-checked that these five sources agree — see the ``# HACK`` in
 ``src/tool_execution.py`` referencing issue #4277, which independently
 flags the same drift risk for the handler map specifically.
 
-Scope of this pass: this module builds a typed ``ToolDefinition`` for
-every tool name currently reachable through those legacy sources
-(``build_default_registry()`` derives category/risk/autonomy/idempotency
-from the existing policy sets rather than re-litigating each tool by
-hand) and a ``validate()`` pass that catches the exact drift classes
-listed above. It is a *validating* layer over the legacy sources this
-pass, not yet their replacement — the legacy dicts are still what
-production actually dispatches through. Flipping the five call sites
-above to import their exports *from* this registry instead of defining
-them independently is real follow-up work gated on untangling the
-``agent_tools`` ↔ ``tool_schemas`` circular import (issue #4277); doing
-that in the same pass as introducing the typed contract would risk the
-entire tool-calling surface for a foundation-hardening change, which is
-out of scope here. See specs/agent-runtime-v2-progress.md for status.
+At startup ``build_default_registry()`` normalizes those compatibility
+sources into typed definitions and validates them. From that point the live
+provider schema set, known-name checks, fenced parser vocabulary and local
+handler lookup are derived from this registry. The legacy collections remain
+bootstrap inputs for compatibility, but are no longer independent runtime
+authorities.
 """
 
 from __future__ import annotations

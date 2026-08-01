@@ -2,7 +2,9 @@
 
 from dataclasses import dataclass, field
 import json
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping, Optional, Union
+
+from src.agent.contracts import RunDisposition
 
 
 @dataclass(frozen=True)
@@ -53,13 +55,17 @@ def run_status_event(phase: str, label: str, **extra: Any) -> str:
     )
 
 
-def run_state_event(state: str, **extra: Any) -> str:
-    """Encode the single terminal lifecycle state for a finished run."""
+def run_state_event(
+    state: Union[str, RunDisposition], **extra: Any
+) -> str:
+    """Encode the single semantic terminal lifecycle state for a run."""
+
+    state_value = state.value if isinstance(state, RunDisposition) else str(state)
 
     return encode_legacy_sse(
         AgentEvent.typed(
             "run_state",
-            state=state,
+            state=state_value,
             terminal=True,
             **extra,
         )

@@ -10,8 +10,11 @@ from src.constants import MAX_OUTPUT_CHARS
 
 
 @pytest.mark.asyncio
-async def test_small_output_reports_not_truncated():
-    result = await BashTool().execute("echo hi", {})
+async def test_small_output_reports_not_truncated(tmp_path):
+    result = await BashTool().execute(
+        "echo hi",
+        {"workspace": str(tmp_path), "execution_mode": "sandboxed"},
+    )
     assert result["exit_code"] == 0
     assert result["stdout_truncated"] is False
     assert result["stderr_truncated"] is False
@@ -19,10 +22,13 @@ async def test_small_output_reports_not_truncated():
 
 
 @pytest.mark.asyncio
-async def test_oversized_stdout_reports_truncated_with_total_chars():
+async def test_oversized_stdout_reports_truncated_with_total_chars(tmp_path):
     n_chars = MAX_OUTPUT_CHARS + 5000
     cmd = f"python3 -c \"print('x' * {n_chars})\""
-    result = await BashTool().execute(cmd, {})
+    result = await BashTool().execute(
+        cmd,
+        {"workspace": str(tmp_path), "execution_mode": "sandboxed"},
+    )
     assert result["exit_code"] == 0
     assert result["stdout_truncated"] is True
     assert result["stdout_total_chars"] >= n_chars

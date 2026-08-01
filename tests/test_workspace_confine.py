@@ -269,7 +269,13 @@ async def test_glob_skips_sensitive_files_in_workspace(ws, admin):
 @pytest.mark.asyncio
 async def test_subprocess_cwd_is_workspace_e2e(ws, admin):
     """python tool runs with cwd = workspace (OS-agnostic probe)."""
-    _, r = await execute_tool_block(_block("python", "import os; print(os.getcwd())"), owner="a", workspace=ws)
+    _, r = await execute_tool_block(
+        _block("python", "import os; print(os.getcwd())"),
+        owner="a",
+        workspace=ws,
+        allowed_tools={"python"},
+        execution_mode="sandboxed",
+    )
     assert r["exit_code"] == 0
     assert os.path.realpath(r["output"].strip()) == os.path.realpath(ws)
 
@@ -281,6 +287,7 @@ async def test_local_bash_dispatch_starts_in_selected_workspace_e2e(ws, admin):
         owner="a",
         workspace=ws,
         allowed_tools={"bash"},
+        execution_mode="sandboxed",
     )
     assert result["exit_code"] == 0
     assert os.path.realpath(result["output"].strip()) == os.path.realpath(ws)
@@ -291,7 +298,8 @@ async def test_local_bash_dispatch_starts_in_selected_workspace_e2e(ws, admin):
 @pytest.mark.asyncio
 async def test_get_workspace_tool(ws, admin):
     _, r = await execute_tool_block(_block("get_workspace", ""), owner="a", workspace=ws)
-    assert r["exit_code"] == 0 and r["output"].startswith(ws) and "not sandboxed" in r["output"]
+    assert r["exit_code"] == 0 and r["output"].startswith(ws)
+    assert "only writable workspace" in r["output"]
     _, r = await execute_tool_block(_block("get_workspace", ""), owner="a")  # none active
     assert r["exit_code"] == 0 and "No workspace" in r["output"]
 
@@ -355,12 +363,11 @@ def test_low_signal_with_workspace_preserves_foundational_coding_tools(monkeypat
     assert "read_file" in names
     assert "get_workspace" in names
     assert "grep" in names
-    # Foundational capabilities reflect enabled run configuration, not the
-    # relevance classifier's confidence.
-    assert "write_file" in names
-    assert "edit_file" in names
-    assert "bash" in names
-    assert "python" in names
+    # Workspace selection grants inspection/confinement, not mutation.
+    assert "write_file" not in names
+    assert "edit_file" not in names
+    assert "bash" not in names
+    assert "python" not in names
 
 
 def test_workspace_coding_request_surfaces_edit_and_verify_tools(monkeypatch):
@@ -377,8 +384,9 @@ def test_workspace_coding_request_surfaces_edit_and_verify_tools(monkeypatch):
     assert "write_file" in names
     assert "apply_patch" in names
     assert "todowrite" in names
-    assert "bash" in names
-    assert "python" in names
+    # File mutation intent is independent from process-execution approval.
+    assert "bash" not in names
+    assert "python" not in names
 
 
 def test_low_signal_without_workspace_excludes_file_tools(monkeypatch):

@@ -62,7 +62,11 @@ async def stream(request: AgentRunRequest) -> AsyncGenerator[str, None]:
         ),
         "workload": request.workload,
         "_is_teacher_run": request.is_teacher_run,
-        "shell_enabled": request.policy.shell_enabled,
+        "shell_enabled": (
+            request.policy.execution_mode
+            if request.policy.execution_mode is not None
+            else request.policy.shell_enabled
+        ),
     }
     async for event in _legacy_stream(**arguments):
         yield event
@@ -94,7 +98,7 @@ async def stream_agent_loop(
     uploaded_files: Optional[List[Dict]] = None,
     workload: str = "foreground",
     _is_teacher_run: bool = False,
-    shell_enabled: Optional[bool] = None,
+    shell_enabled: Optional[bool | str] = None,
 ) -> AsyncGenerator[str, None]:
     """Compatibility-shaped route entry point backed by a typed request."""
 

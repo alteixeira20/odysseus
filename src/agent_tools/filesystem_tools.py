@@ -1,10 +1,12 @@
 import asyncio
+import hashlib
 import json
 import os
 import re
 import difflib
 import fnmatch
 import shutil
+import tempfile
 from typing import Optional, Dict, Any, Tuple, List
 
 from src.constants import MAX_READ_CHARS, MAX_DIFF_LINES, MAX_OUTPUT_CHARS
@@ -17,6 +19,165 @@ _CODENAV_SKIP_DIRS = frozenset({
 _CODENAV_MAX_HITS = 200
 _CODENAV_MAX_LINE = 400
 _CODENAV_MAX_OFFSET = 10_000
+
+
+def _digest(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _read_snapshot(path: str) -> Dict[str, Any]:
+    try:
+        with open(path, "rb") as handle:
+            data = handle.read()
+        stat_result = os.stat(path, follow_symlinks=False)
+        return {
+            "exists": True,
+            "data": data,
+            "sha256": _digest(data),
+            "mode": stat_result.st_mode & 0o777,
+        }
+    except FileNotFoundError:
+        return {"exists": False, "data": b"", "sha256": None, "mode": 0o644}
+
+
+def _check_expected_hash(snapshot: Dict[str, Any], expected: Optional[str], label: str) -> None:
+    if expected is None:
+        return
+    expected = str(expected).strip().lower()
+    actual = snapshot["sha256"] if snapshot["exists"] else "missing"
+    if expected != actual:
+        raise ValueError(
+            f"{label}: content changed (expected sha256={expected}, actual={actual}); "
+            "read the file again before overwriting it"
+        )
+
+
+def _verify_snapshot(path: str, snapshot: Dict[str, Any]) -> None:
+    current = _read_snapshot(path)
+    if current["exists"] != snapshot["exists"] or current["sha256"] != snapshot["sha256"]:
+        actual = current["sha256"] if current["exists"] else "missing"
+        expected = snapshot["sha256"] if snapshot["exists"] else "missing"
+        raise ValueError(
+            f"{path}: concurrent modification detected "
+            f"(expected sha256={expected}, actual={actual})"
+        )
+
+
+def _fsync_directory(directory: str) -> None:
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+    descriptor = os.open(directory, flags)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _stage_bytes(path: str, data: bytes, mode: int) -> str:
+    directory = os.path.dirname(path) or "."
+    os.makedirs(directory, exist_ok=True)
+    descriptor, staged = tempfile.mkstemp(prefix=f".{os.path.basename(path)}.ody-", dir=directory)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(staged, mode)
+        return staged
+    except BaseException:
+        try:
+            os.unlink(staged)
+        except OSError:
+            pass
+        raise
+
+
+def _replace_staged(staged: str, destination: str) -> None:
+    """Commit hook kept small so rollback behavior is fault-injectable in tests."""
+
+    os.replace(staged, destination)
+
+
+def _atomic_write_text(path: str, text: str, snapshot: Dict[str, Any]) -> None:
+    staged = _stage_bytes(path, text.encode("utf-8"), int(snapshot.get("mode") or 0o644))
+    try:
+        _verify_snapshot(path, snapshot)
+        _replace_staged(staged, path)
+        staged = ""
+        _fsync_directory(os.path.dirname(path) or ".")
+    finally:
+        if staged:
+            try:
+                os.unlink(staged)
+            except OSError:
+                pass
+
+
+def _commit_file_transaction(prepared: List[Dict[str, Any]]) -> None:
+    """Commit a staged multi-file transaction with best-effort rollback.
+
+    Each individual replacement is atomic. The collection is not globally
+    atomic: process death or power loss between replacements can expose a
+    partial state because there is no durable journal/recovery pass.
+    """
+
+    staged: Dict[str, str] = {}
+    backups: Dict[str, str] = {}
+    committed: List[Dict[str, Any]] = []
+    directories = {os.path.dirname(item["path"]) or "." for item in prepared}
+    try:
+        for item in prepared:
+            path = item["path"]
+            snapshot = item["snapshot"]
+            if item["kind"] != "delete":
+                staged[path] = _stage_bytes(path, item["new"].encode("utf-8"), snapshot["mode"])
+            if snapshot["exists"]:
+                backups[path] = _stage_bytes(path, snapshot["data"], snapshot["mode"])
+
+        # Reject stale patch plans before making the first visible change.
+        for item in prepared:
+            _verify_snapshot(item["path"], item["snapshot"])
+
+        for item in prepared:
+            path = item["path"]
+            # Close the remaining race window for every later operation. If it
+            # changed after an earlier commit, the earlier commits roll back.
+            _verify_snapshot(path, item["snapshot"])
+            if item["kind"] == "delete":
+                os.unlink(path)
+            else:
+                _replace_staged(staged[path], path)
+                staged[path] = ""
+            committed.append(item)
+
+        for directory in directories:
+            _fsync_directory(directory)
+    except BaseException:
+        rollback_error: Optional[BaseException] = None
+        for item in reversed(committed):
+            path = item["path"]
+            try:
+                if item["snapshot"]["exists"]:
+                    _replace_staged(backups[path], path)
+                    backups[path] = ""
+                elif os.path.lexists(path):
+                    os.unlink(path)
+            except BaseException as exc:  # preserve the original failure below
+                rollback_error = rollback_error or exc
+        for directory in directories:
+            try:
+                _fsync_directory(directory)
+            except OSError:
+                pass
+        if rollback_error is not None:
+            raise RuntimeError(f"patch failed and rollback was incomplete: {rollback_error}")
+        raise
+    finally:
+        for temporary in (*staged.values(), *backups.values()):
+            if temporary:
+                try:
+                    os.unlink(temporary)
+                except OSError:
+                    pass
 
 
 def _pagination_args(args: Dict[str, Any]) -> Tuple[int, int]:
@@ -153,6 +314,7 @@ class EditFileTool:
         old = args.get("old_string", "")
         new = args.get("new_string", "")
         replace_all = bool(args.get("replace_all", False))
+        expected_sha256 = args.get("expected_sha256")
         if not raw_path:
             return {"error": "edit_file: path required", "exit_code": 1}
         try:
@@ -166,16 +328,18 @@ class EditFileTool:
 
         def _apply():
             """Helper function that performs the actual string replacement and file writing logic."""
-            with open(path, "r", encoding="utf-8") as f:
-                original = f.read()
+            snapshot = _read_snapshot(path)
+            if not snapshot["exists"]:
+                raise FileNotFoundError(path)
+            _check_expected_hash(snapshot, expected_sha256, path)
+            original = snapshot["data"].decode("utf-8")
             count = original.count(old)
             if count == 0:
                 return original, None, "not_found"
             if count > 1 and not replace_all:
                 return original, None, f"not_unique:{count}"
             updated = original.replace(old, new) if replace_all else original.replace(old, new, 1)
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(updated)
+            _atomic_write_text(path, updated, snapshot)
             return original, updated, "ok"
 
         try:
@@ -186,7 +350,7 @@ class EditFileTool:
             return {"error": f"edit_file: {path}: not an editable text file", "exit_code": 1}
         except PermissionError:
             return {"error": f"edit_file: {path}: permission denied", "exit_code": 1}
-        except OSError as e:
+        except (OSError, ValueError) as e:
             return {"error": f"edit_file: {path}: {e}", "exit_code": 1}
 
         if status == "not_found":
@@ -196,7 +360,12 @@ class EditFileTool:
             return {"error": f"edit_file: old_string is not unique in {path} ({n} matches). Add surrounding context or set replace_all=true.", "exit_code": 1}
 
         n = original.count(old)
-        result = {"output": f"Edited {path} ({n} replacement{'s' if n != 1 else ''})", "exit_code": 0}
+        result = {
+            "output": f"Edited {path} ({n} replacement{'s' if n != 1 else ''})",
+            "exit_code": 0,
+            "previous_sha256": _digest(original.encode("utf-8")),
+            "sha256": _digest(updated.encode("utf-8")),
+        }
         diff = _unified_diff(original, updated, path)
         if diff:
             result["diff"] = diff
@@ -286,7 +455,12 @@ class ReadFileTool:
                 # exactly where this read stopped.
                 "next_offset": kept.count("\n") + 1,
             }
-        return {"output": data, "exit_code": 0, "truncated": False}
+        return {
+            "output": data,
+            "exit_code": 0,
+            "truncated": False,
+            "sha256": _digest(data.encode("utf-8")),
+        }
 
 class WriteFileTool:
     async def execute(self, content: str, ctx: dict) -> dict:
@@ -301,12 +475,14 @@ class WriteFileTool:
         # path: there is no filesystem MCP server, so write_file always runs
         # here via _direct_fallback, not through _build_mcp_args.
         _stripped = content.strip()
+        expected_sha256 = None
         if _stripped.startswith("{"):
             try:
                 _a = json.loads(_stripped)
                 if isinstance(_a, dict) and "path" in _a:
                     raw_path = str(_a.get("path", "")).strip()
                     body = str(_a.get("content", ""))
+                    expected_sha256 = _a.get("expected_sha256")
             except (json.JSONDecodeError, TypeError, ValueError):
                 pass
         try:
@@ -315,25 +491,23 @@ class WriteFileTool:
             return {"error": f"write_file: {e}", "exit_code": 1}
         try:
             def _write():
-                old = ""
-                try:
-                    with open(path, "r", encoding="utf-8") as f:
-                        old = f.read()
-                except (FileNotFoundError, IsADirectoryError, UnicodeDecodeError, OSError):
-                    old = ""
-                d = os.path.dirname(path)
-                if d:
-                    os.makedirs(d, exist_ok=True)
-                with open(path, "w", encoding="utf-8") as f:
-                    f.write(body)
-                return old, len(body)
-            old_content, size = await asyncio.to_thread(_write)
+                snapshot = _read_snapshot(path)
+                _check_expected_hash(snapshot, expected_sha256, path)
+                old = snapshot["data"].decode("utf-8") if snapshot["exists"] else ""
+                _atomic_write_text(path, body, snapshot)
+                return old, len(body.encode("utf-8")), snapshot["sha256"]
+            old_content, size, previous_sha256 = await asyncio.to_thread(_write)
         except PermissionError:
             return {"error": f"write_file: {path}: permission denied", "exit_code": 1}
-        except OSError as e:
+        except (OSError, ValueError, UnicodeDecodeError) as e:
             return {"error": f"write_file: {path}: {e}", "exit_code": 1}
         diff = _unified_diff(old_content, body, path)
-        result = {"output": f"Wrote {size} bytes to {path}", "exit_code": 0}
+        result = {
+            "output": f"Wrote {size} bytes to {path}",
+            "exit_code": 0,
+            "previous_sha256": previous_sha256,
+            "sha256": _digest(body.encode("utf-8")),
+        }
         if diff:
             result["diff"] = diff
         return result
@@ -350,12 +524,16 @@ class ApplyPatchTool:
         from src.tool_execution import _resolve_tool_path
 
         patch_text = content or ""
+        expected_hashes: Dict[str, str] = {}
         stripped = patch_text.strip()
         if stripped.startswith("{"):
             try:
                 args = json.loads(stripped)
                 if isinstance(args, dict):
                     patch_text = str(args.get("patch_text") or args.get("patchText") or args.get("patch") or "")
+                    raw_expected = args.get("expected_sha256") or args.get("expected_hashes") or {}
+                    if isinstance(raw_expected, dict):
+                        expected_hashes = {str(key): str(value) for key, value in raw_expected.items()}
             except (json.JSONDecodeError, TypeError):
                 pass
         if not patch_text.strip():
@@ -366,39 +544,45 @@ class ApplyPatchTool:
             if not ops:
                 return {"error": "apply_patch: no file operations found", "exit_code": 1}
             prepared = []
+            resolved_paths = set()
             for op in ops:
                 path = _resolve_tool_path(op["path"])
+                if path in resolved_paths:
+                    return {
+                        "error": f"apply_patch: duplicate operation for {op['path']}",
+                        "exit_code": 1,
+                    }
+                resolved_paths.add(path)
                 kind = op["kind"]
+                snapshot = _read_snapshot(path)
+                _check_expected_hash(snapshot, expected_hashes.get(op["path"]), op["path"])
                 if kind == "add":
-                    if os.path.exists(path):
+                    if snapshot["exists"] or os.path.lexists(path):
                         return {"error": f"apply_patch: {op['path']}: already exists", "exit_code": 1}
                     old = ""
                     new = op["content"]
                 elif kind == "delete":
                     if not os.path.isfile(path):
                         return {"error": f"apply_patch: {op['path']}: not found", "exit_code": 1}
-                    with open(path, "r", encoding="utf-8") as f:
-                        old = f.read()
+                    old = snapshot["data"].decode("utf-8")
                     new = ""
                 else:
                     if not os.path.isfile(path):
                         return {"error": f"apply_patch: {op['path']}: not found", "exit_code": 1}
-                    with open(path, "r", encoding="utf-8") as f:
-                        old = f.read()
+                    old = snapshot["data"].decode("utf-8")
                     new = _apply_patch_hunks(old, op["hunks"], op["path"])
-                prepared.append((kind, path, old, new))
+                prepared.append({
+                    "kind": kind,
+                    "path": path,
+                    "old": old,
+                    "new": new,
+                    "snapshot": snapshot,
+                })
 
             diffs = []
-            for kind, path, old, new in prepared:
-                if kind == "delete":
-                    os.remove(path)
-                else:
-                    directory = os.path.dirname(path)
-                    if directory:
-                        os.makedirs(directory, exist_ok=True)
-                    with open(path, "w", encoding="utf-8") as f:
-                        f.write(new)
-                diff = _unified_diff(old, new, path)
+            _commit_file_transaction(prepared)
+            for item in prepared:
+                diff = _unified_diff(item["old"], item["new"], item["path"])
                 if diff:
                     diffs.append(diff)
         except (ValueError, UnicodeDecodeError, PermissionError, OSError) as e:
@@ -413,6 +597,8 @@ class ApplyPatchTool:
         result = {
             "output": f"Applied patch ({len(prepared)} file{'s' if len(prepared) != 1 else ''}, +{added}/-{removed})",
             "exit_code": 0,
+            "transaction": "staged_with_best_effort_rollback",
+            "globally_atomic": False,
         }
         if diffs:
             result["diff"] = {
@@ -630,10 +816,11 @@ class GlobTool:
                 # e.g. "foo.py" still matches at any depth (like rglob).
             # Compile glob to regex: * stays within one segment, **/ spans dirs.
             regex = _glob_to_regex(norm_pat)
-            matched = []
-            # Gather one extra item beyond the requested page. The hard scan
-            # cap bounds memory while increasing with later cursor pages.
-            cap = max(_CODENAV_MAX_HITS * 5, offset + max_hits + 1)
+            matched: List[str] = []
+            # Pagination follows a deterministic directory/path traversal.
+            # Do not sort a growing partial result by mtime: doing so lets a
+            # later, larger scan insert paths before an already-issued offset.
+            cap = offset + max_hits + 1
             scan_capped = False
             try:
                 for dp, dns, fns in os.walk(base):
@@ -653,20 +840,15 @@ class GlobTool:
                             # known_hosts, …) the same way grep does.
                             if _is_sensitive_path(os.path.realpath(full)):
                                 continue
-                            try:
-                                mtime = os.stat(full).st_mtime
-                            except OSError:
-                                mtime = 0
-                            matched.append((mtime, full))
-                    if len(matched) >= cap:
-                        scan_capped = True
+                            matched.append(full)
+                            if len(matched) >= cap:
+                                scan_capped = True
+                                break
+                    if scan_capped:
                         break
             except OSError as _e:
                 return None, f"glob: {_e}"
-            # Path tie-breaker makes cursor pages deterministic when many files
-            # share a timestamp (common after checkout/extraction).
-            matched.sort(key=lambda item: (-item[0], item[1]))
-            return [pth for _, pth in matched], scan_capped, None
+            return matched, scan_capped, None
 
         globbed = await asyncio.to_thread(_glob)
         if len(globbed) == 2:
@@ -863,14 +1045,14 @@ class GrepTool:
 
 class GetWorkspaceTool:
     """Report the active workspace folder (no args). File tools are confined to
-    it; the shell starts there (cwd) but is NOT sandboxed."""
+    it; sandboxed subprocesses mount only it writable."""
     async def execute(self, content: str, ctx: dict) -> dict:
         from src.tool_execution import get_active_workspace
         ws = get_active_workspace()
         if ws:
             return {
-                "output": f"{ws}\n(File tools are confined to this folder; the shell starts "
-                          f"here but is not sandboxed and can reach outside it.)",
+                "output": f"{ws}\n(File tools are confined to this folder; sandboxed "
+                          f"subprocesses mount it as their only writable workspace.)",
                 "exit_code": 0,
             }
         return {

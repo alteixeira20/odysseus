@@ -10,6 +10,8 @@ the wire (SSE event + appended message + loop continuation).
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from enum import Enum
 from typing import Optional
 
 from src.agent.contracts import SupervisorAction, SupervisorDecision
@@ -23,6 +25,19 @@ from src.agent.providers.finish_reason import (
 # provider keeps truncating (e.g. a persistently too-low max_tokens config)
 # from silently consuming the entire round budget on retries.
 DEFAULT_MAX_TRUNCATION_CONTINUATIONS = 4
+
+
+class ContinuationDisposition(str, Enum):
+    NOT_TRUNCATED = "not_truncated"
+    RETRY = "retry"
+    RETRY_EXHAUSTED = "retry_exhausted"
+    UNSAFE_TO_RETRY = "unsafe_to_retry"
+
+
+@dataclass(frozen=True)
+class ContinuationEvaluation:
+    disposition: ContinuationDisposition
+    decision: Optional[SupervisorDecision] = None
 
 _CONTINUATION_INSTRUCTION = (
     "Your previous output was cut off because the "
@@ -52,25 +67,24 @@ def evaluate_truncation_continuation(
     continuation_count: int,
     force_answer: bool,
     max_continuations: int = DEFAULT_MAX_TRUNCATION_CONTINUATIONS,
-) -> Optional[SupervisorDecision]:
-    """Return a retry decision, or None if this round is not a safe truncation retry.
+) -> ContinuationEvaluation:
+    """Classify a provider cutoff without conflating it with normal completion.
 
     Callers must only invoke this for a round where no tool ran (``not
     tool_blocks``) — that is what makes the retry side-effect-free by
     construction: there is nothing a duplicate execution could repeat.
 
-    Returns None when: the round is on a forced-answer path (no more tool
-    turns to give), the round isn't classified as truncated, or the bounded
-    retry budget for this run is already spent.
+    A truncated response whose retry budget is spent remains incomplete.  It
+    must never fall through to the ordinary completion path.
     """
-    if force_answer:
-        return None
     if not classify_truncation(finished):
-        return None
+        return ContinuationEvaluation(ContinuationDisposition.NOT_TRUNCATED)
+    if force_answer:
+        return ContinuationEvaluation(ContinuationDisposition.UNSAFE_TO_RETRY)
     if continuation_count >= max_continuations:
-        return None
+        return ContinuationEvaluation(ContinuationDisposition.RETRY_EXHAUSTED)
     interruption_only = is_interruption_only(finished)
-    return SupervisorDecision(
+    decision = SupervisorDecision(
         action=SupervisorAction.RETRY_WITH_INSTRUCTION,
         reason=(
             "transport_interruption_continuation"
@@ -95,3 +109,12 @@ def evaluate_truncation_continuation(
             ),
         },
     )
+    return ContinuationEvaluation(ContinuationDisposition.RETRY, decision)
+
+
+__all__ = [
+    "ContinuationDisposition",
+    "ContinuationEvaluation",
+    "DEFAULT_MAX_TRUNCATION_CONTINUATIONS",
+    "evaluate_truncation_continuation",
+]

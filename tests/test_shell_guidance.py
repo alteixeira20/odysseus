@@ -9,7 +9,10 @@ in this turn's effective tool set.
 """
 
 from src.agent.prompting.contexts.shell_guidance import (
+    HOST_SHELL_AUTHORITY,
+    SANDBOX_SHELL_AUTHORITY,
     SHELL_GUIDANCE,
+    execution_authority_guidance,
     shell_guidance_if_available,
 )
 from src.agent.routing.tool_domains import domain_rules_for_tools
@@ -38,9 +41,19 @@ def test_helper_mirrors_domain_rules_gate():
     assert shell_guidance_if_available(None) is None
 
 
-def test_guidance_labels_host_shell_truthfully_not_a_sandbox():
-    assert "NOT a sandbox" in SHELL_GUIDANCE
-    assert "full host shell" in SHELL_GUIDANCE
+def test_guidance_describes_the_enforced_process_sandbox():
+    assert "isolated Linux namespace" in SANDBOX_SHELL_AUTHORITY
+    assert "no network" in SANDBOX_SHELL_AUTHORITY
+    assert "read-only host root" in SANDBOX_SHELL_AUTHORITY
+    assert "writable execution root" in SANDBOX_SHELL_AUTHORITY
+
+
+def test_authority_guidance_distinguishes_host_from_sandbox():
+    assert execution_authority_guidance("sandboxed") == SANDBOX_SHELL_AUTHORITY
+    assert execution_authority_guidance("host") == HOST_SHELL_AUTHORITY
+    assert execution_authority_guidance("disabled") is None
+    assert "normal host environment" in HOST_SHELL_AUTHORITY
+    assert "not a sandbox" in HOST_SHELL_AUTHORITY
 
 
 def test_guidance_states_action_commitment_rule():
@@ -81,12 +94,11 @@ def test_guidance_size_is_bounded():
 
 def test_guidance_never_advertises_a_tool_outside_the_turns_set():
     # The fragment itself only names tools that are foundational/always
-    # legitimate to mention (bash, get_workspace, read_file, grep, glob,
+    # legitimate to mention (bash, read_file, grep, glob,
     # edit_file, apply_patch) rather than any domain-specific tool that
     # could be absent this turn.
     advertised_tools = {
         "bash",
-        "get_workspace",
         "read_file",
         "grep",
         "glob",

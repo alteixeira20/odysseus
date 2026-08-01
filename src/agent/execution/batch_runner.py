@@ -58,6 +58,7 @@ class ToolBatchRequest:
     workspace: Optional[str]
     disabled_tools: set[str]
     allowed_tools: set[str]
+    execution_mode: str = "disabled"
     tool_policy: Any = None
     odysseus_qwen_finetune: bool = False
     odysseus_notes_finetune: bool = False
@@ -190,6 +191,7 @@ class ToolBatchRunner:
                         owner=request.owner,
                         progress_cb=push_progress,
                         workspace=request.workspace,
+                        execution_mode=request.execution_mode,
                         invocation_id=call_id,
                     )
 

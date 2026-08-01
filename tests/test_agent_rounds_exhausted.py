@@ -61,6 +61,10 @@ def test_emits_rounds_exhausted_when_cap_hit_mid_task(monkeypatch):
     # Every round returns a tool block -> never "done" -> loop exhausts the cap.
     events = _run_loop(monkeypatch, "```bash\necho hi\n```", max_rounds=2)
     assert any(e.get("type") == "rounds_exhausted" for e in events), events
+    terminal = next(e for e in events if e.get("type") == "run_state")
+    assert terminal["state"] == "rounds_exhausted"
+    assert terminal["reason"] == "rounds_exhausted"
+    assert terminal["resumable"] is True
 
 
 def test_no_rounds_exhausted_on_normal_finish(monkeypatch):
@@ -68,6 +72,36 @@ def test_no_rounds_exhausted_on_normal_finish(monkeypatch):
     # A plain answer (no tool block) -> done-break on round 1 -> no event.
     events = _run_loop(monkeypatch, "All done, here is your answer.", max_rounds=2)
     assert not any(e.get("type") == "rounds_exhausted" for e in events), events
+    assert next(e for e in events if e.get("type") == "run_state")["state"] == "completed"
+
+
+def test_tool_budget_exhaustion_is_not_reported_as_completed(monkeypatch):
+    _patch_common(monkeypatch)
+
+    async def provider(_candidates, messages, **kwargs):
+        tool_text = "```bash\necho one\n```\n```bash\necho two\n```"
+        yield "data: " + json.dumps({"delta": tool_text}) + "\n\n"
+        yield "data: [DONE]\n\n"
+
+    monkeypatch.setattr(al, "stream_llm_with_fallback", provider)
+    events = _types(
+        _collect(
+            al.stream_agent_loop(
+                "http://x/v1",
+                "m",
+                [{"role": "user", "content": "Run both checks"}],
+                max_rounds=2,
+                max_tool_calls=1,
+                relevant_tools={"bash"},
+                _is_teacher_run=True,
+            )
+        )
+    )
+
+    terminal = next(event for event in events if event.get("type") == "run_state")
+    assert terminal["state"] == "budget_exhausted"
+    assert terminal["reason"] == "tool_call_budget_exhausted"
+    assert terminal["resumable"] is True
 
 
 def test_emits_intent_nudge_exhausted_when_cap_is_exhausted(monkeypatch):

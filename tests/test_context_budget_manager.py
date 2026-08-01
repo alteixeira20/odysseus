@@ -169,3 +169,72 @@ def test_budget_is_reapplied_every_round_not_only_once(monkeypatch):
     # more than once — once at prep time is not enough for a multi-round run.
     assert calls["n"] >= 3
     assert len(apply_calls) >= 3
+
+
+def test_protected_context_remains_canonical_but_is_sanitized_for_every_provider_round(
+    monkeypatch,
+):
+    import src.agent_loop as agent_loop
+
+    protected = {
+        "role": "system",
+        "content": "ACTIVE DOCUMENT: retain me across rounds",
+        "_protected": True,
+        "_runtime_source": "active_document",
+    }
+    provider_requests = []
+    budget_protection = []
+    calls = {"n": 0}
+
+    async def fake_stream(_candidates, messages, **kwargs):
+        calls["n"] += 1
+        provider_requests.append([dict(message) for message in messages])
+        yield f'data: {json.dumps({"delta": "partial" if calls["n"] == 1 else "done"})}\n\n'
+        reason = "length" if calls["n"] == 1 else "stop"
+        yield f'data: {json.dumps({"type": "finish", "reason": reason})}\n\n'
+        yield "data: [DONE]\n\n"
+
+    monkeypatch.setattr(agent_loop, "get_setting", lambda key, default=None: default)
+    monkeypatch.setattr(agent_loop, "get_mcp_manager", lambda: None)
+    monkeypatch.setattr(agent_loop, "estimate_tokens", lambda *args, **kwargs: 10)
+    monkeypatch.setattr(agent_loop, "stream_llm_with_fallback", fake_stream)
+    monkeypatch.setattr(
+        agent_loop,
+        "_build_system_prompt",
+        lambda messages, *args, **kwargs: ([dict(protected), *messages], []),
+    )
+
+    real_apply = agent_loop._CONTEXT_BUDGET_MANAGER.apply
+
+    def spying_apply(messages, **kwargs):
+        budget_protection.append(
+            any(
+                message.get("content") == protected["content"]
+                and message.get("_protected") is True
+                for message in messages
+            )
+        )
+        return real_apply(messages, **kwargs)
+
+    monkeypatch.setattr(agent_loop._CONTEXT_BUDGET_MANAGER, "apply", spying_apply)
+
+    _collect(
+        agent_loop.stream_agent_loop(
+            "https://api.openai.com/v1",
+            "gpt-4o",
+            [{"role": "user", "content": "Inspect and complete the active work."}],
+            relevant_tools={"read_file"},
+            _is_teacher_run=True,
+        )
+    )
+
+    assert calls["n"] == 2
+    assert len(budget_protection) >= 2
+    assert all(budget_protection)
+    for request_messages in provider_requests:
+        retained = [
+            message for message in request_messages
+            if message.get("content") == protected["content"]
+        ]
+        assert len(retained) == 1
+        assert all(not key.startswith("_") for key in retained[0])

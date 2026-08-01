@@ -872,11 +872,22 @@ function initializeEventListeners() {
     // Research disables shell access
     const bashChk = el('bash-toggle');
     const bashBtn = el('bash-toggle-btn');
+    const hostShellChk = el('host-shell-toggle');
+    const hostShellBtn = el('host-shell-toggle-btn');
     if (active) {
       if (bashChk && bashChk.checked) {
         bashChk.checked = false;
         if (bashBtn) bashBtn.classList.remove('active');
         saveToolPref('bash', (loadToggleState().mode || 'chat'), false);
+      }
+      if (typeof window.__odysseusClearHostShellAuthorization === 'function') {
+        window.__odysseusClearHostShellAuthorization();
+      } else {
+        if (hostShellChk) hostShellChk.checked = false;
+        if (hostShellBtn) {
+          hostShellBtn.classList.remove('active');
+          hostShellBtn.setAttribute('aria-pressed', 'false');
+        }
       }
     }
     const s = loadToggleState(); s.research = active; saveToggleState(s);
@@ -1333,6 +1344,10 @@ function initializeEventListeners() {
           if (bashToggle) bashToggle.closest('.chat-input-toggle')?.style.setProperty('display', 'none');
           const bashBtn = document.getElementById('bash-toggle-btn');
           if (bashBtn) bashBtn.style.display = 'none';
+          const hostShellToggle = document.getElementById('host-shell-toggle');
+          if (hostShellToggle) hostShellToggle.checked = false;
+          const hostShellBtn = document.getElementById('host-shell-toggle-btn');
+          if (hostShellBtn) hostShellBtn.style.display = 'none';
         }
         // Hide document button
         if (!p.can_use_documents) {
@@ -1731,6 +1746,7 @@ function initializeEventListeners() {
   const TOOL_TOGGLE_TOAST_LABELS = {
     web: 'Web search',
     bash: 'Shell',
+    host_shell: 'Full host shell',
   };
 
   function showToolToggleToast(stateKey, active) {
@@ -1791,6 +1807,8 @@ function initializeEventListeners() {
       btn.classList.toggle('active', on);
       if (checkboxId) { const chk = el(checkboxId); if (chk) chk.checked = on; }
     });
+    const hostShellBtn = el('host-shell-toggle-btn');
+    if (hostShellBtn) hostShellBtn.style.display = mode === 'agent' ? '' : 'none';
   }
 
 	  // ── Agent / Chat mode toggle ──
@@ -1805,6 +1823,8 @@ function initializeEventListeners() {
     if (currentMode === 'chat') {
       const bashBtn = el('bash-toggle-btn');
       if (bashBtn) bashBtn.style.display = 'none';
+      const hostShellBtn = el('host-shell-toggle-btn');
+      if (hostShellBtn) hostShellBtn.style.display = 'none';
     }
 
     function setMode(mode) {
@@ -1894,7 +1914,8 @@ function initializeEventListeners() {
   const SPLASH_MAX = 2;
   const _toolSplashes = {
     web: { role: 'Web Search', text: 'Searches the web for relevant information to include in the response. Results are fetched and summarized before the AI answers.' },
-    bash: { role: 'Shell Access', text: 'Gives the AI access to a sandboxed shell for running commands, installing packages, and executing scripts. Use with caution.' },
+    bash: { role: 'Safe workspace shell', text: 'Runs tests, builds, scripts, and local Git inspection inside an isolated workspace with no network or host credentials.' },
+    host_shell: { role: 'Full host shell', text: 'One-run access to normal laptop tools, network, credentials, Docker sockets, and services. This is not sandboxed.' },
     builder: { role: 'Tool Builder', text: 'Create custom mini-apps and tools the AI can use. Describe what you need and the AI will build a tool you can reuse across conversations.' },
     research: { role: 'Deep Research', text: 'Multi-round web search with source analysis. Takes longer but produces comprehensive, well-sourced answers. Your next message will trigger a deep research cycle.' },
   };
@@ -1938,6 +1959,14 @@ function initializeEventListeners() {
       btn.classList.toggle('active', chk.checked);
       btn.setAttribute('aria-pressed', String(chk.checked));
       saveToolPref(stateKey, curMode, chk.checked);
+      if (
+        stateKey === 'bash'
+        && chk.checked
+        && el('host-shell-toggle')?.checked
+        && typeof window.__odysseusClearHostShellAuthorization === 'function'
+      ) {
+        window.__odysseusClearHostShellAuthorization();
+      }
       showToolToggleToast(stateKey, chk.checked);
       if (chk.checked) _showToolSplash(stateKey);
       // Web search and Research are mutually exclusive — Research takes priority
@@ -1951,6 +1980,57 @@ function initializeEventListeners() {
   }
   setupToggle('web-toggle-btn', 'web-toggle', 'web');
   setupToggle('bash-toggle-btn', 'bash-toggle', 'bash');
+  (function setupHostShellAuthorization() {
+    const btn = el('host-shell-toggle-btn');
+    const chk = el('host-shell-toggle');
+    if (!btn || !chk) return;
+    chk.checked = false;
+    btn.classList.remove('active');
+    btn.setAttribute('aria-pressed', 'false');
+    function clearAuthorization() {
+      chk.checked = false;
+      btn.classList.remove('active');
+      btn.setAttribute('aria-pressed', 'false');
+      const restoreSafe = btn.dataset.restoreSafeShell === 'true';
+      delete btn.dataset.restoreSafeShell;
+      if (restoreSafe) {
+        const safeChk = el('bash-toggle');
+        const safeBtn = el('bash-toggle-btn');
+        if (safeChk) safeChk.checked = true;
+        if (safeBtn) {
+          safeBtn.classList.add('active');
+          safeBtn.setAttribute('aria-pressed', 'true');
+        }
+      }
+    }
+    window.__odysseusClearHostShellAuthorization = clearAuthorization;
+    btn.addEventListener('click', () => {
+      if (chk.checked) {
+        clearAuthorization();
+        showToolToggleToast('host_shell', false);
+        return;
+      }
+      const approved = window.confirm(
+        'Grant Full host shell for the next agent run?\n\n' +
+        'The AI can use your normal network, credential helpers, SSH agent, ' +
+        'Docker socket, services, and filesystem permissions. This is not sandboxed.'
+      );
+      if (!approved) return;
+      const safeChk = el('bash-toggle');
+      const safeBtn = el('bash-toggle-btn');
+      btn.dataset.restoreSafeShell = String(!!safeChk?.checked);
+      if (safeChk) safeChk.checked = false;
+      if (safeBtn) {
+        safeBtn.classList.remove('active');
+        safeBtn.setAttribute('aria-pressed', 'false');
+      }
+      chk.checked = true;
+      btn.classList.add('active');
+      btn.setAttribute('aria-pressed', 'true');
+      showToolToggleToast('host_shell', true);
+      _showToolSplash('host_shell');
+    });
+  })();
   try { workspaceModule.initWorkspace(); } catch (_) {}
 
   // Document editor toggle (special: uses module panel, not a checkbox)
@@ -2250,7 +2330,7 @@ function initializeEventListeners() {
     if (!inputLeft || !overflowMenu || !overflowWrapper) return;
 
     // Buttons that can be collapsed (in reverse priority — last collapsed first)
-    const collapsibleIds = ['bash-toggle-btn', 'web-toggle-btn'];
+    const collapsibleIds = ['host-shell-toggle-btn', 'bash-toggle-btn', 'web-toggle-btn'];
     const collapsibleBtns = collapsibleIds.map(id => el(id)).filter(Boolean);
     // Map of toolbar btn id → overflow mirror element (created dynamically)
     const overflowMirrors = new Map();
@@ -2616,9 +2696,9 @@ function initializeEventListeners() {
         const beforeNobody = Storage.getJSON(Storage.KEYS.TOGGLES, {}) || {};
         if (!beforeNobody.nobody_prev_mode) beforeNobody.nobody_prev_mode = beforeNobody.mode || 'agent';
         Storage.setJSON(Storage.KEYS.TOGGLES, beforeNobody);
-        const _offIds = ['web-toggle', 'bash-toggle', 'research-toggle'];
+        const _offIds = ['web-toggle', 'bash-toggle', 'host-shell-toggle', 'research-toggle'];
         _offIds.forEach(id => { const c = el(id); if (c) c.checked = false; });
-        ['web-toggle-btn', 'bash-toggle-btn'].forEach(id => { const b = el(id); if (b) b.classList.remove('active'); });
+        ['web-toggle-btn', 'bash-toggle-btn', 'host-shell-toggle-btn'].forEach(id => { const b = el(id); if (b) b.classList.remove('active'); });
         if (typeof window.__odysseusSetChatMode === 'function') {
           window.__odysseusSetChatMode('chat');
         } else {
@@ -2738,7 +2818,7 @@ function initializeEventListeners() {
     'web-toggle-btn':      '#web-toggle-btn',
     'doc-toggle-btn':      '#overflow-doc-btn',
     'rag-toggle-btn':      '#overflow-rag-btn',
-    'bash-toggle-btn':     '#bash-toggle-btn',
+    'bash-toggle-btn':     '#bash-toggle-btn, #host-shell-toggle-btn',
     'overflow-plus-btn':   '.overflow-wrapper',
     'mode-toggle':         '.mode-toggle',
     'preset-mini-btn':     '#overflow-preset-btn',

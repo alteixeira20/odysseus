@@ -6,7 +6,10 @@ for the end-to-end version through the full agent loop).
 
 from src.agent.contracts import SupervisorAction
 from src.agent.providers.finish_reason import ProviderFinished, ProviderFinishReason
-from src.agent.supervision.continuation import evaluate_truncation_continuation
+from src.agent.supervision.continuation import (
+    ContinuationDisposition,
+    evaluate_truncation_continuation,
+)
 
 
 def _finished(**overrides):
@@ -24,9 +27,11 @@ def _finished(**overrides):
 
 
 def test_length_truncation_yields_retry_decision():
-    decision = evaluate_truncation_continuation(
+    evaluation = evaluate_truncation_continuation(
         _finished(), continuation_count=0, force_answer=False
     )
+    assert evaluation.disposition is ContinuationDisposition.RETRY
+    decision = evaluation.decision
     assert decision is not None
     assert decision.action is SupervisorAction.RETRY_WITH_INSTRUCTION
     assert decision.instruction
@@ -38,27 +43,29 @@ def test_clean_stop_yields_no_decision():
     finished = _finished(raw_reason="stop", normalized_reason=ProviderFinishReason.STOP)
     assert evaluate_truncation_continuation(
         finished, continuation_count=0, force_answer=False
-    ) is None
+    ).disposition is ContinuationDisposition.NOT_TRUNCATED
 
 
 def test_force_answer_round_never_continues_even_if_truncated():
-    decision = evaluate_truncation_continuation(
+    evaluation = evaluate_truncation_continuation(
         _finished(), continuation_count=0, force_answer=True
     )
-    assert decision is None
+    assert evaluation.disposition is ContinuationDisposition.UNSAFE_TO_RETRY
+    assert evaluation.decision is None
 
 
 def test_bounded_by_max_continuations():
     at_cap = evaluate_truncation_continuation(
         _finished(), continuation_count=4, force_answer=False, max_continuations=4
     )
-    assert at_cap is None
+    assert at_cap.disposition is ContinuationDisposition.RETRY_EXHAUSTED
+    assert at_cap.decision is None
 
     under_cap = evaluate_truncation_continuation(
         _finished(), continuation_count=3, force_answer=False, max_continuations=4
     )
-    assert under_cap is not None
-    assert under_cap.metadata["attempt"] == 4
+    assert under_cap.disposition is ContinuationDisposition.RETRY
+    assert under_cap.decision.metadata["attempt"] == 4
 
 
 def test_incomplete_native_call_without_length_still_continues():
@@ -68,10 +75,10 @@ def test_incomplete_native_call_without_length_still_continues():
         had_native_tool_call_fragment=True,
         had_incomplete_native_call=True,
     )
-    decision = evaluate_truncation_continuation(
+    evaluation = evaluate_truncation_continuation(
         finished, continuation_count=0, force_answer=False
     )
-    assert decision is not None
+    assert evaluation.disposition is ContinuationDisposition.RETRY
 
 
 def test_unclosed_fenced_call_still_continues():
@@ -80,7 +87,7 @@ def test_unclosed_fenced_call_still_continues():
         normalized_reason=ProviderFinishReason.UNKNOWN,
         had_unclosed_fenced_call=True,
     )
-    decision = evaluate_truncation_continuation(
+    evaluation = evaluate_truncation_continuation(
         finished, continuation_count=0, force_answer=False
     )
-    assert decision is not None
+    assert evaluation.disposition is ContinuationDisposition.RETRY

@@ -172,7 +172,7 @@ FUNCTION_TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "get_workspace",
-            "description": "Return the absolute path of the active workspace folder the user is working in. File tools are confined to it; the shell starts there but is not sandboxed. Call this first when the user refers to 'the project'/'the code'/'this folder' without a path, instead of asking them. Takes no arguments.",
+            "description": "Return the absolute path of the active workspace folder the user is working in. File tools are confined to it; sandboxed subprocesses mount it as their only writable workspace. Call this first when the user refers to 'the project'/'the code'/'this folder' without a path, instead of asking them. Takes no arguments.",
             "parameters": {"type": "object", "properties": {}, "required": []}
         }
     },
@@ -185,7 +185,8 @@ FUNCTION_TOOL_SCHEMAS = [
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "File path to write to"},
-                    "content": {"type": "string", "description": "File content to write"}
+                    "content": {"type": "string", "description": "File content to write"},
+                    "expected_sha256": {"type": "string", "description": "Optional current SHA-256 returned by a prior read/write; use 'missing' when creating a file that must not already exist"}
                 },
                 "required": ["path", "content"]
             }
@@ -202,7 +203,8 @@ FUNCTION_TOOL_SCHEMAS = [
                     "path": {"type": "string", "description": "File path to edit"},
                     "old_string": {"type": "string", "description": "Exact text to replace (must match the file, including indentation)"},
                     "new_string": {"type": "string", "description": "Replacement text"},
-                    "replace_all": {"type": "boolean", "description": "Replace all occurrences instead of requiring a unique match"}
+                    "replace_all": {"type": "boolean", "description": "Replace all occurrences instead of requiring a unique match"},
+                    "expected_sha256": {"type": "string", "description": "Optional SHA-256 of the current file; rejects a stale concurrent edit"}
                 },
                 "required": ["path", "old_string", "new_string"]
             }
@@ -212,13 +214,18 @@ FUNCTION_TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "apply_patch",
-            "description": "Apply a multi-file source-code patch to disk. Use for real project files in the workspace when several edits belong together. Patch must use *** Begin Patch / *** End Patch with Add File, Update File, or Delete File sections. Prefer this over bash redirects/heredocs/sed.",
+            "description": "Apply a staged multi-file source-code transaction with rollback on ordinary commit failure. Each file replacement is atomic, but the collection is not globally atomic across process death or power loss. Patch must use *** Begin Patch / *** End Patch with Add File, Update File, or Delete File sections. Prefer this over bash redirects/heredocs/sed.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "patch_text": {
                         "type": "string",
                         "description": "Patch text beginning with *** Begin Patch and ending with *** End Patch"
+                    },
+                    "expected_sha256": {
+                        "type": "object",
+                        "additionalProperties": {"type": "string"},
+                        "description": "Optional map of patch path to its expected current SHA-256 (or 'missing')"
                     }
                 },
                 "required": ["patch_text"]

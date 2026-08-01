@@ -68,7 +68,13 @@ async def test_ordinary_completion_has_exactly_one_terminal_state_before_done(mo
     chunks = await _run(monkeypatch, provider)
 
     assert _terminal_events(chunks) == [
-        {"type": "run_state", "state": "completed", "terminal": True, "reason": "completed"}
+        {
+            "type": "run_state",
+            "state": "completed",
+            "terminal": True,
+            "reason": "completed",
+            "resumable": False,
+        }
     ]
     assert chunks[-2].startswith('data: {"type": "run_state"')
     assert chunks[-1] == "data: [DONE]\n\n"
@@ -243,7 +249,7 @@ async def test_announcement_only_round_is_nudged_then_executes(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_detached_run_synthesizes_one_terminal_state_and_done(monkeypatch):
+async def test_detached_run_marks_generator_close_without_done_incomplete(monkeypatch):
     monkeypatch.setattr(agent_runs, "_RUNS", {})
 
     async def producer():
@@ -254,7 +260,9 @@ async def test_detached_run_synthesizes_one_terminal_state_and_done(monkeypatch)
     chunks = [chunk async for chunk in agent_runs.subscribe("terminal-contract")]
 
     assert len(_terminal_events(chunks)) == 1
-    assert _terminal_events(chunks)[0]["state"] == "completed"
+    assert _terminal_events(chunks)[0]["state"] == "incomplete"
+    assert _terminal_events(chunks)[0]["reason"] == "generator_closed_without_done"
+    assert _terminal_events(chunks)[0]["resumable"] is True
     assert chunks[-1] == "data: [DONE]\n\n"
 
 
@@ -273,3 +281,33 @@ async def test_detached_run_exception_has_one_error_terminal_and_done(monkeypatc
     assert len(terminals) == 1
     assert terminals[0]["state"] == "error"
     assert chunks[-1] == "data: [DONE]\n\n"
+
+
+@pytest.mark.asyncio
+async def test_explicit_error_terminal_controls_internal_status_after_done(monkeypatch):
+    monkeypatch.setattr(agent_runs, "_RUNS", {})
+
+    async def producer():
+        yield 'data: {"type":"run_state","state":"error","reason":"provider_error","terminal":true}\n\n'
+        yield "data: [DONE]\n\n"
+
+    run = agent_runs.start("error-status-contract", producer())
+    chunks = [chunk async for chunk in agent_runs.subscribe("error-status-contract")]
+
+    assert run.status == "error"
+    assert [event["state"] for event in _terminal_events(chunks)] == ["error"]
+
+
+@pytest.mark.asyncio
+async def test_exception_overrides_uncommitted_success_terminal(monkeypatch):
+    monkeypatch.setattr(agent_runs, "_RUNS", {})
+
+    async def producer():
+        yield 'data: {"type":"run_state","state":"completed","reason":"premature","terminal":true}\n\n'
+        raise RuntimeError("failed before protocol completion")
+
+    run = agent_runs.start("premature-success-contract", producer())
+    chunks = [chunk async for chunk in agent_runs.subscribe("premature-success-contract")]
+
+    assert run.status == "error"
+    assert [event["state"] for event in _terminal_events(chunks)] == ["error"]

@@ -11,7 +11,9 @@ RUN bash /usr/local/bin/build-realesrgan-wheels.sh /wheels
 
 FROM python:3.14-slim
 
-# System deps. tmux is required by Cookbook for background downloads/serves.
+# System deps. bubblewrap + prlimit (from util-linux) are the mandatory,
+# fail-closed boundary used by agent Bash/Python/background process tools.
+# tmux is required by Cookbook for background downloads/serves.
 # openssh-client is required for Cookbook remote server tests, setup, probes,
 # downloads, and serves from Docker installs.
 # git/cmake are required when Cookbook builds llama.cpp on first llama.cpp
@@ -28,6 +30,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     nodejs \
     npm \
     chromium \
+    bubblewrap \
+    util-linux \
     tmux \
     openssh-client \
     gosu \

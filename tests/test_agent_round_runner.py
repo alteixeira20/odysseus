@@ -93,6 +93,48 @@ async def test_transient_pre_content_error_retries_then_streams_answer():
 
 
 @pytest.mark.asyncio
+async def test_successful_retry_clears_attempt_local_error_state():
+    first_error = _error_chunk(
+        status=502,
+        text="read timed out",
+        error_kind="read_timeout",
+    )
+    factory, calls = _stream_factory(
+        [
+            [first_error],
+            [
+                _data_chunk({"delta": "answer"}),
+                _data_chunk({"type": "finish", "reason": "stop"}),
+                "data: [DONE]\n\n",
+            ],
+        ]
+    )
+    accumulator = ProviderRoundAccumulator(
+        requested_model="model",
+        actual_model="model",
+        round_number=1,
+    )
+    runner = ProviderAttemptRunner(
+        _request(),
+        accumulator,
+        factory,
+        sleeper=_no_sleep,
+        uniform=lambda low, high: 0,
+        clock=lambda: 1,
+    )
+
+    _ = [chunk async for chunk in runner.stream()]
+
+    assert calls["count"] == 2
+    assert runner.outcome is not None
+    assert runner.outcome.fatal is False
+    assert runner.outcome.error_kind is None
+    assert runner.outcome.terminal_error_chunk is None
+    assert runner.outcome.deadline_exceeded is False
+    assert runner.outcome.raw_finish_reason == "stop"
+
+
+@pytest.mark.asyncio
 async def test_three_transient_failures_produce_one_terminal_outcome():
     error = _error_chunk(status=503, retry_after=0)
     factory, calls = _stream_factory([[error], [error], [error]])

@@ -97,16 +97,12 @@ def test_agent_loop_expands_browser_mcp_tools_from_connected_server():
 
 
 def test_disabled_tools_respects_missing_vs_explicit_toggles():
-    """Bash still defers to privileges, but web is an explicit per-turn opt-in.
-    """
+    """Bash and web are explicit per-turn capabilities."""
     source = _CHAT_ROUTES.read_text(encoding="utf-8")
 
-    # The fix changes:
-    #   if str(allow_bash).lower() != "true":
-    # to:
-    #   if allow_bash is not None and str(allow_bash).lower() != "true":
-    assert "allow_bash is not None" in source, (
-        "disabled_tools check must guard against allow_bash being None"
+    assert "resolve_execution_mode(" in source
+    assert "if not shell_enabled:" in source, (
+        "missing shell approval must fail closed like an explicit false"
     )
     assert "web_search_enabled_for_turn(allow_web_search, use_web)" in source, (
         "web tools must be gated through the explicit per-turn web setting"
@@ -119,12 +115,34 @@ def test_disabled_tools_respects_missing_vs_explicit_toggles():
     )
 
 
-def test_workspace_auto_escalation_keeps_shell_tools():
-    """Workspace/shell auto-routing must not use the light typed-tool clamp."""
+def test_workspace_auto_escalation_never_overrides_explicit_shell_denial():
+    """A discovered path supplies context, never process-execution authority."""
     source = _CHAT_ROUTES.read_text(encoding="utf-8")
     assert '_workspace_agent_intent = _tool_intent.category in {"shell", "workspace"}' in source
-    assert "allow_bash = \"true\"" in source
     assert "if auto_escalated and not _workspace_agent_intent:" in source
+
+    tree = ast.parse(source)
+    chat_stream = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "chat_stream"
+    )
+    auto_workspace_if = next(
+        node for node in ast.walk(chat_stream)
+        if isinstance(node, ast.If)
+        and "if _auto_workspace:" in (ast.get_source_segment(source, node) or "")
+    )
+    assigned = {
+        target.id
+        for node in ast.walk(auto_workspace_if)
+        if isinstance(node, (ast.Assign, ast.AnnAssign))
+        for target in (
+            node.targets if isinstance(node, ast.Assign) else [node.target]
+        )
+        if isinstance(target, ast.Name)
+    }
+    assert "workspace" in assigned
+    assert "allow_bash" not in assigned
+    assert "shell_enabled" not in assigned
 
 
 # ── Functional tests of the disabled-tools logic ───────────────
@@ -145,9 +163,8 @@ def _build_disabled_tools(
     """
     disabled_tools = set()
 
-    # Issue #3229 fix: only disable bash when explicitly set to a falsy value.
-    if allow_bash is not None and str(allow_bash).lower() != "true":
-        disabled_tools.add("bash")
+    if str(allow_bash).lower() != "true":
+        disabled_tools.update({"bash", "python", "manage_bg_jobs"})
     search_enabled = web_search_enabled_for_turn(allow_web_search, use_web)
     if is_web_search_explicitly_denied(allow_web_search) or not search_enabled:
         disabled_tools.update(WEB_TOOL_NAMES)
@@ -257,12 +274,10 @@ def test_prompt_web_intent_does_not_enable_web_without_setting():
     assert "web_fetch" in disabled
 
 
-def test_admin_user_gets_bash_enabled_by_default():
-    """When allow_bash is not set and user has can_use_bash privilege,
-    bash must NOT be disabled.
-    """
+def test_admin_user_without_per_run_approval_does_not_get_bash():
+    """Privilege is necessary but does not replace per-run approval."""
     disabled = _build_disabled_tools(allow_bash=None, can_use_bash=True)
-    assert "bash" not in disabled
+    assert {"bash", "python", "manage_bg_jobs"} <= disabled
 
 
 def test_web_search_disabled_by_default_without_explicit_turn_setting():
@@ -331,7 +346,10 @@ def test_frontend_always_sends_explicit_allow_bash():
     source = _CHAT_JS.read_text(encoding="utf-8")
     request_source = (_CHAT_JS.parent / "agentToolRequest.js").read_text(encoding="utf-8")
     assert "appendAgentToolRequestFields(fd" in source
-    assert "allow_bash: shellEnabled ? 'true' : 'false'" in request_source
+    assert "shell_mode: shellMode" in request_source
+    assert "shellMode === 'disabled' ? 'false' : 'true'" in request_source
+    assert "hostShellEnabled" in request_source
+    assert "_hostShell.checked = false" in source
 
 
 def test_frontend_sends_explicit_allow_web_search_false_in_agent_mode():

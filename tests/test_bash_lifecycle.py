@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from src import agent_loop, agent_runs, bg_jobs
+from src.execution_policy import ExecutionMode
 from src.agent_tools import ToolBlock
 from src.agent_tools.subprocess_tools import (
     DEFAULT_BASH_TIMEOUT,
@@ -377,6 +378,7 @@ def test_non_tmux_fallback_is_bounded_and_preserves_partial_streams(tmp_path):
             timeout=0.3,
             progress_cb=None,
             invocation_id="directFallbackNonce123",
+            execution_mode=ExecutionMode.SANDBOXED,
         )
     )
 
@@ -515,7 +517,7 @@ async def test_agent_run_stop_reaches_real_tmux_command(
 
 
 @pytest.mark.asyncio
-async def test_last_client_disconnect_reaches_real_tmux_command(
+async def test_explicit_stop_reaches_real_tmux_command_after_detached_disconnect(
     monkeypatch,
     tmux_harness,
     tmp_path,
@@ -538,8 +540,12 @@ async def test_last_client_disconnect_reaches_real_tmux_command(
     subscriber = agent_runs.subscribe(session_id)
     await subscriber.__anext__()
     await asyncio.wait_for(entered.wait(), timeout=1)
-    started = time.monotonic()
     await subscriber.aclose()
+    await asyncio.sleep(0.05)
+    assert run.status == "running"
+
+    started = time.monotonic()
+    assert agent_runs.stop(session_id) is True
     await asyncio.wait_for(run.task, timeout=3)
 
     assert time.monotonic() - started < 3
@@ -575,6 +581,7 @@ async def test_background_marker_bypasses_foreground_watchdog(
         owner="admin",
         workspace=str(tmp_path),
         allowed_tools={"bash"},
+        execution_mode="sandboxed",
     )
 
     assert description.startswith("bash (background)")
@@ -582,7 +589,12 @@ async def test_background_marker_bypasses_foreground_watchdog(
     assert result["exit_code"] == 0
     assert launched == [(
         "sleep 30",
-        {"session_id": "background-contract", "cwd": str(tmp_path)},
+        {
+            "session_id": "background-contract",
+            "cwd": str(tmp_path),
+            "owner": "admin",
+            "execution_mode": "sandboxed",
+        },
     )]
 
 
