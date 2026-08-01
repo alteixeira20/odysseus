@@ -1,5 +1,6 @@
 import asyncio
 import os
+from dataclasses import replace
 
 import pytest
 
@@ -12,6 +13,32 @@ from src.execution_policy import (
 )
 from src.tool_execution import execute_tool_block
 from src import tool_execution
+from src.agent.runtime_v2.authority import (
+    HOST_AUTHORIZATIONS,
+    prepare_execution_context,
+)
+from src.agent.runtime_v2.contracts import RunBudgets, ToolResult, ToolResultStatus
+from src.agent.tools.bootstrap import TOOL_REGISTRY
+
+
+def _execution_context(tmp_path, *, mode="sandboxed", owner="admin", session="session"):
+    token = None
+    if mode == "host":
+        token = HOST_AUTHORIZATIONS.issue(
+            owner_id=owner,
+            session_id=session,
+        ).token
+    context, reason = prepare_execution_context(
+        owner_id=owner,
+        session_id=session,
+        requested_mode=mode,
+        selected_workspace=str(tmp_path),
+        budgets=RunBudgets(),
+        tool_catalog_revision=TOOL_REGISTRY.revision,
+        host_authorization_token=token,
+    )
+    assert reason == "requested"
+    return context
 
 
 def test_request_mode_requires_legacy_boolean_and_explicit_host_value():
@@ -37,20 +64,20 @@ async def test_dispatcher_rejects_process_tool_without_typed_authority(tmp_path)
         workspace=str(tmp_path),
         allowed_tools={"bash"},
     )
-    assert result["error_type"] == "approval_required"
-    assert result["execution_mode"] == "disabled"
+    assert result["error_type"] == "tool_not_exposed"
+    assert result["completion_state"] == "denied"
 
 
 @pytest.mark.asyncio
 async def test_host_mode_inherits_normal_environment_and_reports_mode(tmp_path, monkeypatch):
     monkeypatch.setenv("ODYSSEUS_HOST_MODE_PROBE", "host-visible")
-    monkeypatch.setattr(tool_execution, "_owner_is_admin", lambda owner: True)
+    context = _execution_context(tmp_path, mode="host")
     _, result = await execute_tool_block(
         ToolBlock("bash", 'printf "%s" "$ODYSSEUS_HOST_MODE_PROBE"'),
         owner="admin",
         workspace=str(tmp_path),
         allowed_tools={"bash"},
-        execution_mode="host",
+        execution_context=context,
     )
     assert result["exit_code"] == 0
     assert result["output"] == "host-visible"
@@ -59,13 +86,18 @@ async def test_host_mode_inherits_normal_environment_and_reports_mode(tmp_path, 
 
 @pytest.mark.asyncio
 async def test_host_python_uses_selected_workspace_and_mode(tmp_path, monkeypatch):
-    monkeypatch.setattr(tool_execution, "_owner_is_admin", lambda owner: True)
+    context = _execution_context(tmp_path, mode="host")
+    authority = replace(
+        context.authority_grant,
+        approved_effects=frozenset({"process.execute.host:python"}),
+    )
+    context = replace(context, authority_grant=authority)
     _, result = await execute_tool_block(
         ToolBlock("python", "import os; print(os.getcwd())"),
         owner="admin",
         workspace=str(tmp_path),
         allowed_tools={"python"},
-        execution_mode="host",
+        execution_context=context,
     )
     assert result["exit_code"] == 0
     assert result["output"] == os.path.realpath(tmp_path)
@@ -73,23 +105,28 @@ async def test_host_python_uses_selected_workspace_and_mode(tmp_path, monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_host_mode_is_independent_from_workspace_selection(tmp_path, monkeypatch):
-    monkeypatch.setattr(tool_execution, "_owner_is_admin", lambda owner: True)
+async def test_host_mode_without_an_explicit_root_never_uses_process_cwd(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    _, result = await execute_tool_block(
-        ToolBlock("bash", "pwd"),
-        owner="admin",
-        allowed_tools={"bash"},
-        execution_mode="host",
+    authorization = HOST_AUTHORIZATIONS.issue(
+        owner_id="admin", session_id="host-no-root"
     )
-    assert result["exit_code"] == 0
-    assert result["output"] == str(tmp_path)
-    assert result["execution_mode"] == "host"
+    context, reason = prepare_execution_context(
+        owner_id="admin",
+        session_id="host-no-root",
+        requested_mode="host",
+        selected_workspace=None,
+        budgets=RunBudgets(),
+        tool_catalog_revision=TOOL_REGISTRY.revision,
+        host_authorization_token=authorization.token,
+    )
+    assert context.execution_mode is ExecutionMode.DISABLED
+    assert context.execution_root.path != os.path.realpath(tmp_path)
+    assert context.execution_root.source.value == "ephemeral_workspace"
+    assert reason == "host_execution_requires_selected_or_configured_root"
 
 
 @pytest.mark.asyncio
-async def test_safe_mode_uses_server_working_tree_without_granting_file_tools(tmp_path, monkeypatch):
-    monkeypatch.setattr(tool_execution, "_owner_is_admin", lambda owner: True)
+async def test_safe_mode_without_workspace_uses_ephemeral_root_not_server_cwd(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     _, result = await execute_tool_block(
         ToolBlock("bash", "pwd"),
@@ -98,7 +135,8 @@ async def test_safe_mode_uses_server_working_tree_without_granting_file_tools(tm
         execution_mode="sandboxed",
     )
     assert result["exit_code"] == 0
-    assert result["output"] == str(tmp_path)
+    assert result["output"] != str(tmp_path)
+    assert result["output"].startswith("/tmp/odysseus-agent-workspace-")
     assert result["execution_mode"] == "sandboxed"
 
 
@@ -117,7 +155,7 @@ async def test_host_authority_survives_tool_continuation_rounds(tmp_path, monkey
         ),
     )
     rounds = 0
-    dispatched_modes = []
+    dispatched_contexts = []
 
     async def provider(*args, **kwargs):
         nonlocal rounds
@@ -129,12 +167,26 @@ async def test_host_authority_survives_tool_continuation_rounds(tmp_path, monkey
             yield 'data: {"type": "finish", "reason": "stop"}\n\n'
         yield "data: [DONE]\n\n"
 
-    async def execute(block, **kwargs):
-        dispatched_modes.append(kwargs.get("execution_mode"))
-        return "bash: ok", {"output": "first", "exit_code": 0}
+    async def execute(call, execution_context, **kwargs):
+        dispatched_contexts.append(execution_context)
+        return ToolResult(
+            call_id=call.call_id,
+            canonical_name=call.canonical_name,
+            status=ToolResultStatus.SUCCESS,
+            data={"text": "first", "exit_code": 0},
+            backend="test",
+        )
 
     monkeypatch.setattr(agent_loop, "stream_llm_with_fallback", provider)
-    monkeypatch.setattr(agent_loop, "execute_tool_block", execute)
+    monkeypatch.setattr(
+        "src.agent.execution.batch_runner.execute_normalized_tool_call",
+        execute,
+    )
+    context = _execution_context(
+        tmp_path,
+        mode="host",
+        session="continuation-session",
+    )
     events = [
         event
         async for event in agent_loop.stream_agent_loop(
@@ -144,14 +196,14 @@ async def test_host_authority_survives_tool_continuation_rounds(tmp_path, monkey
             relevant_tools={"bash"},
             owner="admin",
             workspace=str(tmp_path),
-            shell_enabled="host",
+            execution_context=context,
             max_rounds=3,
             _is_teacher_run=True,
         )
     ]
 
     assert rounds == 2
-    assert dispatched_modes == ["host"]
+    assert dispatched_contexts == [context]
     diagnostic = next(
         __import__("json").loads(event[6:])
         for event in events

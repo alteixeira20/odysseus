@@ -31,7 +31,8 @@ def _call(args, session_id="s1", owner=None):
 def test_unknown_action_rejected():
     _, result = _call({"action": "bogus"})
     assert result["exit_code"] == 1
-    assert "unknown action" in result["error"]
+    assert result["error_type"] == "argument_validation_error"
+    assert "bogus" in result["error"]
 
 
 def test_create_then_read():

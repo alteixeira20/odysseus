@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from src import agent_loop, agent_runs
+from src.agent.runtime_v2.contracts import ToolResult, ToolResultStatus
 
 
 def _patch_runtime(monkeypatch):
@@ -192,7 +193,14 @@ async def test_incomplete_fenced_call_continues_without_dispatch(monkeypatch):
 @pytest.mark.asyncio
 async def test_complete_tool_from_interrupted_round_executes_exactly_once(monkeypatch):
     provider_round = 0
-    execute = AsyncMock(return_value=("bash: pwd", {"output": "/work", "exit_code": 0}))
+    execute = AsyncMock()
+    execute.side_effect = lambda call, context, **kwargs: ToolResult(
+        call_id=call.call_id,
+        canonical_name=call.canonical_name,
+        status=ToolResultStatus.SUCCESS,
+        data={"text": "/work", "exit_code": 0},
+        backend="test",
+    )
 
     async def provider(*args, **kwargs):
         nonlocal provider_round
@@ -210,7 +218,10 @@ async def test_complete_tool_from_interrupted_round_executes_exactly_once(monkey
 
     _patch_runtime(monkeypatch)
     monkeypatch.setattr(agent_loop, "stream_llm_with_fallback", provider)
-    monkeypatch.setattr(agent_loop, "execute_tool_block", execute)
+    monkeypatch.setattr(
+        "src.agent.execution.batch_runner.execute_normalized_tool_call",
+        execute,
+    )
     chunks = await _run(monkeypatch, provider)
 
     assert provider_round == 2
@@ -221,7 +232,14 @@ async def test_complete_tool_from_interrupted_round_executes_exactly_once(monkey
 @pytest.mark.asyncio
 async def test_announcement_only_round_is_nudged_then_executes(monkeypatch):
     provider_round = 0
-    execute = AsyncMock(return_value=("bash: pwd", {"output": "/work", "exit_code": 0}))
+    execute = AsyncMock()
+    execute.side_effect = lambda call, context, **kwargs: ToolResult(
+        call_id=call.call_id,
+        canonical_name=call.canonical_name,
+        status=ToolResultStatus.SUCCESS,
+        data={"text": "/work", "exit_code": 0},
+        backend="test",
+    )
 
     async def provider(*args, **kwargs):
         nonlocal provider_round
@@ -240,7 +258,10 @@ async def test_announcement_only_round_is_nudged_then_executes(monkeypatch):
 
     _patch_runtime(monkeypatch)
     monkeypatch.setattr(agent_loop, "stream_llm_with_fallback", provider)
-    monkeypatch.setattr(agent_loop, "execute_tool_block", execute)
+    monkeypatch.setattr(
+        "src.agent.execution.batch_runner.execute_normalized_tool_call",
+        execute,
+    )
     chunks = await _run(monkeypatch, provider)
 
     assert provider_round == 3

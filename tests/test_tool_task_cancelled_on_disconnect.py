@@ -29,12 +29,13 @@ import asyncio
 import json
 
 import src.agent_loop as al
+import src.agent.execution.batch_runner as batch_runner
 
 
 def test_tool_task_cancelled_on_generator_close(monkeypatch):
     cancelled = {"v": False}
 
-    async def _slow_exec(block, *a, progress_cb=None, **k):
+    async def _slow_exec(call, execution_context, *, progress_cb=None):
         if progress_cb:
             await progress_cb({"elapsed_s": 1, "tail": "running"})
         try:
@@ -42,12 +43,16 @@ def test_tool_task_cancelled_on_generator_close(monkeypatch):
         except asyncio.CancelledError:
             cancelled["v"] = True
             raise
-        return ("bash", {"output": "ok", "exit_code": 0})
+        raise AssertionError("the sleeping tool should be cancelled before returning")
 
     monkeypatch.setattr(al, "get_setting", lambda key, default=None: default, raising=False)
     monkeypatch.setattr(al, "get_mcp_manager", lambda: None, raising=False)
     monkeypatch.setattr(al, "estimate_tokens", lambda *a, **k: 10, raising=False)
-    monkeypatch.setattr(al, "execute_tool_block", _slow_exec, raising=False)
+    monkeypatch.setattr(
+        batch_runner,
+        "execute_normalized_tool_call",
+        _slow_exec,
+    )
 
     native_calls = [{"name": "bash", "arguments": json.dumps({"command": "sleep 60"})}]
 
@@ -64,11 +69,12 @@ def test_tool_task_cancelled_on_generator_close(monkeypatch):
             [{"role": "user", "content": "run sleep 60"}],
             max_rounds=2,
             relevant_tools={"bash"},
+            shell_enabled=True,
         )
         saw_tool_start = False
         saw_tool_progress = False
         async for chunk in gen:
-            if '"type": "tool_start"' in chunk:
+            if '"type":"tool_started"' in chunk or '"type": "tool_started"' in chunk:
                 saw_tool_start = True
             elif '"type": "tool_progress" ' in chunk or '"type": "tool_progress"' in chunk:
                 saw_tool_progress = True

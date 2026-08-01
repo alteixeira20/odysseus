@@ -1,15 +1,10 @@
 """Coverage for the canonical tool registry (src/agent/tools/registry.py,
 src/agent/tools/bootstrap.py).
 
-This registry is a *validating* layer over the legacy scattered tool
-sources this pass (src/tool_schemas.py, src/agent_tools/__init__.py,
-src/tool_index.py, src/effective_tools.py, src/tool_security.py) — see
-the module docstrings for why production dispatch doesn't source from it
-yet. These tests cover: the registry's own validation logic in isolation,
-that building it from the real production tool set produces zero
-problems, that its derived exports agree with the legacy sources, and the
-concrete drift bug it caught (tail_serve_output missing from TOOL_TAGS,
-fixed alongside this registry in src/agent_tools/__init__.py).
+Runtime V2 definitions are authoritative for the migrated coding slice;
+legacy collections remain bootstrap inputs only for non-migrated tools.
+These tests verify both the typed registry invariants and that compatibility
+aliases cannot become a second provider-facing schema or dispatch source.
 """
 
 from src.agent.tools.registry import (
@@ -251,17 +246,34 @@ def test_production_registry_covers_every_protected_foundational_tool():
         assert registry.get(name).handler is not None
 
 
-def test_production_registry_schema_names_match_legacy_source():
+def test_production_registry_replaces_migrated_legacy_schemas():
     from src.agent_tools import TOOL_HANDLERS
     from src.tool_schemas import FUNCTION_TOOL_SCHEMAS
     from src.agent.tools.bootstrap import build_default_registry
+    from src.agent.runtime_v2.tool_definitions import (
+        MIGRATED_CANONICAL_NAMES,
+        MIGRATED_LEGACY_NAMES,
+    )
 
     registry = build_default_registry()
     legacy_schema_names = {s["function"]["name"] for s in FUNCTION_TOOL_SCHEMAS}
     registry_schema_names = {s["function"]["name"] for s in registry.function_schemas()}
-    assert registry_schema_names == legacy_schema_names
+    migrated_legacy_schemas = (
+        MIGRATED_LEGACY_NAMES | (MIGRATED_CANONICAL_NAMES & legacy_schema_names)
+    )
+    assert (
+        registry_schema_names - MIGRATED_CANONICAL_NAMES
+        == legacy_schema_names - migrated_legacy_schemas
+    )
+    assert MIGRATED_LEGACY_NAMES.isdisjoint(registry_schema_names)
+    assert (MIGRATED_CANONICAL_NAMES - {"run_host_command"}) <= registry_schema_names
 
-    assert set(registry.handlers().keys()) == set(TOOL_HANDLERS.keys())
+    registry_handlers = set(registry.handlers())
+    legacy_handlers = set(TOOL_HANDLERS)
+    assert (
+        registry_handlers - MIGRATED_CANONICAL_NAMES
+        == legacy_handlers - (MIGRATED_LEGACY_NAMES | MIGRATED_CANONICAL_NAMES)
+    )
 
 
 def test_production_registry_accepted_names_cover_tool_tags():

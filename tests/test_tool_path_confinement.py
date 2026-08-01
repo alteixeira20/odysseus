@@ -243,7 +243,8 @@ async def test_read_file_dispatch_blocks_etc_shadow(monkeypatch):
         _make_block("read_file", "/etc/shadow"),
         owner="admin-user",
     )
-    assert "outside the allowed roots" in (result.get("error") or "")
+    assert result.get("error_type") == "effect_resolution_error"
+    assert "outside the execution root" in (result.get("error") or "")
     assert result.get("exit_code") == 1
 
 
@@ -271,7 +272,8 @@ async def test_write_file_dispatch_blocks_authorized_keys(monkeypatch):
         _make_block("write_file", "~/.ssh/authorized_keys\nssh-rsa AAAAB3..."),
         owner="admin-user",
     )
-    assert "sensitive directory" in (result.get("error") or "")
+    assert result.get("error_type") == "effect_resolution_error"
+    assert "sensitive or excluded" in (result.get("error") or "")
     assert result.get("exit_code") == 1
 
 
@@ -299,5 +301,6 @@ async def test_write_file_dispatch_blocks_cron(monkeypatch):
         _make_block("write_file", "/etc/cron.d/agent-payload\n* * * * * root /tmp/p\n"),
         owner="admin-user",
     )
-    assert "outside the allowed roots" in (result.get("error") or "")
+    assert result.get("error_type") == "effect_resolution_error"
+    assert "outside the execution root" in (result.get("error") or "")
     assert result.get("exit_code") == 1

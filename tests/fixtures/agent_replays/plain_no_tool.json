@@ -13,7 +13,7 @@
   ],
   "expected_events": [
     {"type": "run_status", "phase": "preparing", "label": "Preparing agent"},
-    {"type": "effective_tools", "names": ["ask_user", "manage_plan", "update_plan"]},
+    {"type": "effective_tools", "names": ["ask_user", "find_files", "plan", "read_files", "search_text", "workspace_context"]},
     {"type": "run_status", "phase": "prompt_ready", "label": "Prompt ready"},
     {"type": "run_status", "phase": "contacting_provider", "label": "Contacting provider"},
     {"delta": "Plain answer."},

@@ -697,9 +697,14 @@ async def test_app_api_endpoint_discovery_hides_cookbook_host_control_routes(mon
 
 
 @pytest.mark.asyncio
-async def test_public_agent_policy_blocks_sensitive_tools(monkeypatch):
+async def test_public_agent_policy_blocks_sensitive_tools(monkeypatch, tmp_path):
     auth_mod = _install_core_auth_stub(monkeypatch)
+    from src.agent.runtime_v2.authority import prepare_execution_context
+    from src.agent.runtime_v2.contracts import RunBudgets
+    from src.agent.tools.bootstrap import TOOL_REGISTRY
+    from src.execution_policy import ExecutionMode
     from src.tool_execution import execute_tool_block
+    from src.tool_security import blocked_tools_for_owner
 
     class FakeAuth:
         is_configured = True
@@ -719,7 +724,7 @@ async def test_public_agent_policy_blocks_sensitive_tools(monkeypatch):
         "ai_draft_email_reply", "archive_email", "delete_email",
         "mark_email_read", "bulk_email", "download_attachment",
     )
-    for tool_name in bare_email_tools + ("read_file", "mcp__email__send_email"):
+    for tool_name in bare_email_tools + ("mcp__email__send_email",):
         desc, result = await execute_tool_block(
             SimpleNamespace(tool_type=tool_name, content="{}"),
             owner="regular-user",
@@ -727,6 +732,30 @@ async def test_public_agent_policy_blocks_sensitive_tools(monkeypatch):
         assert desc == f"{tool_name}: BLOCKED"
         assert result["exit_code"] == 1
         assert "restricted to admin users" in result["error"]
+
+    # Migrated coding tools are denied by the immutable run authority
+    # snapshot. They must not fall through to the legacy ambient owner gate.
+    disabled = TOOL_REGISTRY.canonicalize_names(
+        blocked_tools_for_owner("regular-user"), None
+    )
+    execution_context, _ = prepare_execution_context(
+        owner_id="regular-user",
+        session_id="public-policy",
+        requested_mode=ExecutionMode.DISABLED,
+        selected_workspace=str(tmp_path),
+        budgets=RunBudgets(max_rounds=1, max_tool_calls=1),
+        tool_catalog_revision=TOOL_REGISTRY.revision,
+        disabled_tools=disabled,
+    )
+    desc, result = await execute_tool_block(
+        SimpleNamespace(tool_type="read_file", content="notes.txt"),
+        owner="regular-user",
+        execution_context=execution_context,
+    )
+    assert desc == "read_file: BLOCKED"
+    assert result["exit_code"] == 1
+    assert result["error_type"] == "tool_disabled"
+    assert result["tool_result"]["canonical_name"] == "read_files"
 
 
 @pytest.mark.asyncio
@@ -949,13 +978,8 @@ def test_mcp_json_primary_keys_are_all_live():
 
 
 @pytest.mark.asyncio
-async def test_write_file_inline_json_args(monkeypatch):
-    """write_file has no MCP server, so it runs via _direct_fallback ->
-    WriteFileTool, NOT _build_mcp_args. Inline JSON must therefore be decoded
-    by the handler itself: drive the LIVE path (execute_tool_block, no MCP) and
-    assert the file is written to the intended path with the intended content,
-    not a file literally named with the JSON blob. A _build_mcp_args unit test
-    can't catch this — it's on the dead MCP path for write_file."""
+async def test_write_file_inline_json_args(monkeypatch, tmp_path):
+    """The legacy alias must decode inline JSON before entering Runtime V2."""
     import src.tool_execution as tool_execution
     from src.tool_execution import execute_tool_block
 
@@ -963,23 +987,18 @@ async def test_write_file_inline_json_args(monkeypatch):
     monkeypatch.setattr(tool_execution, "is_public_blocked_tool", lambda t: False)
     monkeypatch.setattr(tool_execution, "get_mcp_manager", lambda: None)
 
-    captured = {}
-    import src.agent_tools.filesystem_tools as fst
-
-    def fake_resolve(p):
-        captured["path"] = p
-        raise ValueError("probe-stop-before-disk")
-
-    monkeypatch.setattr(tool_execution, "_resolve_tool_path", fake_resolve)
-
     from src.tool_parsing import parse_tool_blocks
-    blocks = parse_tool_blocks('```write_file {"path": "/tmp/wf.txt", "content": "hi"}\n```')
-    for b in blocks:
-        await execute_tool_block(b, owner="admin")
-
-    assert captured.get("path") == "/tmp/wf.txt", (
-        f"write_file did not decode inline JSON args; got path {captured.get('path')!r}"
+    blocks = parse_tool_blocks(
+        '```write_file {"path": "wf.txt", "content": "hi"}\n```'
     )
+    assert len(blocks) == 1
+    desc, result = await execute_tool_block(
+        blocks[0], owner="admin", workspace=str(tmp_path)
+    )
+
+    assert desc == "patch_workspace: success"
+    assert result["tool_result"]["canonical_name"] == "patch_workspace"
+    assert (tmp_path / "wf.txt").read_text(encoding="utf-8") == "hi"
 
 
 @pytest.mark.asyncio

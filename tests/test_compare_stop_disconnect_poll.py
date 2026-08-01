@@ -73,6 +73,10 @@ def _make_stream_with_save(sink, chunks, *, hang_after=None):
                 full_response += chunk
                 yield f"data: {chunk}\n\n"
             sink.save_complete(full_response)
+            yield (
+                'data: {"type":"run_state","state":"completed",'
+                '"terminal":true,"reason":"completed","resumable":false}\n\n'
+            )
             yield "data: [DONE]\n\n"
         except (asyncio.CancelledError, GeneratorExit):
             if full_response:
@@ -226,6 +230,7 @@ async def test_compare_pane_full_stream_completes_and_saves_once():
         "data: alpha\n\n",
         "data: beta\n\n",
         "data: gamma\n\n",
+        'data: {"type":"run_state","state":"completed","terminal":true,"reason":"completed","resumable":false}\n\n',
         "data: [DONE]\n\n",
     ]
     assert sink.completions == ["alphabetagamma"]

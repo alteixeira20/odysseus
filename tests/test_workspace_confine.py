@@ -118,10 +118,10 @@ async def test_read_write_edit_confined_e2e(ws, admin):
     with open(of, "w") as f:
         f.write("nope")
     _, r = await execute_tool_block(_block("read_file", of), owner="a", workspace=ws)
-    assert r["exit_code"] == 1 and "outside the workspace" in r["error"]
+    assert r["exit_code"] == 1 and "outside the execution root" in r["error"]
     escape = os.path.join(outside, "_esc.txt")
     _, r = await execute_tool_block(_block("write_file", f"{escape}\nx"), owner="a", workspace=ws)
-    assert r["exit_code"] == 1 and "outside the workspace" in r["error"]
+    assert r["exit_code"] == 1 and "outside the execution root" in r["error"]
     assert not os.path.exists(escape)
 
 
@@ -158,7 +158,7 @@ async def test_apply_patch_confined_e2e(ws, admin):
 +y
 *** End Patch"""
     _, r = await execute_tool_block(_block("apply_patch", escape_patch), owner="a", workspace=ws)
-    assert r["exit_code"] == 1 and "outside the workspace" in r["error"]
+    assert r["exit_code"] == 1 and "outside the execution root" in r["error"]
     with open(outside_file) as f:
         assert f.read() == "x\n"
 
@@ -200,11 +200,11 @@ async def test_grep_and_ls_confined_e2e(ws, admin):
     assert r["exit_code"] == 0 and "doc.txt" in r["output"]
     outside = tempfile.mkdtemp()
     _, r = await execute_tool_block(_block("grep", json.dumps({"pattern": "x", "path": outside})), owner="a", workspace=ws)
-    assert r["exit_code"] == 1 and "outside the workspace" in r["error"]
+    assert r["exit_code"] == 1 and "outside the execution root" in r["error"]
     _, r = await execute_tool_block(_block("ls", ""), owner="a", workspace=ws)
     assert r["exit_code"] == 0 and "doc.txt" in r["output"]
     _, r = await execute_tool_block(_block("ls", outside), owner="a", workspace=ws)
-    assert r["exit_code"] == 1 and "outside the workspace" in r["error"]
+    assert r["exit_code"] == 1 and "outside the execution root" in r["error"]
 
 
 @pytest.mark.asyncio
@@ -301,7 +301,9 @@ async def test_get_workspace_tool(ws, admin):
     assert r["exit_code"] == 0 and r["output"].startswith(ws)
     assert "only writable workspace" in r["output"]
     _, r = await execute_tool_block(_block("get_workspace", ""), owner="a")  # none active
-    assert r["exit_code"] == 0 and "No workspace" in r["output"]
+    assert r["exit_code"] == 0
+    assert r["source"] == "ephemeral_workspace"
+    assert r["path"].startswith("/tmp/odysseus-agent-workspace-")
 
 
 # ── no leak across calls ────────────────────────────────────────────────
@@ -360,14 +362,13 @@ def _sent_tool_names(monkeypatch, *, workspace, message="look at the local proje
 def test_low_signal_with_workspace_preserves_foundational_coding_tools(monkeypatch):
     names = _sent_tool_names(monkeypatch, workspace="/tmp")
     # read-only nav tools surface so the agent can explore
-    assert "read_file" in names
-    assert "get_workspace" in names
-    assert "grep" in names
+    assert "read_files" in names
+    assert "workspace_context" in names
+    assert "search_text" in names
     # Workspace selection grants inspection/confinement, not mutation.
-    assert "write_file" not in names
-    assert "edit_file" not in names
-    assert "bash" not in names
-    assert "python" not in names
+    assert "patch_workspace" not in names
+    assert "run_sandbox_command" not in names
+    assert "run_python" not in names
 
 
 def test_workspace_coding_request_surfaces_edit_and_verify_tools(monkeypatch):
@@ -377,16 +378,14 @@ def test_workspace_coding_request_surfaces_edit_and_verify_tools(monkeypatch):
         message="fix the failing frontend test in this repo",
         force_keyword_fallback=True,
     )
-    assert "get_workspace" in names
-    assert "read_file" in names
-    assert "grep" in names
-    assert "edit_file" in names
-    assert "write_file" in names
-    assert "apply_patch" in names
-    assert "todowrite" in names
+    assert "workspace_context" in names
+    assert "read_files" in names
+    assert "search_text" in names
+    assert "patch_workspace" in names
+    assert "plan" in names
     # File mutation intent is independent from process-execution approval.
-    assert "bash" not in names
-    assert "python" not in names
+    assert "run_sandbox_command" not in names
+    assert "run_python" not in names
 
 
 def test_low_signal_without_workspace_excludes_file_tools(monkeypatch):
@@ -395,7 +394,7 @@ def test_low_signal_without_workspace_excludes_file_tools(monkeypatch):
     assert "get_workspace" not in names
 
 
-def test_explicit_workspace_request_without_workspace_stops(monkeypatch):
+def test_explicit_workspace_request_without_selection_uses_ephemeral_root(monkeypatch):
     import asyncio
     import src.agent_loop as al
 
@@ -404,11 +403,15 @@ def test_explicit_workspace_request_without_workspace_stops(monkeypatch):
     monkeypatch.setattr(al, "estimate_tokens", lambda *a, **k: 10, raising=False)
     monkeypatch.setattr(al, "blocked_tools_for_owner", lambda owner: set(), raising=False)
 
-    async def _should_not_stream(*args, **kwargs):
-        raise AssertionError("LLM should not be called when explicit workspace is missing")
-        yield ""
+    captured = {}
 
-    monkeypatch.setattr(al, "stream_llm_with_fallback", _should_not_stream, raising=False)
+    async def _stream(*args, **kwargs):
+        captured["tools"] = kwargs.get("tools") or []
+        yield 'data: {"delta":"No selected workspace; using the bound root."}\n\n'
+        yield 'data: {"type":"finish","reason":"stop"}\n\n'
+        yield "data: [DONE]\n\n"
+
+    monkeypatch.setattr(al, "stream_llm_with_fallback", _stream, raising=False)
 
     async def _run():
         gen = al.stream_agent_loop(
@@ -419,10 +422,20 @@ def test_explicit_workspace_request_without_workspace_stops(monkeypatch):
         return [c async for c in gen]
 
     chunks = asyncio.run(_run())
-    text = "".join(chunks)
-    assert "No active workspace is set" in text
-    assert "/workspace set /absolute/path" in text
-    assert '"missing_workspace": true' in text
+    events = [
+        json.loads(chunk[6:])
+        for chunk in chunks
+        if chunk.startswith("data: {")
+    ]
+    diagnostic = next(event for event in events if event.get("type") == "effective_tools")
+    assert diagnostic["execution_root"]["source"] == "ephemeral_workspace"
+    assert diagnostic["execution_root"]["path"].startswith(
+        "/tmp/odysseus-agent-workspace-"
+    )
+    schema_names = {
+        item["function"]["name"] for item in captured["tools"]
+    }
+    assert {"workspace_context", "read_files", "search_text", "find_files"} <= schema_names
 
 
 def test_workspace_coding_mode_prompt_is_injected(monkeypatch):
@@ -439,14 +452,14 @@ def test_workspace_coding_mode_prompt_is_injected(monkeypatch):
         model="gpt-test",
         active_document=None,
         mcp_mgr=None,
-        relevant_tools={"get_workspace", "read_file", "grep", "edit_file", "write_file", "apply_patch", "todowrite", "bash"},
+        relevant_tools={"workspace_context", "read_files", "search_text", "patch_workspace", "plan", "run_sandbox_command"},
         workspace="/tmp/example-repo",
     )
     system_text = "\n\n".join(m.get("content", "") for m in messages if m.get("role") == "system")
     assert "## Workspace coding mode" in system_text
     assert "Active workspace: `/tmp/example-repo`" in system_text
-    assert "call `todowrite`" in system_text
-    assert "Change repo files with `apply_patch`" in system_text
+    assert "call `plan`" in system_text
+    assert "only with `patch_workspace`" in system_text
 
 
 # ── browse route is admin-gated ─────────────────────────────────────────

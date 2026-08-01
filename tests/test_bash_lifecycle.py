@@ -10,6 +10,8 @@ import pytest
 
 from src import agent_loop, agent_runs, bg_jobs
 from src.execution_policy import ExecutionMode
+from src.agent.runtime_v2.contracts import ToolError, ToolResult, ToolResultStatus
+from src.agent.tools.bootstrap import TOOL_REGISTRY
 from src.agent_tools import ToolBlock
 from src.agent_tools.subprocess_tools import (
     DEFAULT_BASH_TIMEOUT,
@@ -22,7 +24,7 @@ from src.agent_tools.subprocess_tools import (
     _tmux_session_name,
     normalize_bash_timeout,
 )
-from src.tool_schemas import FUNCTION_TOOL_SCHEMAS, function_call_to_tool_block
+from src.tool_schemas import function_call_to_tool_block
 from src import tool_execution
 
 
@@ -83,8 +85,8 @@ def _group_exists(pgid: int) -> bool:
 def test_timeout_contract_is_exposed_and_clamped():
     schema = next(
         item["function"]
-        for item in FUNCTION_TOOL_SCHEMAS
-        if item["function"]["name"] == "bash"
+        for item in TOOL_REGISTRY.function_schemas()
+        if item["function"]["name"] == "run_sandbox_command"
     )
     timeout_schema = schema["parameters"]["properties"]["timeout_seconds"]
 
@@ -419,34 +421,42 @@ async def test_agent_continues_after_timeout_and_executes_corrected_command(
             yield 'data: {"delta":"Recovered and completed."}\n\n'
         yield "data: [DONE]\n\n"
 
-    async def execute(block, **kwargs):
-        executed.append((block.content, block.arguments["timeout_seconds"]))
-        invocation_id = kwargs["invocation_id"]
+    async def execute(call, execution_context, **kwargs):
+        executed.append((call.arguments["command"], call.arguments["timeout_seconds"]))
         if len(executed) == 1:
-            return "bash: sleep 30", {
-                "error": "bash: timed out after 1s",
-                "error_type": "command_timeout",
-                "exit_code": 124,
-                "stdout": "",
-                "stderr": "",
-                "completion_state": "timed_out",
-                "timed_out": True,
-                "timeout_seconds": 1,
-                "invocation_id": invocation_id,
-                "escalation": ["sigint"],
-                "shell_recovery": "preserved",
-            }
-        return "bash: printf recovered", {
-            "output": "recovered",
-            "exit_code": 0,
-            "completion_state": "completed",
-            "timed_out": False,
-            "timeout_seconds": 3,
-            "invocation_id": invocation_id,
-        }
+            return ToolResult(
+                call_id=call.call_id,
+                canonical_name=call.canonical_name,
+                status=ToolResultStatus.TIMED_OUT,
+                data={
+                    "exit_code": 124,
+                    "stdout": "",
+                    "stderr": "",
+                    "timed_out": True,
+                    "timeout_seconds": 1,
+                    "escalation": ["sigint"],
+                },
+                error=ToolError("command_timeout", "command timed out after 1s"),
+                backend="test",
+            )
+        return ToolResult(
+            call_id=call.call_id,
+            canonical_name=call.canonical_name,
+            status=ToolResultStatus.SUCCESS,
+            data={
+                "text": "recovered",
+                "exit_code": 0,
+                "timed_out": False,
+                "timeout_seconds": 3,
+            },
+            backend="test",
+        )
 
     monkeypatch.setattr(agent_loop, "stream_llm_with_fallback", provider)
-    monkeypatch.setattr(agent_loop, "execute_tool_block", execute)
+    monkeypatch.setattr(
+        "src.agent.execution.batch_runner.execute_normalized_tool_call",
+        execute,
+    )
     events = [
         event
         async for event in agent_loop.stream_agent_loop(
@@ -466,13 +476,12 @@ async def test_agent_continues_after_timeout_and_executes_corrected_command(
 
     assert provider_round == 3
     assert executed == [("sleep 30", 1), ("printf recovered", 3)]
-    starts = [event for event in payloads if event.get("type") == "tool_start"]
-    outputs = [event for event in payloads if event.get("type") == "tool_output"]
-    assert [event["timeout_seconds"] for event in starts] == [1, 3]
-    assert outputs[0]["timed_out"] is True
-    assert outputs[0]["completion_state"] == "timed_out"
-    assert outputs[1]["completion_state"] == "completed"
-    assert all(event.get("invocation_id") for event in starts + outputs)
+    starts = [event for event in payloads if event.get("type") == "tool_started"]
+    outputs = [event for event in payloads if event.get("type") == "tool_result"]
+    assert [event["payload"]["result"]["data"]["timeout_seconds"] for event in outputs] == [1, 3]
+    assert outputs[0]["payload"]["result"]["status"] == "timed_out"
+    assert outputs[1]["payload"]["result"]["status"] == "success"
+    assert all(event.get("caused_by") for event in starts + outputs)
     assert any("Recovered and completed." in event for event in events)
 
 
@@ -584,18 +593,17 @@ async def test_background_marker_bypasses_foreground_watchdog(
         execution_mode="sandboxed",
     )
 
-    assert description.startswith("bash (background)")
-    assert result["bg_job_id"] == "bg-test"
+    assert description == "run_sandbox_command: success"
+    assert result["job_id"] == "bg-test"
     assert result["exit_code"] == 0
-    assert launched == [(
-        "sleep 30",
-        {
-            "session_id": "background-contract",
-            "cwd": str(tmp_path),
-            "owner": "admin",
-            "execution_mode": "sandboxed",
-        },
-    )]
+    assert len(launched) == 1
+    command, launch = launched[0]
+    assert command == "sleep 30"
+    assert launch["session_id"] == "background-contract"
+    assert launch["cwd"] == str(tmp_path)
+    assert launch["owner"] == "admin"
+    assert launch["execution_mode"] == "sandboxed"
+    assert launch["execution_context"].execution_root.path == str(tmp_path)
 
 
 def test_frontend_has_timeout_and_terminal_cleanup_contract():
@@ -605,4 +613,7 @@ def test_frontend_has_timeout_and_terminal_cleanup_contract():
     assert "json.timeout_seconds" in source
     assert "toolTerminalState(json)" in source
     assert "settleRunningToolNodes(document, 'cancelled')" in source
-    assert "_terminalStreamError ? 'failed' : 'interrupted'" in source
+    assert "runtimeStateToolStatus(_runtimeEvents.runState)" in source
+    reducer = Path("static/js/runtimeEvents.js").read_text(encoding="utf-8")
+    assert "raw.type === 'tool_result'" in reducer
+    assert "result.status === 'timed_out'" in reducer

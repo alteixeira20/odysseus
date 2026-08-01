@@ -44,6 +44,7 @@ LEGACY_STREAM_PARAMETERS = (
     "workload",
     "_is_teacher_run",
     "shell_enabled",
+    "execution_context",
 )
 
 
@@ -54,6 +55,7 @@ def test_legacy_stream_signature_is_frozen():
     assert signature.parameters["max_tokens"].default == 4096
     assert signature.parameters["workload"].default == "foreground"
     assert signature.parameters["shell_enabled"].default is None
+    assert signature.parameters["execution_context"].default is None
     assert tuple(inspect.signature(agent_api.stream_agent_loop).parameters) == (
         LEGACY_STREAM_PARAMETERS
     )

@@ -25,6 +25,7 @@ import asyncio
 import json
 
 import src.agent_loop as al
+from src.agent.runtime_v2.contracts import ToolResult, ToolResultStatus
 
 
 def _collect(gen):
@@ -51,10 +52,19 @@ def _patch_common(monkeypatch, exec_calls):
     monkeypatch.setattr(al, "get_mcp_manager", lambda: None, raising=False)
     monkeypatch.setattr(al, "estimate_tokens", lambda *a, **k: 10, raising=False)
 
-    async def _fake_exec(block, *a, **k):
-        exec_calls.append(block)
-        return ("bash", {"output": "ok", "exit_code": 0})
-    monkeypatch.setattr(al, "execute_tool_block", _fake_exec, raising=False)
+    async def _fake_exec(call, execution_context, **kwargs):
+        exec_calls.append(call)
+        return ToolResult(
+            call_id=call.call_id,
+            canonical_name=call.canonical_name,
+            status=ToolResultStatus.SUCCESS,
+            data={"text": "ok", "exit_code": 0},
+            backend="test",
+        )
+    monkeypatch.setattr(
+        "src.agent.execution.batch_runner.execute_normalized_tool_call",
+        _fake_exec,
+    )
 
 
 def _run_loop(monkeypatch, model, deltas, native_calls=None, max_rounds=2, endpoint_url=None):
@@ -86,6 +96,7 @@ def _run_loop(monkeypatch, model, deltas, native_calls=None, max_rounds=2, endpo
         [{"role": "user", "content": "Do not run anything yet, just show me an example."}],
         max_rounds=max_rounds,
         relevant_tools={"bash"},
+        shell_enabled=True,
     )
     return _types(_collect(gen))
 
@@ -123,8 +134,9 @@ def test_native_model_real_native_tool_call_is_executed(monkeypatch):
         max_rounds=2,
     )
     assert len(exec_calls) == 1, f"expected the native tool call to execute, got: {exec_calls}"
-    assert exec_calls[0].tool_type == "bash"
-    assert "echo hi" in exec_calls[0].content
+    assert exec_calls[0].raw_name == "bash"
+    assert exec_calls[0].canonical_name == "run_sandbox_command"
+    assert exec_calls[0].arguments["command"] == "echo hi"
 
 
 # ---------------------------------------------------------------------------
@@ -145,8 +157,9 @@ def test_non_native_model_fenced_tool_call_still_executed(monkeypatch):
         endpoint_url="http://192.168.1.50:8000/v1",
     )
     assert len(exec_calls) == 1, f"non-native model's fenced tool call should still execute: {exec_calls}"
-    assert exec_calls[0].tool_type == "bash"
-    assert "echo hi" in exec_calls[0].content
+    assert exec_calls[0].raw_name == "bash"
+    assert exec_calls[0].canonical_name == "run_sandbox_command"
+    assert exec_calls[0].arguments["command"] == "echo hi"
 
 
 # ---------------------------------------------------------------------------

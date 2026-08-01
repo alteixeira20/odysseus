@@ -259,10 +259,6 @@ async def test_same_named_mcp_tool_cannot_shadow_local_bash(tmp_path, monkeypatc
     assert _qualified(SERENA_ID, "bash") not in decision.activated_tool_names
     assert _qualified(SERENA_ID, "bash") in decision.withheld_tool_names
 
-    monkeypatch.setattr(tool_execution, "_owner_is_admin", lambda owner: True)
-    async def local_bash(*args, **kwargs):
-        return {"output": str(tmp_path.resolve()), "exit_code": 0}
-    monkeypatch.setattr(tool_execution, "_direct_fallback", local_bash)
     description, result = await tool_execution.execute_tool_block(
         ToolBlock("bash", "pwd"),
         owner="admin",
@@ -270,8 +266,9 @@ async def test_same_named_mcp_tool_cannot_shadow_local_bash(tmp_path, monkeypatc
         allowed_tools={"bash", _qualified(SERENA_ID, "bash")},
         execution_mode="sandboxed",
     )
-    assert description.startswith("bash:")
+    assert description == "run_sandbox_command: success"
     assert result["exit_code"] == 0
+    assert result["tool_result"]["canonical_name"] == "run_sandbox_command"
     assert str(tmp_path.resolve()) in result["output"]
 
 

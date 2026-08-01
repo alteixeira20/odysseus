@@ -20,5 +20,5 @@ def test_legacy_prompt_override_remains_runtime_patchable(monkeypatch):
     prompt = agent_loop._assemble_prompt({"bash", "python"})
 
     assert "OVERRIDDEN BASH SECTION" in prompt
-    assert agent_loop.TOOL_SECTIONS["python"] in prompt
-    assert agent_loop.TOOL_SECTIONS["bash"] not in prompt
+    assert agent_loop.TOOL_SECTIONS["run_python"] in prompt
+    assert agent_loop.TOOL_SECTIONS["run_sandbox_command"] not in prompt

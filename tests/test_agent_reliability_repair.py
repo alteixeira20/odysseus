@@ -188,9 +188,12 @@ async def test_initial_agent_status_emitted():
 
     assert len(events) > 0
     first_event = json.loads(events[0].replace("data: ", "").strip())
-    assert first_event.get("type") == "run_status"
-    assert first_event.get("phase") == "preparing"
-    assert first_event.get("ephemeral") is True
+    assert first_event.get("version") == 2
+    assert first_event.get("type") == "run_state"
+    assert first_event.get("payload") == {
+        "state": "preparing",
+        "reason": "request_prepared",
+    }
 
 
 @pytest.mark.asyncio
@@ -214,8 +217,8 @@ async def test_client_disconnect_cancels_without_retry(monkeypatch):
             model="test-model",
             messages=[{"role": "user", "content": "Please inspect files and run pytest"}],
         )
-        await gen.__anext__()
-        await gen.__anext__()
+        while True:
+            await gen.__anext__()
 
     assert call_count == 1
     sleep_mock.assert_not_called()

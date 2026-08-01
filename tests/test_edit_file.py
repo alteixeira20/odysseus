@@ -43,15 +43,33 @@ async def test_edit_file_blocked_at_execution_for_non_admin(monkeypatch):
     # different module's function than the one monkeypatch targets — silently
     # bypassing the admin gate.
     import src.tool_execution as te
-    monkeypatch.setattr(te, "_owner_is_admin", lambda owner: False)
+    from src.agent.runtime_v2.authority import prepare_execution_context
+    from src.agent.runtime_v2.contracts import RunBudgets
+    from src.agent.tools.bootstrap import TOOL_REGISTRY
+    monkeypatch.setattr(
+        tool_security, "owner_is_admin_or_single_user", lambda owner: False
+    )
     ws = tempfile.mkdtemp()
     p = os.path.join("/tmp", "ef_block.txt")
     open(p, "w").write("a\n")
+    context, _ = prepare_execution_context(
+        owner_id="bob",
+        session_id="public-edit",
+        requested_mode="disabled",
+        selected_workspace=ws,
+        budgets=RunBudgets(),
+        tool_catalog_revision=TOOL_REGISTRY.revision,
+        disabled_tools=TOOL_REGISTRY.canonicalize_names(
+            blocked_tools_for_owner("bob"), None
+        ),
+    )
     _desc, result = await te.execute_tool_block(
         ToolBlock("edit_file", json.dumps({"path": p, "old_string": "a", "new_string": "b"})),
         owner="bob",
+        execution_context=context,
     )
-    assert result.get("exit_code") == 1 and "admin" in result.get("error", "").lower()
+    assert result.get("exit_code") == 1
+    assert result["error_type"] == "tool_disabled"
     os.unlink(p)
 
 

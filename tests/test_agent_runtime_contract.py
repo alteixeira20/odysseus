@@ -17,15 +17,16 @@ from src.effective_tools import (
 from src.llm_core import _normalize_reasoning_text
 
 
-ALL_CODING = set(WORKSPACE_FOUNDATIONAL_TOOLS | SHELL_FOUNDATIONAL_TOOLS) | {
+SANDBOX_PROCESS_TOOLS = {"run_sandbox_command", "run_python"}
+ALL_CODING = set(WORKSPACE_FOUNDATIONAL_TOOLS) | SANDBOX_PROCESS_TOOLS | {
     "ask_user",
-    "update_plan",
+    "plan",
 }
 
 
 def _effective(**overrides):
     kwargs = {
-        "registered_tools": ALL_CODING | {"mcp__browser__navigate"},
+        "registered_tools": ALL_CODING | {"run_host_command", "mcp__browser__navigate"},
         "provider_usable_tools": ALL_CODING | {"mcp__browser__navigate"},
         "relevant_tools": {"ask_user"},
         "forced_tools": set(),
@@ -34,7 +35,7 @@ def _effective(**overrides):
         "authenticated_role": "owner_admin",
         "workspace_enabled": False,
         "shell_enabled": False,
-        "fallback_tools": {"ask_user", "update_plan"},
+        "fallback_tools": {"ask_user", "plan"},
     }
     kwargs.update(overrides)
     return calculate_effective_tools(**kwargs)
@@ -42,7 +43,8 @@ def _effective(**overrides):
 
 def test_owner_shell_foundation_survives_relevance_and_has_prompt_schema_parity():
     effective = _effective(shell_enabled=True)
-    assert SHELL_FOUNDATIONAL_TOOLS <= effective.names
+    assert SANDBOX_PROCESS_TOOLS <= effective.names
+    assert "run_host_command" not in effective.names
 
     prompt = agent_loop._assemble_prompt(set(effective.names), compact=True)
     schema_names = {
@@ -50,7 +52,7 @@ def test_owner_shell_foundation_survives_relevance_and_has_prompt_schema_parity(
         for schema in agent_loop.FUNCTION_TOOL_SCHEMAS
         if schema["function"]["name"] in effective.names
     }
-    for name in SHELL_FOUNDATIONAL_TOOLS:
+    for name in SANDBOX_PROCESS_TOOLS:
         assert f"`{name}`" in prompt
         assert name in schema_names
 
@@ -58,7 +60,7 @@ def test_owner_shell_foundation_survives_relevance_and_has_prompt_schema_parity(
 def test_explicit_shell_disable_wins_everywhere():
     effective = _effective(
         shell_enabled=True,
-        disabled_tools={"bash"},
+        disabled_tools={"run_sandbox_command"},
     )
     prompt = agent_loop._assemble_prompt(set(effective.names), compact=True)
     schema_names = {
@@ -66,10 +68,10 @@ def test_explicit_shell_disable_wins_everywhere():
         for schema in agent_loop.FUNCTION_TOOL_SCHEMAS
         if schema["function"]["name"] in effective.names
     }
-    assert "bash" not in effective.names
-    assert "`bash`" not in prompt
-    assert "bash" not in schema_names
-    assert effective.excluded_foundational["bash"] == "explicitly disabled for this run"
+    assert "run_sandbox_command" not in effective.names
+    assert "`run_sandbox_command`" not in prompt
+    assert "run_sandbox_command" not in schema_names
+    assert effective.excluded_foundational["run_sandbox_command"] == "explicitly disabled for this run"
 
 
 def test_public_security_policy_wins_over_shell_enablement():
@@ -79,7 +81,7 @@ def test_public_security_policy_wins_over_shell_enablement():
         authenticated_role="public",
     )
     assert effective.names.isdisjoint(SHELL_FOUNDATIONAL_TOOLS)
-    assert "security policy for role public" in effective.excluded_foundational["bash"]
+    assert "security policy for role public" in effective.excluded_foundational["run_sandbox_command"]
 
 
 def test_workspace_foundation_is_complete_and_relevance_cannot_omit_it():
@@ -87,14 +89,14 @@ def test_workspace_foundation_is_complete_and_relevance_cannot_omit_it():
     assert WORKSPACE_FOUNDATIONAL_TOOLS <= effective.names
 
 
-def test_browser_tools_neither_replace_nor_suppress_bash():
+def test_browser_tools_neither_replace_nor_suppress_process_tools():
     effective = _effective(
         shell_enabled=True,
         relevant_tools={"mcp__browser__navigate"},
         forced_tools={"mcp__browser__navigate"},
     )
     assert "mcp__browser__navigate" in effective.names
-    assert "bash" in effective.names
+    assert SANDBOX_PROCESS_TOOLS <= effective.names
 
 
 @pytest.mark.asyncio
@@ -109,7 +111,7 @@ async def test_dispatch_rejects_tool_outside_authoritative_allowlist(monkeypatch
     )
     assert "UNAVAILABLE" in desc
     assert result["exit_code"] == 1
-    assert result["unavailable"] is True
+    assert result["error_type"] == "tool_not_available"
 
 
 @pytest.mark.asyncio
@@ -123,8 +125,8 @@ async def test_privileged_process_tool_requires_explicit_run_approval(tmp_path, 
         workspace=str(tmp_path),
     )
 
-    assert desc == "bash: BLOCKED"
-    assert result["error_type"] == "approval_required"
+    assert desc == "run_sandbox_command: denied"
+    assert result["error_type"] == "tool_not_exposed"
     assert result["exit_code"] == 1
 
 
@@ -160,8 +162,8 @@ async def test_two_concurrent_workspace_bindings_do_not_leak(tmp_path, monkeypat
         get_workspace(one),
         get_workspace(two),
     )
-    assert result_one["output"].splitlines()[0] == str(one.resolve())
-    assert result_two["output"].splitlines()[0] == str(two.resolve())
+    assert result_one["path"] == str(one.resolve())
+    assert result_two["path"] == str(two.resolve())
 
 
 @pytest.mark.asyncio
@@ -210,8 +212,8 @@ async def test_concurrent_agent_runs_keep_provider_tool_scopes_isolated(
         consume("scope-b", two, False),
     )
 
-    assert "bash" in captured["scope-a"]
-    assert "bash" not in captured["scope-b"]
+    assert SANDBOX_PROCESS_TOOLS <= captured["scope-a"]
+    assert captured["scope-b"].isdisjoint(SANDBOX_PROCESS_TOOLS)
     assert events_a[-1] == "data: [DONE]\n\n"
     assert events_b[-1] == "data: [DONE]\n\n"
 
@@ -227,7 +229,7 @@ def test_tmux_workspace_key_handles_spaces_and_apostrophes():
 
 
 @pytest.mark.asyncio
-async def test_real_tmux_shell_preserves_same_workspace_cd_and_rebinds_on_change(
+async def test_runtime_v2_shell_starts_each_call_at_immutable_execution_root(
     tmp_path,
     monkeypatch,
 ):
@@ -261,9 +263,9 @@ async def test_real_tmux_shell_preserves_same_workspace_cd_and_rebinds_on_change
         _, restored_workspace = await bash("pwd", one)
 
         assert changed["exit_code"] == 0
-        assert Path(same_workspace["output"]).resolve() == (one / "src").resolve()
+        assert Path(same_workspace["output"]).resolve() == one.resolve()
         assert Path(changed_workspace["output"]).resolve() == two.resolve()
-        assert Path(restored_workspace["output"]).resolve() == (one / "src").resolve()
+        assert Path(restored_workspace["output"]).resolve() == one.resolve()
     finally:
         for workspace in (one, two):
             await _run_exec(
@@ -391,10 +393,12 @@ async def test_runtime_workspace_shell_provider_schema_matrix(
         schema["function"]["name"] for schema in captured["schemas"]
     }
 
-    expected_shell = bool(shell_enabled)
-    assert ("bash" in schema_names) is expected_shell
-    assert ("bash" in diagnostic["names"]) is expected_shell
-    assert (WORKSPACE_FOUNDATIONAL_TOOLS <= schema_names) is workspace_enabled
+    expected_process = SANDBOX_PROCESS_TOOLS if shell_enabled else set()
+    assert schema_names.intersection(SANDBOX_PROCESS_TOOLS) == expected_process
+    assert set(diagnostic["names"]).intersection(SANDBOX_PROCESS_TOOLS) == expected_process
+    # A missing selection is prepared with an ephemeral ExecutionRoot, so the
+    # canonical workspace tools remain available without using process CWD.
+    assert WORKSPACE_FOUNDATIONAL_TOOLS <= schema_names
 
 
 @pytest.mark.asyncio
@@ -433,7 +437,7 @@ async def test_runtime_explicit_shell_disable_removes_shell_only(
     assert schema_names.isdisjoint(SHELL_FOUNDATIONAL_TOOLS)
     assert set(diagnostic["names"]).isdisjoint(SHELL_FOUNDATIONAL_TOOLS)
     assert WORKSPACE_FOUNDATIONAL_TOOLS <= schema_names
-    assert "`bash`" not in captured["messages"][0]["content"]
+    assert "`run_sandbox_command`" not in captured["messages"][0]["content"]
 
 
 @pytest.mark.asyncio
@@ -453,7 +457,7 @@ async def test_runtime_public_security_gate_wins_over_requested_coding_tools(
     }
     assert schema_names.isdisjoint(blocked)
     assert set(diagnostic["names"]).isdisjoint(blocked)
-    assert "security policy for role public" in diagnostic["excluded_foundational"]["bash"]
+    assert "security policy for role public" in diagnostic["excluded_foundational"]["run_sandbox_command"]
 
 
 @pytest.mark.asyncio
@@ -560,7 +564,7 @@ async def test_partial_tool_arguments_then_failure_never_dispatches(monkeypatch)
 async def test_failed_fenced_tool_can_be_corrected_next_round(monkeypatch, tmp_path):
     _patch_agent_environment(monkeypatch)
     provider_round = 0
-    tool_calls = []
+    (tmp_path / "existing.py").write_text("ok\n", encoding="utf-8")
 
     async def provider(*args, **kwargs):
         nonlocal provider_round
@@ -573,14 +577,7 @@ async def test_failed_fenced_tool_can_be_corrected_next_round(monkeypatch, tmp_p
             yield 'data: {"delta": "Completed after correcting the path."}\n\n'
         yield "data: [DONE]\n\n"
 
-    async def execute(block, **kwargs):
-        tool_calls.append(block.content.strip())
-        if "missing.py" in block.content:
-            return "read_file: missing.py", {"error": "not found", "exit_code": 1}
-        return "read_file: existing.py", {"content": "ok", "size": 2, "exit_code": 0}
-
     monkeypatch.setattr(agent_loop, "stream_llm_with_fallback", provider)
-    monkeypatch.setattr(agent_loop, "execute_tool_block", execute)
     events = [
         event
         async for event in agent_loop.stream_agent_loop(
@@ -594,7 +591,19 @@ async def test_failed_fenced_tool_can_be_corrected_next_round(monkeypatch, tmp_p
         )
     ]
     assert provider_round == 3
-    assert tool_calls == ["missing.py", "existing.py"]
+    typed_results = [
+        json.loads(event[6:])["payload"]["result"]
+        for event in events
+        if event.startswith("data: {")
+        and json.loads(event[6:]).get("version") == 2
+        and json.loads(event[6:]).get("type") == "tool_result"
+    ]
+    assert [result["status"] for result in typed_results] == ["success", "success"]
+    assert [
+        result["data"]["files"][0]["status"]
+        for result in typed_results
+    ] == ["error", "success"]
+    assert all(result["canonical_name"] == "read_files" for result in typed_results)
     assert any("Completed after correcting the path." in event for event in events)
 
 

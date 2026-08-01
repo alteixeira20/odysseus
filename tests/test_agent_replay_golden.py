@@ -8,6 +8,7 @@ import pytest
 
 from core import database
 from src import agent_loop
+from src.agent.runtime_v2.contracts import ToolResult, ToolResultStatus
 
 
 FIXTURES = (
@@ -39,6 +40,8 @@ def _canonical_events(chunks):
             continue
         assert chunk.startswith("data: "), chunk
         event = json.loads(chunk[6:])
+        if event.get("version") == 2:
+            continue
         event_type = event.get("type")
         if event_type == "run_status":
             events.append(
@@ -127,11 +130,24 @@ def _patch_runtime(monkeypatch, replay):
     )
 
     if replay.get("tool_result"):
-        async def execute(*args, **kwargs):
+        async def execute(call, execution_context, **kwargs):
             tool_result = replay["tool_result"]
-            return tool_result["description"], dict(tool_result["result"])
+            legacy = dict(tool_result["result"])
+            return ToolResult(
+                call_id=call.call_id,
+                canonical_name=call.canonical_name,
+                status=ToolResultStatus.SUCCESS,
+                data={
+                    **legacy,
+                    "text": legacy.get("output") or "(no output)",
+                },
+                backend="replay",
+            )
 
-        monkeypatch.setattr(agent_loop, "execute_tool_block", execute)
+        monkeypatch.setattr(
+            "src.agent.execution.batch_runner.execute_normalized_tool_call",
+            execute,
+        )
 
 
 @pytest.mark.asyncio
@@ -162,6 +178,24 @@ async def test_replay_matches_golden_event_sequence(
         )
     ]
 
+    runtime_events = [
+        json.loads(chunk[6:])
+        for chunk in chunks
+        if chunk.startswith("data: {")
+        and json.loads(chunk[6:]).get("version") == 2
+    ]
+    assert [event["sequence"] for event in runtime_events] == list(
+        range(1, len(runtime_events) + 1)
+    )
+    assert runtime_events[0]["type"] == "run_state"
+    assert runtime_events[0]["payload"]["state"] == "preparing"
+    assert runtime_events[-1]["type"] == "run_state"
+    assert runtime_events[-1]["payload"]["state"] == "completed"
+    if replay.get("tool_result"):
+        assert [
+            event["type"] for event in runtime_events if event["type"].startswith("tool_")
+        ] == ["tool_started", "tool_result"]
+
     assert _canonical_events(chunks) == replay["expected_events"]
 
 
@@ -169,20 +203,20 @@ async def test_replay_matches_golden_event_sequence(
     ("tools", "compact", "length", "digest"),
     (
         (
-            {"ask_user", "update_plan"},
+            {"ask_user", "plan"},
             False,
-            2030,
-            "2769a2810838b46939434f2a8ee9691a652241021a3f9ea04d2c30a6fe1d0876",
+            2165,
+            "aa4ced9801974f607c48c1a69588b484c7b763e06cf462f749651a9f0ae77805",
         ),
         (
             # Length/digest updated for the new "## Shell rules" fragment
             # (src/agent/prompting/contexts/shell_guidance.py), appended
             # only when `bash` is in the tool set — see
             # domain_rules_for_tools in src/agent/routing/tool_domains.py.
-            {"ask_user", "update_plan", "bash", "manage_bg_jobs"},
+            {"ask_user", "plan", "run_sandbox_command", "manage_bg_jobs"},
             True,
-                4134,
-                "e090dd0d333adbc45783d341f298263e474e416c29b65cf1f6f3b9bff719f7eb",
+                3632,
+                "77c2a15624579ffd5613e337b0491a1d601d4edfd6e47182bdd248f00246dde2",
         ),
         (
             {
@@ -192,8 +226,8 @@ async def test_replay_matches_golden_event_sequence(
                 "edit_document",
             },
             False,
-            3266,
-            "7881cb2f1b540d099582d620c49270011883103dd67f2479a28c08446e5d7e94",
+            3285,
+            "984f371ac470a083a1d63d2bcac4872adebdc3a88a6584a752d0888c1b0f9a1a",
         ),
     ),
 )

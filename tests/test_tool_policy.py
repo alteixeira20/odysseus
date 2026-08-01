@@ -204,7 +204,8 @@ def test_executor_policy_backstop_blocks_tools():
     )
     assert desc == "bash: BLOCKED"
     assert result["exit_code"] == 1
-    assert "forbidden" in result["error"]
+    assert result["error_type"] == "tool_disabled"
+    assert result["tool_result"]["canonical_name"] == "run_sandbox_command"
 
 
 def test_agent_loop_blocks_guide_only_fenced_tool_before_start(monkeypatch):
@@ -236,11 +237,12 @@ def test_agent_loop_blocks_guide_only_fenced_tool_before_start(monkeypatch):
     )
     events = _events(chunks)
     assert called is False
-    assert not any(event.get("type") == "tool_start" for event in events)
-    blocked = [event for event in events if event.get("type") == "tool_output"]
+    blocked = [event for event in events if event.get("type") == "tool_result"]
     assert blocked
-    assert blocked[0]["tool"] == "bash"
-    assert blocked[0]["exit_code"] == 1
+    result = blocked[0]["payload"]["result"]
+    assert result["canonical_name"] == "run_sandbox_command"
+    assert result["status"] == "denied"
+    assert result["error"]["code"] == "tool_disabled"
 
 
 def test_guide_only_hides_api_function_schemas(monkeypatch):

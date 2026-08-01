@@ -28,8 +28,8 @@ def test_assistant_always_available_lacks_shell():
 def test_shell_offered_when_rag_returns_nothing():
     # Degraded/empty embedding index -> rag_tools is empty (the #4163 case).
     tools = compose_task_relevant_tools(set(), ASSISTANT_ALWAYS_AVAILABLE, None)
-    assert "bash" in tools
-    assert "python" in tools
+    assert "run_sandbox_command" in tools
+    assert "run_python" in tools
     assert TASK_DEFAULT_SHELL_TOOLS <= tools
 
 
@@ -39,7 +39,7 @@ def test_assistant_and_rag_tools_preserved():
     )
     assert "web_fetch" in tools          # RAG-selected tool kept
     assert "manage_calendar" in tools    # assistant-always member kept
-    assert "bash" in tools               # shell default added
+    assert "run_sandbox_command" in tools  # shell default added
 
 
 def test_crew_allowlist_restriction_still_honored():
@@ -48,11 +48,12 @@ def test_crew_allowlist_restriction_still_honored():
     # the shell defaults — the task owner explicitly scoped the tools.
     disabled = {"bash", "python", "edit_file"}
     tools = compose_task_relevant_tools(set(), ASSISTANT_ALWAYS_AVAILABLE, disabled)
-    assert "bash" not in tools
-    assert "python" not in tools
-    assert "edit_file" not in tools
+    assert "run_sandbox_command" not in tools
+    assert "run_host_command" not in tools
+    assert "run_python" not in tools
+    assert "patch_workspace" not in tools
     # Shell tools the crew did NOT disable remain available.
-    assert "read_file" in tools
+    assert "read_files" in tools
 
 
 def test_offered_shell_maps_to_real_schemas_for_admin():
@@ -64,8 +65,8 @@ def test_offered_shell_maps_to_real_schemas_for_admin():
     schema_names = {s["function"]["name"] for s in FUNCTION_TOOL_SCHEMAS}
     offered = compose_task_relevant_tools(set(), ASSISTANT_ALWAYS_AVAILABLE, None)
     admin_schemas = offered & schema_names  # mirrors agent_loop's relevant∩schemas
-    assert "bash" in admin_schemas
-    assert "python" in admin_schemas
+    assert "run_sandbox_command" in admin_schemas
+    assert "run_python" in admin_schemas
 
 
 def test_non_admin_owner_block_strips_shell_end_to_end():
@@ -78,9 +79,12 @@ def test_non_admin_owner_block_strips_shell_end_to_end():
 
     schema_names = {s["function"]["name"] for s in FUNCTION_TOOL_SCHEMAS}
     offered = compose_task_relevant_tools(set(), ASSISTANT_ALWAYS_AVAILABLE, None)
-    non_admin_schemas = (offered - set(NON_ADMIN_BLOCKED_TOOLS)) & schema_names
-    assert "bash" not in non_admin_schemas
-    assert "python" not in non_admin_schemas
+    from src.agent.tools.bootstrap import TOOL_REGISTRY
+
+    blocked = TOOL_REGISTRY.canonicalize_names(NON_ADMIN_BLOCKED_TOOLS, None)
+    non_admin_schemas = (offered - set(blocked)) & schema_names
+    assert "run_sandbox_command" not in non_admin_schemas
+    assert "run_python" not in non_admin_schemas
 
 
 async def test_scheduled_task_honors_global_disabled_tools(monkeypatch):
@@ -146,8 +150,9 @@ async def test_scheduled_task_honors_global_disabled_tools(monkeypatch):
     # Offer side: globally-disabled tools are gone from relevant_tools, but the
     # rest of the shell/file defaults and the RAG hit survive.
     offered = captured["relevant_tools"]
-    assert "bash" not in offered
-    assert "python" not in offered
-    assert "read_file" not in offered
-    assert "edit_file" in offered   # shell default NOT globally disabled
+    assert "run_sandbox_command" not in offered
+    assert "run_host_command" not in offered
+    assert "run_python" not in offered
+    assert "read_files" not in offered
+    assert "patch_workspace" in offered   # shell default NOT globally disabled
     assert "web_fetch" in offered   # RAG-selected tool preserved

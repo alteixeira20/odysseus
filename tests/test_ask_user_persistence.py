@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 
 import src.agent_loop as agent_loop
+from src.agent.runtime_v2.contracts import ToolResult, ToolResultStatus
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -49,19 +50,24 @@ def test_ask_user_is_emitted_last_and_persisted(monkeypatch):
         yield f'data: {json.dumps({"type": "tool_calls", "calls": [call]})}\n\n'
         yield "data: [DONE]\n\n"
 
-    async def fake_execute(block, *args, **kwargs):
-        parsed = json.loads(block.content)
-        return (
-            "ask_user",
-            {
-                "ask_user": parsed,
-                "output": "Awaiting their selection.",
-                "exit_code": 0,
+    async def fake_execute(call, execution_context, **kwargs):
+        assert call.arguments["question"] == payload["question"]
+        return ToolResult(
+            call_id=call.call_id,
+            canonical_name=call.canonical_name,
+            status=ToolResultStatus.SUCCESS,
+            data={
+                "ask_user": payload,
+                "text": "Awaiting their selection.",
             },
+            backend="test",
         )
 
     monkeypatch.setattr(agent_loop, "stream_llm_with_fallback", fake_stream, raising=False)
-    monkeypatch.setattr(agent_loop, "execute_tool_block", fake_execute, raising=False)
+    monkeypatch.setattr(
+        "src.agent.execution.batch_runner.execute_normalized_tool_call",
+        fake_execute,
+    )
 
     chunks = _collect(
         agent_loop.stream_agent_loop(
@@ -74,14 +80,18 @@ def test_ask_user_is_emitted_last_and_persisted(monkeypatch):
     )
     events = _events(chunks)
 
-    tool_output_index = next(i for i, event in enumerate(events) if event.get("type") == "tool_output")
+    tool_output_index = next(
+        i
+        for i, event in enumerate(events)
+        if event.get("type") == "tool_result" and event.get("version") == 2
+    )
     ask_user_index = next(i for i, event in enumerate(events) if event.get("type") == "ask_user")
     assert tool_output_index < ask_user_index
 
     tool_output = events[tool_output_index]
-    assert tool_output["ask_user"] == payload
-    assert "¿Qué proyecto prefieres?" in tool_output["command"]
-    assert "\\u00" not in tool_output["command"]
+    assert tool_output["payload"]["result"]["data"]["ask_user"] == payload
+    assert "¿Qué proyecto prefieres?" in tool_output["payload"]["command"]
+    assert "\\u00" not in tool_output["payload"]["command"]
 
     metrics = next(event["data"] for event in events if event.get("type") == "metrics")
     assert metrics["tool_events"][0]["ask_user"] == payload
