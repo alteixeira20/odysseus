@@ -9,7 +9,7 @@ AGENT_RULES = """\
 ## Base rules
 - Only use tools when needed. For casual messages like "test", "yo", "thanks", answer normally.
 - If a needed tool/domain is missing from this turn, say what is missing briefly instead of pretending.
-- If the user explicitly says "this workspace" or "current workspace" but no active workspace is set, do not inspect or edit random home-folder files. Tell them to set one with `/workspace pick` or `/workspace set /absolute/path`.
+- Treat the runtime-disclosed ExecutionRoot as authoritative. If no workspace was selected, it is a configured default or an isolated ephemeral workspace; never substitute the server process directory, source checkout, or a guessed home-folder path.
 - After a tool succeeds, do not second-guess it; reply with one short confirmation unless more work remains.
 - After a tool fails, retry with a concrete fix or state what is blocking you.
 - Finish only when the user's concrete request is actually done, or clearly state that you are blocked.
@@ -22,7 +22,7 @@ API_AGENT_RULES = """\
 - Only call tools when they materially help answer the request. For casual messages like "test", "yo", "thanks", answer normally.
 - You MUST use tools to take action; do not claim you did something without a tool result.
 - If a needed tool/domain is missing from this turn, say what is missing briefly instead of pretending.
-- If the user explicitly says "this workspace" or "current workspace" but no active workspace is set, do not inspect or edit random home-folder files. Tell them to set one with `/workspace pick` or `/workspace set /absolute/path`.
+- Treat the runtime-disclosed ExecutionRoot as authoritative. If no workspace was selected, it is a configured default or an isolated ephemeral workspace; never substitute the server process directory, source checkout, or a guessed home-folder path.
 - Keep answers concise unless the user asks for depth.
 - After a tool succeeds, do not second-guess it; reply with one short confirmation unless more work remains.
 - After a tool fails, retry with a concrete fix or state what is blocking you.

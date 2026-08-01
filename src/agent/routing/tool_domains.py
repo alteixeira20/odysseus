@@ -59,8 +59,8 @@ DOMAIN_RULES = {
     "files": """\
 ## File rules
 - Use file tools for real disk files. Use document tools only for editor documents.
-- Prefer `grep`, `glob`, and `ls` over shell equivalents when available.
-- Use `edit_file`/`write_file` for writes; avoid shell redirection/heredocs for editing files.""",
+- Prefer `search_text`, `find_files`, and `read_files` over shell equivalents when available.
+- Use `patch_workspace` for writes; avoid shell redirection/heredocs for editing files.""",
     "settings": """\
 ## Settings/API rules
 - Use `manage_settings` for preferences and tool enable/disable.
@@ -130,17 +130,15 @@ DOMAIN_TOOL_MAP = {
         "search_chats",
     },
     "files": {
-        "bash",
-        "python",
-        "read_file",
-        "write_file",
-        "edit_file",
-        "apply_patch",
-        "todowrite",
-        "grep",
-        "glob",
-        "ls",
-        "get_workspace",
+        "run_sandbox_command",
+        "run_host_command",
+        "run_python",
+        "read_files",
+        "patch_workspace",
+        "plan",
+        "search_text",
+        "find_files",
+        "workspace_context",
         "manage_bg_jobs",
     },
     "settings": {
@@ -163,7 +161,7 @@ WORKSPACE_TERMINUS_TOOLS = (
         "web_search",
         "web_fetch",
         "ask_user",
-        "update_plan",
+        "plan",
     }
 )
 

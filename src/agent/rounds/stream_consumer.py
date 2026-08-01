@@ -20,7 +20,11 @@ async def stream_with_idle_status(
         try:
             async for item in provider_stream:
                 await queue.put(("chunk", item))
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as exc:
+            # A provider may use cancellation to report a disconnected
+            # upstream request. Preserve that terminal signal for the owning
+            # run instead of turning it into an ordinary end-of-stream.
+            queue.put_nowait(("error", exc))
             raise
         except BaseException as exc:
             await queue.put(("error", exc))

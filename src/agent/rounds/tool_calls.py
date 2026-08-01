@@ -5,9 +5,11 @@ from difflib import get_close_matches
 import json
 import logging
 import re
+import secrets
 from typing import Any
 
 from src.agent.tools.bootstrap import TOOL_REGISTRY
+from src.agent.runtime_v2.contracts import AgentExecutionContext, NormalizedToolCall
 
 TOOL_TAGS = TOOL_REGISTRY.accepted_names()
 
@@ -75,6 +77,67 @@ class QwenToolFilterResult:
     @property
     def requires_memory_answer_retry(self) -> bool:
         return self.dropped_memory_lookup and not self.tool_blocks
+
+
+def normalize_tool_calls(
+    tool_blocks: list,
+    converted_calls: list,
+    *,
+    execution_context: AgentExecutionContext,
+    provider_name: str,
+) -> tuple[NormalizedToolCall, ...]:
+    """Collapse parsed/native/alias forms into the executor's only call type."""
+
+    normalized: list[NormalizedToolCall] = []
+    for index, block in enumerate(tool_blocks):
+        native = (
+            converted_calls[index]
+            if index < len(converted_calls) and isinstance(converted_calls[index], dict)
+            else {}
+        )
+        raw_name = str(native.get("name") or block.tool_type or "")
+        definition = TOOL_REGISTRY.resolve(raw_name, execution_context)
+        canonical_name = definition.name if definition is not None else raw_name
+        call_id = str(native.get("id") or secrets.token_urlsafe(18))
+        raw_arguments: Any = (
+            block.arguments
+            if isinstance(getattr(block, "arguments", None), dict)
+            else block.content
+        )
+        normalization_error = None
+        if definition is not None and definition.runtime_v2:
+            try:
+                adapter = definition.argument_adapter
+                arguments = (
+                    dict(adapter(raw_arguments, raw_name))
+                    if adapter is not None
+                    else dict(raw_arguments or {})
+                )
+                arguments = definition.validate_arguments(arguments)
+            except (TypeError, ValueError) as exc:
+                arguments = {}
+                normalization_error = str(exc)
+        elif isinstance(raw_arguments, dict):
+            arguments = dict(raw_arguments)
+        else:
+            raw_text = str(raw_arguments or "").strip()
+            try:
+                parsed = json.loads(raw_text) if raw_text.startswith("{") else None
+            except (TypeError, ValueError):
+                parsed = None
+            arguments = parsed if isinstance(parsed, dict) else {}
+        normalized.append(
+            NormalizedToolCall(
+                call_id=call_id,
+                canonical_name=canonical_name,
+                arguments=arguments,
+                provider_name=str(provider_name or "unknown"),
+                raw_name=raw_name,
+                legacy_content=str(block.content or ""),
+                normalization_error=normalization_error,
+            )
+        )
+    return tuple(normalized)
 
 
 def filter_odysseus_qwen_calls(

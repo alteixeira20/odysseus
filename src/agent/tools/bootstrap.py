@@ -131,6 +131,10 @@ def build_default_registry() -> ToolRegistry:
         WORKSPACE_MUTATION_TOOLS,
     )
     from src.agent.routing.tool_domains import DOMAIN_TOOL_MAP
+    from src.agent.runtime_v2.tool_definitions import (
+        MIGRATED_LEGACY_NAMES,
+        build_runtime_v2_definitions,
+    )
 
     schema_by_name = {s["function"]["name"]: s["function"] for s in FUNCTION_TOOL_SCHEMAS}
     tool_to_domain: dict[str, str] = {}
@@ -139,6 +143,10 @@ def build_default_registry() -> ToolRegistry:
             tool_to_domain.setdefault(name, domain)
 
     all_names = set(schema_by_name) | set(TOOL_HANDLERS) | set(TOOL_TAGS)
+    # The coding slice is not bootstrapped from any legacy schema, handler, or
+    # policy table. Its hidden names are aliases on explicit canonical
+    # definitions below, so they cannot survive as parallel definitions.
+    all_names.difference_update(MIGRATED_LEGACY_NAMES)
 
     definitions: dict[str, ToolDefinition] = {}
     for name in sorted(all_names):
@@ -240,6 +248,7 @@ def build_default_registry() -> ToolRegistry:
             externally_dispatched=name in _EXTERNALLY_DISPATCHED,
         )
 
+    definitions.update(build_runtime_v2_definitions())
     return ToolRegistry(definitions)
 
 

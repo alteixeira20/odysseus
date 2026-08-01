@@ -83,10 +83,10 @@ def local_computer_rules() -> str:
         "- For non-Cookbook terminal/file tasks on a named remote machine, "
         "use shell/SSH carefully and prefer read-only inspection before "
         "changes.\n"
-        "- Use `get_workspace` first. If no workspace is set, work from "
-        "explicit paths, uploaded files, configured safe roots, or shell "
-        "output.\n"
-        "- Use dedicated file tools when they can reach the path. Use shell "
+        "- Use `workspace_context` first. The runtime always supplies an "
+        "explicit selected, configured, or ephemeral ExecutionRoot.\n"
+        "- Use `read_files`, `search_text`, `find_files`, and "
+        "`patch_workspace` when they can reach the path. Use a bound command tool "
         "only when needed for local inspection, downloads, conversions, "
         "tests, or commands.\n"
         "- Do not use personal-assistant tools like email, calendar, notes, "
@@ -116,7 +116,7 @@ def workspace_coding_rules(
     ]
     orient = [
         name
-        for name in ("get_workspace", "grep", "glob", "ls", "read_file")
+        for name in ("workspace_context", "search_text", "find_files", "read_files")
         if name in available
     ]
     if orient:
@@ -125,42 +125,24 @@ def workspace_coding_rules(
             + ", ".join(f"`{name}`" for name in orient)
             + "."
         )
-    if "todowrite" in available:
+    if "plan" in available:
         lines.append(
-            "- For multi-step coding work, call `todowrite` and keep it "
+            "- For multi-step coding work, call `plan` and keep it "
             "current."
         )
-    editors = [
+    if "patch_workspace" in available:
+        lines.append(
+            "- Change repo files only with `patch_workspace`, using expected "
+            "revisions or hashes when available."
+        )
+    command_tools = [
         name
-        for name in ("apply_patch", "edit_file", "write_file")
+        for name in ("run_sandbox_command", "run_host_command", "run_python")
         if name in available
     ]
-    if editors:
-        if "apply_patch" in editors:
-            others = [
-                name for name in editors if name != "apply_patch"
-            ]
-            suffix = (
-                "; use "
-                + ", ".join(f"`{name}`" for name in others)
-                + " for narrower edits"
-                if others
-                else ""
-            )
-            lines.append(
-                "- Change repo files with `apply_patch` for related edits"
-                + suffix
-                + "."
-            )
-        else:
-            lines.append(
-                "- Change files only with the available editing tools: "
-                + ", ".join(f"`{name}`" for name in editors)
-                + "."
-            )
-    if "bash" in available:
+    if command_tools:
         lines.append(
-            "- Use `bash` for builds, tests, and commands; do not use shell "
+            "- Use the available bound process tool for builds, tests, and commands; do not use shell "
             "redirection to edit files."
         )
     lines.extend(

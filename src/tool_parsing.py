@@ -10,6 +10,7 @@ import bisect
 import json
 import logging
 import re
+from functools import lru_cache
 from typing import List, Optional, Tuple
 
 from src.agent_tools import ToolBlock, TOOL_TAGS
@@ -35,6 +36,37 @@ _TOOL_BLOCK_RE = re.compile(
     r"[ \t]*([{\[][^\n]*?)?[ \t]*(?=\r?\n|```)\r?\n?([\s\S]*?)```",
     re.IGNORECASE,
 )
+
+
+@lru_cache(maxsize=8)
+def _registry_tool_block_re(names: tuple[str, ...]) -> re.Pattern:
+    return re.compile(
+        r"```(" + "|".join(re.escape(name) for name in names) + r")(?![\w-])"
+        r"[ \t]*([{\[][^\n]*?)?[ \t]*(?=\r?\n|```)\r?\n?([\s\S]*?)```",
+        re.IGNORECASE,
+    )
+
+
+def _active_tool_block_re() -> re.Pattern:
+    """The live fenced vocabulary comes from the authoritative registry."""
+
+    try:
+        from src.agent.tools.bootstrap import TOOL_REGISTRY
+
+        names = tuple(sorted(TOOL_REGISTRY.accepted_names()))
+    except (ImportError, RuntimeError):
+        names = tuple(sorted(TOOL_TAGS))
+    return _registry_tool_block_re(names)
+
+
+def _registered_tool_name(name: str) -> Optional[str]:
+    mapped = _TOOL_NAME_MAP.get(name, name)
+    try:
+        from src.agent.tools.bootstrap import TOOL_REGISTRY
+
+        return mapped if TOOL_REGISTRY.resolve(mapped) is not None else None
+    except (ImportError, RuntimeError):
+        return mapped if mapped in TOOL_TAGS else None
 
 # Tags whose fenced content is raw code, not JSON args. Same-line text after
 # these tags is Markdown fence metadata on a real language (```bash {title=
@@ -806,7 +838,7 @@ def _parse_tool_call_block(raw: str) -> Optional[ToolBlock]:
     tool_name = tool_match.group(1).lower()
     # Fall back to the raw name when it's a real tool but not in the alias
     # map, so known tools (e.g. manage_calendar) aren't silently dropped.
-    mapped = _TOOL_NAME_MAP.get(tool_name) or (tool_name if tool_name in TOOL_TAGS else None)
+    mapped = _registered_tool_name(tool_name)
     if not mapped:
         return None
 
@@ -898,7 +930,7 @@ def _parse_xml_direct_tool(name, body) -> Optional[ToolBlock]:
     tool_name = name.lower().replace("-", "_")
     if tool_name in {"invoke", "parameter", "tool_call", "function_call"}:
         return None
-    mapped = _TOOL_NAME_MAP.get(tool_name) or (tool_name if tool_name in TOOL_TAGS else None)
+    mapped = _registered_tool_name(tool_name)
     if not mapped:
         return None
     body = body.strip()
@@ -990,7 +1022,7 @@ def _strip_bare_invoke_markup(text: str) -> str:
 def _parse_stepfun_tool_call(tool_name: str, body: str) -> Optional[ToolBlock]:
     """Parse StepFun native tool-call tokens into an Odysseus ToolBlock."""
     tool_name = tool_name.lower().replace("-", "_").replace(".", "_")
-    mapped = _TOOL_NAME_MAP.get(tool_name) or (tool_name if tool_name in TOOL_TAGS else None)
+    mapped = _registered_tool_name(tool_name)
     if not mapped:
         return None
     body = (body or "").strip()
@@ -1030,7 +1062,7 @@ def _parse_tool_code_block(raw: str) -> Optional[ToolBlock]:
             tool_name = tool_name[len(prefix):]
             break
 
-    mapped = _TOOL_NAME_MAP.get(tool_name)
+    mapped = _registered_tool_name(tool_name)
 
     # Extract args content
     args_match = re.search(r"args\s*=>\s*['\"]?\s*([\s\S]*?)\s*['\"]?\s*$", raw, re.DOTALL)
@@ -1269,7 +1301,7 @@ def parse_tool_blocks(text: str, skip_fenced: bool = False) -> List[ToolBlock]:
 
     # Pattern 1: fenced code blocks (skipped when `skip_fenced` — see docstring).
     if not skip_fenced:
-        for m in _TOOL_BLOCK_RE.finditer(text):
+        for m in _active_tool_block_re().finditer(text):
             call = _fenced_tool_call(m)
             if call is None:
                 continue
@@ -1431,7 +1463,7 @@ def strip_tool_blocks(text: str, skip_fenced: bool = False) -> str:
     # Keep the executed-vs-illustrative fence distinction (only strip fences
     # that actually dispatched; leave example fences from native models inert
     # but visible), then remove [TOOL_CALL]{...}[/TOOL_CALL] markup.
-    cleaned = text if skip_fenced else _TOOL_BLOCK_RE.sub(_strip_executed_fence, text)
+    cleaned = text if skip_fenced else _active_tool_block_re().sub(_strip_executed_fence, text)
     # Forward-only removal mirrors parse_tool_blocks: _strip_delimited pairs each
     # opener with a later closer and stops when none is reachable, so untrusted
     # output can't drive the O(n^2) lazy-rescan (ReDoS); see _iter_delimited.

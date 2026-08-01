@@ -26,14 +26,14 @@ def _utcnow() -> datetime:
 # Shell/file tools a scheduled task's agent should be offered by default,
 # mirroring the chat agent (where these are on unless a privilege or global
 # setting turns them off). The RAG tool selector + ASSISTANT_ALWAYS_AVAILABLE
-# never include bash/python, so on a host with an empty/degraded tool-embedding
+# never include command/Python tools, so on a host with an empty/degraded tool-embedding
 # index a task could not run shell or Python even for an admin owner. Offering
 # them here is safe: stream_agent_loop's blocked_tools_for_owner() still strips
 # this whole group for non-admin multi-user owners, and only admits it for
 # admins and single-user (AUTH_ENABLED=false) deployments.
 TASK_DEFAULT_SHELL_TOOLS = frozenset({
-    "bash", "python", "read_file", "write_file", "edit_file",
-    "grep", "glob", "ls", "get_workspace",
+    "run_sandbox_command", "run_python", "read_files", "patch_workspace",
+    "search_text", "find_files", "workspace_context",
 })
 
 
@@ -45,9 +45,16 @@ def compose_task_relevant_tools(rag_tools, assistant_always, disabled_tools):
     explicitly disabled via its `enabled_tools` allowlist. Per-owner admin
     gating is applied later by stream_agent_loop (blocked_tools_for_owner).
     """
-    tools = set(rag_tools) | set(assistant_always) | set(TASK_DEFAULT_SHELL_TOOLS)
+    from src.agent.tools.bootstrap import TOOL_REGISTRY
+
+    tools = set(
+        TOOL_REGISTRY.canonicalize_names(
+            set(rag_tools) | set(assistant_always) | set(TASK_DEFAULT_SHELL_TOOLS),
+            None,
+        )
+    )
     if disabled_tools:
-        tools -= set(disabled_tools)
+        tools -= set(TOOL_REGISTRY.canonicalize_names(disabled_tools, None))
     return tools
 
 

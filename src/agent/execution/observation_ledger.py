@@ -32,7 +32,19 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 
-OBSERVED_READ_TOOLS = frozenset({"read_file", "grep", "glob", "ls"})
+OBSERVED_READ_TOOLS = frozenset(
+    {
+        "read_files",
+        "search_text",
+        "find_files",
+        # Compatibility inputs are normalized before Runtime V2 execution;
+        # retain these only for non-migrated direct tests/callers.
+        "read_file",
+        "grep",
+        "glob",
+        "ls",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -165,10 +177,17 @@ def _observation_key(
     args: dict[str, Any],
     content: str,
 ) -> tuple[str, Any]:
-    if tool == "read_file":
+    if tool in {"read_file", "read_files"}:
+        if tool == "read_files" and isinstance(args.get("requests"), list):
+            key = " | ".join(
+                str(item.get("path") or "")
+                for item in args["requests"]
+                if isinstance(item, dict)
+            )
+            return key, "ranges"
         key = str(args.get("path") or content or "").strip()
         return key, (args.get("offset") or 0, args.get("limit") or 0)
-    if tool == "grep":
+    if tool in {"grep", "search_text"}:
         key = " | ".join(
             str(args.get(name) or "")
             for name in ("pattern", "path", "glob", "ignore_case")
@@ -177,7 +196,7 @@ def _observation_key(
             args.get("offset") or 0,
             args.get("max_results") or 200,
         )
-    if tool == "glob":
+    if tool in {"glob", "find_files"}:
         key = " | ".join(
             str(args.get(name) or "") for name in ("pattern", "path")
         ).strip(" |")

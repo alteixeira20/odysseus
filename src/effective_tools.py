@@ -14,18 +14,14 @@ from typing import Iterable, Mapping, Optional
 
 
 WORKSPACE_INSPECTION_TOOLS = frozenset({
-    "get_workspace",
-    "read_file",
-    "ls",
-    "glob",
-    "grep",
+    "workspace_context",
+    "read_files",
+    "find_files",
+    "search_text",
 })
 
 WORKSPACE_MUTATION_TOOLS = frozenset({
-    "write_file",
-    "edit_file",
-    "apply_patch",
-    "todowrite",
+    "patch_workspace",
 })
 
 # Compatibility name: a workspace makes inspection foundational.  Mutation is
@@ -33,12 +29,12 @@ WORKSPACE_MUTATION_TOOLS = frozenset({
 WORKSPACE_FOUNDATIONAL_TOOLS = WORKSPACE_INSPECTION_TOOLS
 
 SHELL_FOUNDATIONAL_TOOLS = frozenset({
-    "bash",
-    "python",
-    "manage_bg_jobs",
+    "run_sandbox_command",
+    "run_host_command",
+    "run_python",
 })
 
-LOOP_PRIMITIVE_TOOLS = frozenset({"ask_user", "update_plan", "manage_plan"})
+LOOP_PRIMITIVE_TOOLS = frozenset({"ask_user", "plan"})
 
 
 @dataclass(frozen=True)

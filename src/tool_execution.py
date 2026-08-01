@@ -596,6 +596,55 @@ async def _direct_fallback(
 
         from src.agent.tools.bootstrap import TOOL_REGISTRY
         definition = TOOL_REGISTRY.get(tool)
+        if definition is not None and definition.runtime_v2:
+            # This helper remains as a compatibility *entry*, not a second
+            # dispatcher.  Resolve an explicit root from the already-confined
+            # legacy path and immediately enter execute_tool_block(), whose V2
+            # branch normalizes aliases and performs registry policy/execution.
+            from src.agent_tools import ToolBlock
+
+            decoded_arguments = arguments
+            if decoded_arguments is None:
+                raw = str(content or "").strip()
+                if raw.startswith("{"):
+                    try:
+                        candidate_arguments = json.loads(raw)
+                    except (TypeError, ValueError):
+                        candidate_arguments = None
+                    if isinstance(candidate_arguments, dict):
+                        decoded_arguments = candidate_arguments
+
+            selected_workspace = get_active_workspace()
+            if selected_workspace is None:
+                candidate_path = None
+                if isinstance(decoded_arguments, dict):
+                    candidate_path = (
+                        decoded_arguments.get("path")
+                        or decoded_arguments.get("source")
+                        or decoded_arguments.get("destination")
+                    )
+                elif tool == "read_file":
+                    candidate_path = str(content or "").strip()
+                elif tool == "write_file":
+                    candidate_path = str(content or "").split("\n", 1)[0].strip()
+                if candidate_path:
+                    confined = _resolve_tool_path(str(candidate_path))
+                    selected_workspace = (
+                        confined if os.path.isdir(confined) else os.path.dirname(confined)
+                    )
+
+            block = ToolBlock(tool, content, decoded_arguments)
+            _description, result = await execute_tool_block(
+                block,
+                session_id=session_id,
+                owner=owner,
+                progress_cb=progress_cb,
+                workspace=selected_workspace,
+                execution_mode=get_active_execution_mode().value,
+                allowed_tools={tool},
+                invocation_id=invocation_id,
+            )
+            return result
         if definition is not None and definition.handler is not None:
             return await definition.handler(content, ctx)
 
@@ -635,13 +684,17 @@ async def execute_tool_block(
     tool_policy: Optional[Any] = None,
     allowed_tools: Optional[set] = None,
     invocation_id: Optional[str] = None,
+    execution_context: Optional[Any] = None,
 ) -> Tuple[str, Dict]:
     """Execute a single tool block. Returns (description, result_dict).
 
-    Thin wrapper: bind the per-turn workspace (so the path resolvers + subprocess
-    cwd confine to it) for the duration of this call, then delegate. Reset on the
-    way out so the binding never leaks to the next tool call.
+    Runtime V2 tools are normalized and executed through their registry
+    definition before any legacy context variables are bound. Non-migrated
+    compatibility tools still use the context-local wrapper below.
     """
+    from src.agent.tools.bootstrap import TOOL_REGISTRY
+
+    raw_name = str(getattr(block, "tool_type", "") or "")
     bound_workspace = vet_workspace(workspace) if workspace else None
     if workspace and not bound_workspace:
         return "workspace: BLOCKED", {
@@ -649,6 +702,122 @@ async def execute_tool_block(
             "error_type": "invalid_workspace",
             "exit_code": 1,
         }
+    definition = TOOL_REGISTRY.resolve(raw_name, execution_context)
+    if definition is not None and definition.runtime_v2:
+        from src.agent.rounds.tool_calls import normalize_tool_calls
+        from src.agent.runtime_v2.authority import prepare_execution_context
+        from src.agent.runtime_v2.contracts import RunBudgets
+        from src.agent.runtime_v2.executor import execute_normalized_tool_call
+
+        context = execution_context
+        if context is None:
+            disabled = set(disabled_tools or ())
+            if tool_policy is not None:
+                try:
+                    disabled.update(tool_policy.all_disabled_names())
+                except (AttributeError, TypeError):
+                    if tool_policy.blocks(raw_name):
+                        disabled.add(raw_name)
+            context, _ = prepare_execution_context(
+                owner_id=str(owner or ""),
+                session_id=str(session_id or "direct-tool-call"),
+                requested_mode=normalize_execution_mode(execution_mode),
+                selected_workspace=bound_workspace,
+                budgets=RunBudgets(max_rounds=1, max_tool_calls=1),
+                tool_catalog_revision=TOOL_REGISTRY.revision,
+                disabled_tools=TOOL_REGISTRY.canonicalize_names(disabled, None),
+            )
+            definition = TOOL_REGISTRY.resolve(raw_name, context)
+
+        normalized = normalize_tool_calls(
+            [block],
+            [],
+            execution_context=context,
+            provider_name="legacy_adapter",
+        )[0]
+        if allowed_tools is not None:
+            allowed = TOOL_REGISTRY.canonicalize_names(allowed_tools, context)
+            if normalized.canonical_name not in allowed:
+                return f"{normalized.canonical_name}: UNAVAILABLE", {
+                    "error": (
+                        f"Tool '{normalized.canonical_name}' is not available in this run."
+                    ),
+                    "error_type": "tool_not_available",
+                    "exit_code": 1,
+                }
+        result = await execute_normalized_tool_call(normalized, context)
+        projected = result.legacy_projection()
+        if result.status.value == "success":
+            if raw_name in {"grep", "rg"} and not result.data.get("matches"):
+                projected["output"] = "No matches found."
+            elif raw_name in {"glob", "ls"} and not result.data.get("files"):
+                projected["output"] = "No files matching the requested pattern."
+            elif raw_name == "read_file":
+                files = result.data.get("files") or []
+                first = files[0] if files else {}
+                if first.get("status") == "success":
+                    projected["output"] = "".join(
+                        str(line.get("text") or "")
+                        + str(line.get("line_ending") or "")
+                        for line in first.get("lines") or []
+                    )
+            elif raw_name == "get_workspace":
+                projected["output"] = (
+                    f"{result.data.get('path')} is the only writable workspace "
+                    f"for this run ({result.data.get('source')})."
+                )
+            elif raw_name == "todowrite":
+                plan = result.data.get("plan") or {}
+                markers = {
+                    "completed": "x",
+                    "in_progress": ">",
+                    "blocked": "!",
+                    "skipped": "-",
+                    "pending": " ",
+                }
+                checklist = "\n".join(
+                    f"[{markers.get(str(step.get('status')), ' ')}] {step.get('content', '')}"
+                    for step in plan.get("steps") or []
+                )
+                if checklist:
+                    projected["output"] = (
+                        f"{checklist}\n{result.data.get('output') or ''}"
+                    ).rstrip()
+            elif raw_name == "apply_patch":
+                operations = result.data.get("operations") or []
+                diff_text = "".join(
+                    str(operation.get("diff") or "")
+                    for operation in operations
+                )
+                projected["diff"] = {
+                    "text": diff_text,
+                    "added": sum(
+                        1
+                        for line in diff_text.splitlines()
+                        if line.startswith("+") and not line.startswith("+++")
+                    ),
+                    "removed": sum(
+                        1
+                        for line in diff_text.splitlines()
+                        if line.startswith("-") and not line.startswith("---")
+                    ),
+                    "new_file": any(
+                        operation.get("type") == "create"
+                        for operation in operations
+                    ),
+                    "file": "patch",
+                }
+        if (
+            result.status.value == "denied"
+            and result.error is not None
+            and result.error.code == "tool_disabled"
+        ):
+            return f"{raw_name}: BLOCKED", projected
+        return (
+            f"{normalized.canonical_name}: {result.status.value}",
+            projected,
+        )
+
     token = _active_workspace.set(bound_workspace)
     execution_token = _active_execution_mode.set(
         normalize_execution_mode(execution_mode)

@@ -703,6 +703,36 @@ def setup_chat_routes(
     # ------------------------------------------------------------------ #
     # POST /api/chat_stream
     # ------------------------------------------------------------------ #
+    @router.post("/api/chat/host-authorize")
+    async def authorize_host_shell(request: Request) -> Dict[str, Any]:
+        """Issue a short-lived, server-bound token for exactly one agent run."""
+
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        session_id = str((payload or {}).get("session_id") or "").strip()
+        if not session_id:
+            raise HTTPException(400, "session_id is required")
+        _verify_session_owner(request, session_id)
+        from src.agent.runtime_v2.authority import HOST_AUTHORIZATIONS
+        from src.tool_security import owner_is_admin_or_single_user
+
+        authenticated_owner = get_current_user(request)
+        if not owner_is_admin_or_single_user(authenticated_owner):
+            raise HTTPException(403, "Full host shell requires an owner/admin account")
+        owner = effective_user(request)
+        authorization = HOST_AUTHORIZATIONS.issue(
+            owner_id=str(owner or ""),
+            session_id=session_id,
+        )
+        return {
+            "authorization": authorization.token,
+            "authorization_id": authorization.authorization_id,
+            "expires_at": authorization.expires_at,
+            "one_run": True,
+        }
+
     @router.post("/api/chat_stream")
     async def chat_stream(request: Request) -> StreamingResponse:
         _request_received_at = time.perf_counter()
@@ -737,6 +767,9 @@ def setup_chat_routes(
         requested_shell_mode = form_data.get("shell_mode")
         if requested_shell_mode is None:
             requested_shell_mode = (body or {}).get("shell_mode")
+        host_authorization_token = form_data.get("host_authorization")
+        if host_authorization_token is None:
+            host_authorization_token = (body or {}).get("host_authorization")
         from src.execution_policy import resolve_execution_mode
         # Missing/false allow_bash is an immutable denial.  Legacy true maps
         # only to sandboxed mode; host access requires shell_mode=host too.
@@ -1115,9 +1148,10 @@ def setup_chat_routes(
 
         # Finalize process authority only after absolute-path auto-workspace
         # detection has run. Safe execution requires a vetted workspace; host
-        # execution starts in the selected workspace, or the server working
-        # tree when none is selected. A workspace itself never grants either
-        # mode. Host mode
+        # execution starts in the selected/configured root. Sandbox mode uses
+        # an isolated ephemeral root when neither exists; host mode is disabled
+        # rather than inheriting the server process directory. A workspace
+        # itself never grants either mode. Host mode
         # is also restricted to an admin/single-user caller and an explicit
         # request; a forged field from a public account is denied here.
         from src.execution_policy import ExecutionMode
@@ -1129,19 +1163,9 @@ def setup_chat_routes(
             execution_mode = ExecutionMode.DISABLED
             shell_mode_reason = "host_mode_requires_admin"
         elif execution_mode is ExecutionMode.SANDBOXED:
-            from src.constants import DATA_DIR
             from src.process_sandbox import sandbox_capability
             _sandbox_capability = sandbox_capability()
-            _safe_execution_root = os.path.realpath(workspace or os.getcwd())
-            if os.path.dirname(_safe_execution_root) == _safe_execution_root:
-                execution_mode = ExecutionMode.DISABLED
-                shell_mode_reason = "safe workspace shell refuses a filesystem root"
-            elif _safe_execution_root == os.path.realpath(DATA_DIR):
-                execution_mode = ExecutionMode.DISABLED
-                shell_mode_reason = (
-                    "safe workspace shell cannot use the Odysseus application-data root"
-                )
-            elif not _sandbox_capability.available:
+            if not _sandbox_capability.available:
                 execution_mode = ExecutionMode.DISABLED
                 shell_mode_reason = _sandbox_capability.reason
         shell_enabled = execution_mode.enabled
@@ -1294,6 +1318,58 @@ def setup_chat_routes(
         _effective_mode = 'research' if effective_do_research else (chat_mode or 'chat')
         if _effective_mode in ('agent', 'research', 'chat'):
             set_session_mode(session, _effective_mode)
+
+        _execution_context = None
+        _tool_budget = 0
+        _max_rounds = 1
+        if _effective_mode == "agent":
+            from src.agent.runtime_v2.authority import prepare_execution_context
+            from src.agent.runtime_v2.contracts import RunBudgets
+            from src.agent.tools.bootstrap import TOOL_REGISTRY
+            from src.agent_tools import MAX_AGENT_ROUNDS as _DEFAULT_ROUNDS
+            from src.tool_security import blocked_tools_for_owner
+
+            try:
+                _tool_budget = int(get_setting("agent_max_tool_calls", 0))
+            except (TypeError, ValueError):
+                _tool_budget = 0
+            try:
+                _max_rounds = int(
+                    get_setting("agent_max_rounds", _DEFAULT_ROUNDS)
+                    or _DEFAULT_ROUNDS
+                )
+            except (TypeError, ValueError):
+                _max_rounds = _DEFAULT_ROUNDS
+            _max_rounds = max(1, min(_max_rounds, 200))
+            _run_budgets = RunBudgets(
+                max_rounds=_max_rounds,
+                max_tool_calls=(_tool_budget if _tool_budget > 0 else 256),
+                max_provider_requests=min(max(_max_rounds * 3, 1), 128),
+            )
+            _execution_context, _context_reason = prepare_execution_context(
+                owner_id=str(_user or ""),
+                session_id=str(session),
+                requested_mode=execution_mode,
+                selected_workspace=workspace or None,
+                budgets=_run_budgets,
+                tool_catalog_revision=TOOL_REGISTRY.revision,
+                plan_mode=plan_mode,
+                host_authorization_token=(
+                    str(host_authorization_token)
+                    if host_authorization_token
+                    else None
+                ),
+                sandbox_default=get_setting("agent_sandbox_default_root", None),
+                host_default=get_setting("agent_host_default_root", None),
+                disabled_tools=TOOL_REGISTRY.canonicalize_names(
+                    set(disabled_tools) | set(blocked_tools_for_owner(_user)),
+                    None,
+                ),
+            )
+            execution_mode = _execution_context.execution_mode
+            shell_enabled = execution_mode.enabled
+            if _context_reason != "requested":
+                shell_mode_reason = _context_reason
 
         async def stream_with_save() -> AsyncGenerator[str, None]:
             # _effective_mode is read-only here; closure captures it from
@@ -1744,24 +1820,6 @@ def setup_chat_routes(
                         sess.model,
                         bool(workspace),
                     )
-                    from src.settings import get_setting
-                    from src.agent_tools import MAX_AGENT_ROUNDS as _DEFAULT_ROUNDS
-                    # Per-message tool budget from settings; guard defensively in
-                    # case settings.json was hand-edited to a non-numeric value
-                    # (the HTTP admin endpoint validates, but direct edits bypass
-                    # it). 0 = unlimited, matching auth_routes set_settings().
-                    try:
-                        _tool_budget = int(get_setting("agent_max_tool_calls", 0))
-                    except (TypeError, ValueError):
-                        _tool_budget = 0
-                    # Per-message round cap from settings; clamp defensively in
-                    # case settings.json was hand-edited to a bad value.
-                    try:
-                        _max_rounds = int(get_setting("agent_max_rounds", _DEFAULT_ROUNDS) or _DEFAULT_ROUNDS)
-                    except (TypeError, ValueError):
-                        _max_rounds = _DEFAULT_ROUNDS
-                    _max_rounds = max(1, min(_max_rounds, 200))
-
                     _forced_tools = None
                     if _search_enabled:
                         _forced_tools = set(WEB_TOOL_NAMES)
@@ -1774,8 +1832,16 @@ def setup_chat_routes(
                         "type": "execution_authority",
                         "mode": execution_mode.value,
                         "reason": shell_mode_reason,
-                        "workspace": bool(workspace),
+                        "workspace": (
+                            _execution_context.execution_root.source.value
+                            == "selected_workspace"
+                        ),
                         "ephemeral": True,
+                        "execution_root": _execution_context.execution_root.path,
+                        "root_source": _execution_context.execution_root.source.value,
+                        "workspace_revision": _execution_context.execution_root.workspace_revision,
+                        "authority_revision": _execution_context.authority_grant.revision,
+                        "run_id": _execution_context.run_id,
                     }) + "\n\n"
 
                     async for chunk in stream_agent_loop(
@@ -1802,6 +1868,7 @@ def setup_chat_routes(
                         forced_tools=_forced_tools,
                         uploaded_files=ctx.uploaded_files,
                         shell_enabled=execution_mode.value,
+                        execution_context=_execution_context,
                     ):
                         if chunk.startswith("data: ") and not chunk.startswith("data: [DONE]"):
                             try:
@@ -1815,6 +1882,26 @@ def setup_chat_routes(
                                     else:
                                         full_response += data["delta"]
                                         _stream_set(session, partial=full_response)
+                                    yield chunk
+                                elif data.get("version") == 2:
+                                    # Runtime V2 events are already validated,
+                                    # ordered, and reduced by agent_runs. Keep
+                                    # their canonical envelope intact for the
+                                    # browser reducer instead of silently
+                                    # dropping them at the route boundary.
+                                    if data.get("type") == "tool_started":
+                                        _agent_tool_calls += 1
+                                    elif data.get("type") == "run_state":
+                                        _payload = data.get("payload") or {}
+                                        if _payload.get("terminal"):
+                                            _agent_terminal_state = (
+                                                _payload.get("disposition")
+                                                or _payload.get("state")
+                                            )
+                                            _agent_terminal_reason = _payload.get("reason")
+                                            _agent_terminal_resumable = bool(
+                                                _payload.get("resumable")
+                                            )
                                     yield chunk
                                 elif data.get("type") == "web_sources":
                                     web_sources = data.get("data", [])
@@ -1984,6 +2071,7 @@ def setup_chat_routes(
                 _safe_stream(),
                 mode=agent_runs.RunMode.DETACHED,
                 owner=str(_user) if _user else None,
+                execution_context=_execution_context,
             )
         except agent_runs.RunCapacityError as exc:
             raise HTTPException(429, str(exc))

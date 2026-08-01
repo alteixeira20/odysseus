@@ -24,6 +24,12 @@ import time
 from typing import AsyncGenerator, Dict, Optional
 
 from src.agent.contracts import RunDisposition
+from src.agent.runtime_v2.contracts import AgentExecutionContext
+from src.agent.runtime_v2.events import (
+    encode_runtime_sse,
+    runtime_event_from_payload,
+)
+from src.agent.runtime_v2.state import RunState, RunStateMachine
 
 
 logger = logging.getLogger(__name__)
@@ -67,9 +73,16 @@ class _Run:
         "subscribers",
         "task",
         "terminal",
+        "execution_context",
+        "state_machine",
     )
 
-    def __init__(self, mode: RunMode, owner: Optional[str]) -> None:
+    def __init__(
+        self,
+        mode: RunMode,
+        owner: Optional[str],
+        execution_context: Optional[AgentExecutionContext],
+    ) -> None:
         self.base_seq = 0
         self.buffer: list[str] = []
         self.buffer_bytes = 0
@@ -83,6 +96,10 @@ class _Run:
         self.mode = mode
         self.owner = owner
         self.terminal: Optional[RunTerminal] = None
+        self.execution_context = execution_context
+        self.state_machine = RunStateMachine(
+            execution_context.run_id if execution_context else f"legacy:{id(self)}"
+        )
 
 
 _RUNS: Dict[str, _Run] = {}
@@ -200,6 +217,32 @@ def list_runs(owner: Optional[str] = None) -> list[dict]:
             "terminal": (
                 run.terminal.disposition.value if run.terminal else None
             ),
+            "run_id": (
+                run.execution_context.run_id
+                if run.execution_context
+                else None
+            ),
+            "run_state": run.state_machine.state.value,
+            "execution_mode": (
+                run.execution_context.execution_mode.value
+                if run.execution_context
+                else None
+            ),
+            "root_source": (
+                run.execution_context.execution_root.source.value
+                if run.execution_context
+                else None
+            ),
+            "workspace_revision": (
+                run.execution_context.execution_root.workspace_revision
+                if run.execution_context
+                else None
+            ),
+            "authority_revision": (
+                run.execution_context.authority_grant.revision
+                if run.execution_context
+                else None
+            ),
         })
     return sorted(records, key=lambda record: record["age_seconds"], reverse=True)
 
@@ -227,6 +270,66 @@ def _parse_terminal_event(event: str) -> Optional[RunTerminal]:
         disposition=disposition,
         reason=str(payload.get("reason") or disposition.value),
         payload=dict(payload),
+    )
+
+
+def _parse_runtime_wire(event: str):
+    if not event.startswith("data: {"):
+        return None
+    try:
+        payload = json.loads(event[6:])
+    except (TypeError, ValueError):
+        return None
+    return runtime_event_from_payload(payload)
+
+
+def _runtime_state_for_disposition(disposition: RunDisposition) -> RunState:
+    if disposition is RunDisposition.COMPLETED:
+        return RunState.COMPLETED
+    if disposition is RunDisposition.CANCELLED:
+        return RunState.CANCELLED
+    if disposition is RunDisposition.ERROR:
+        return RunState.FAILED
+    if disposition is RunDisposition.AWAITING_INPUT:
+        return RunState.WAITING_USER
+    if disposition is RunDisposition.AWAITING_APPROVAL:
+        return RunState.WAITING_APPROVAL
+    return RunState.INCOMPLETE
+
+
+def _terminal_from_runtime(runtime_event) -> Optional[RunTerminal]:
+    if runtime_event is None or runtime_event.type != "run_state":
+        return None
+    try:
+        state = RunState(str(runtime_event.payload.get("state")))
+    except ValueError:
+        return None
+    if not state.terminal:
+        return None
+    raw_disposition = runtime_event.payload.get("disposition")
+    if raw_disposition:
+        try:
+            disposition = RunDisposition(str(raw_disposition))
+        except ValueError:
+            disposition = RunDisposition.INCOMPLETE
+    else:
+        disposition = {
+            RunState.COMPLETED: RunDisposition.COMPLETED,
+            RunState.CANCELLED: RunDisposition.CANCELLED,
+            RunState.FAILED: RunDisposition.ERROR,
+            RunState.WAITING_USER: RunDisposition.AWAITING_INPUT,
+            RunState.WAITING_APPROVAL: RunDisposition.AWAITING_APPROVAL,
+        }.get(state, RunDisposition.INCOMPLETE)
+    return RunTerminal(
+        disposition=disposition,
+        reason=str(runtime_event.payload.get("reason") or disposition.value),
+        payload={
+            "type": "run_state",
+            "state": disposition.value,
+            "terminal": True,
+            "reason": str(runtime_event.payload.get("reason") or disposition.value),
+            "resumable": bool(runtime_event.payload.get("resumable")),
+        },
     )
 
 
@@ -276,9 +379,49 @@ def _make_terminal(
     )
 
 
-def _commit_terminal(run: _Run, terminal: RunTerminal) -> None:
+def _commit_terminal(
+    run: _Run,
+    terminal: RunTerminal,
+    *,
+    runtime_wire: Optional[str] = None,
+) -> None:
     run.terminal = terminal
     run.status = _terminal_status(terminal.disposition)
+    runtime_state = _runtime_state_for_disposition(terminal.disposition)
+    if runtime_wire is not None:
+        parsed = _parse_runtime_wire(runtime_wire)
+        if parsed is not None:
+            try:
+                run.state_machine.reduce(parsed)
+            except ValueError:
+                logger.exception("invalid terminal runtime event for %s", parsed.run_id)
+                runtime_wire = None
+    if runtime_wire is None and run.execution_context is not None:
+        event = run.execution_context.event_factory.create(
+            "run_state",
+            {
+                "state": runtime_state.value,
+                "disposition": terminal.disposition.value,
+                "reason": terminal.reason,
+                "resumable": bool(terminal.payload.get("resumable")),
+                "terminal": True,
+            },
+        )
+        runtime_wire = encode_runtime_sse(event)
+        try:
+            run.state_machine.reduce(event)
+        except ValueError:
+            if runtime_state is RunState.CANCELLED:
+                run.state_machine.transition(
+                    runtime_state,
+                    reason=terminal.reason,
+                    sequence=event.sequence,
+                    cancellation_override=True,
+                )
+            else:
+                logger.exception("failed to commit runtime terminal state")
+    if runtime_wire is not None:
+        _publish(run, runtime_wire)
     _publish(run, _terminal_event(terminal))
     _publish(run, "data: [DONE]\n\n")
 
@@ -302,17 +445,28 @@ async def _drain(
             pass
 
     pending_terminal: Optional[RunTerminal] = None
+    pending_runtime_wire: Optional[str] = None
     stream_error_seen = False
     protocol_done_seen = False
     try:
         while True:
+            wall_limit = (
+                run.execution_context.budgets.wall_clock_seconds
+                if run.execution_context
+                else _MAX_RUN_WALL_CLOCK_S
+            )
+            idle_limit = (
+                run.execution_context.budgets.idle_seconds
+                if run.execution_context
+                else _MAX_RUN_IDLE_S
+            )
             wall_remaining = (
-                _MAX_RUN_WALL_CLOCK_S
+                wall_limit
                 - (time.monotonic() - run.started_monotonic)
             )
             if wall_remaining <= 0:
                 raise _RunLimitExceeded("run_wall_clock_exhausted")
-            next_timeout = min(_MAX_RUN_IDLE_S, wall_remaining)
+            next_timeout = min(idle_limit, wall_remaining)
             try:
                 event = await asyncio.wait_for(
                     agen.__anext__(),
@@ -323,7 +477,7 @@ async def _drain(
             except asyncio.TimeoutError:
                 reason = (
                     "run_wall_clock_exhausted"
-                    if wall_remaining <= _MAX_RUN_IDLE_S
+                    if wall_remaining <= idle_limit
                     else "run_idle_timeout"
                 )
                 raise _RunLimitExceeded(reason)
@@ -335,12 +489,35 @@ async def _drain(
                 continue
             if event.startswith("event: error"):
                 stream_error_seen = True
+            runtime_event = _parse_runtime_wire(event)
+            runtime_terminal = _terminal_from_runtime(runtime_event)
+            if runtime_terminal is not None:
+                pending_terminal = _prefer_terminal(
+                    pending_terminal, runtime_terminal
+                )
+                pending_runtime_wire = event
+                continue
+            if runtime_event is not None and runtime_event.type == "run_state":
+                try:
+                    run.state_machine.reduce(runtime_event)
+                except ValueError:
+                    logger.exception(
+                        "invalid runtime state event run=%s sequence=%s",
+                        runtime_event.run_id,
+                        runtime_event.sequence,
+                    )
+                    continue
+                _publish(run, event)
+                continue
             candidate = _parse_terminal_event(event)
             if candidate is not None:
                 # Do not publish/commit terminal metadata until [DONE] confirms
                 # normal protocol completion.  Cancellation/exception can still
                 # override this uncommitted decision.
-                pending_terminal = _prefer_terminal(pending_terminal, candidate)
+                chosen_terminal = _prefer_terminal(pending_terminal, candidate)
+                if chosen_terminal is candidate:
+                    pending_runtime_wire = None
+                pending_terminal = chosen_terminal
                 continue
             if event == "data: [DONE]\n\n":
                 protocol_done_seen = True
@@ -352,12 +529,18 @@ async def _drain(
                         RunDisposition.ERROR,
                         reason="stream_error",
                     )
+                    pending_runtime_wire = None
                 if pending_terminal is None:
                     pending_terminal = _make_terminal(
-                        RunDisposition.COMPLETED,
-                        reason="stream_complete",
+                        RunDisposition.INCOMPLETE,
+                        reason="done_without_semantic_terminal",
+                        resumable=True,
                     )
-                _commit_terminal(run, pending_terminal)
+                _commit_terminal(
+                    run,
+                    pending_terminal,
+                    runtime_wire=pending_runtime_wire,
+                )
                 # Resume the wrapped generator so its post-yield cleanup/finally
                 # runs normally.  Any further wire events are protocol noise and
                 # are ignored above.
@@ -448,6 +631,7 @@ def start(
     *,
     mode: RunMode = RunMode.DETACHED,
     owner: Optional[str] = None,
+    execution_context: Optional[AgentExecutionContext] = None,
 ) -> _Run:
     """Start a run with explicit ownership semantics.
 
@@ -472,11 +656,13 @@ def start(
     previous_task: Optional[asyncio.Task] = None
     if previous:
         if previous.task and not previous.task.done():
+            if previous.execution_context is not None:
+                previous.execution_context.cancellation_token.cancel()
             previous.task.cancel()
             previous_task = previous.task
         if previous.evict_task and not previous.evict_task.done():
             previous.evict_task.cancel()
-    run = _Run(mode, owner)
+    run = _Run(mode, owner, execution_context)
     _RUNS[session_id] = run
     run.task = asyncio.create_task(_drain(session_id, agen, previous_task))
 
@@ -569,6 +755,8 @@ async def subscribe(session_id: str) -> AsyncGenerator[str, None]:
             logger.info(
                 "[agent-run] cancelling attached run %s after disconnect", session_id
             )
+            if run.execution_context is not None:
+                run.execution_context.cancellation_token.cancel()
             run.task.cancel()
         if not run.subscribers and run.status != "running":
             _schedule_evict(session_id)
@@ -579,6 +767,8 @@ def stop(session_id: str) -> bool:
 
     run = _RUNS.get(session_id)
     if run and run.task and not run.task.done():
+        if run.execution_context is not None:
+            run.execution_context.cancellation_token.cancel()
         run.task.cancel()
         return True
     return False

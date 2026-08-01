@@ -66,6 +66,7 @@ from src.agent.rounds.document_stream import (
 )
 from src.agent.rounds.tool_calls import (
     filter_odysseus_qwen_calls,
+    normalize_tool_calls,
     resolve_round_tool_calls,
     resolve_tool_blocks as _resolve_tool_blocks,
 )
@@ -146,7 +147,6 @@ from src.agent.prompting.odysseus_qwen import (
     minimal_saved_memory_message as _minimal_saved_memory_message,
 )
 from src.agent.prompting.contexts.workspace import (
-    explicitly_references_missing_workspace as _explicitly_references_missing_workspace,
     local_computer_rules as _local_computer_rules,
     looks_like_local_computer_request as _looks_like_local_computer_request,
     looks_like_workspace_coding_request as _looks_like_workspace_coding_request,
@@ -203,6 +203,13 @@ from src.agent_tools import (
     MAX_AGENT_ROUNDS,
 )
 from src.agent.tools.bootstrap import TOOL_REGISTRY
+from src.agent.runtime_v2.authority import prepare_execution_context
+from src.agent.runtime_v2.contracts import (
+    AgentExecutionContext,
+    RunBudgets,
+)
+from src.agent.runtime_v2.events import encode_runtime_sse
+from src.agent.runtime_v2.state import RunState
 
 # Compatibility modules are bootstrap inputs only. Runtime provider schemas
 # and recognized local names come from the validated typed registry.
@@ -212,6 +219,36 @@ TOOL_TAGS = set(TOOL_REGISTRY.accepted_names())
 logger = logging.getLogger(__name__)
 
 _BROWSER_MCP_PREFIX = "mcp__builtin_browser__"
+
+
+def _runtime_run_state_sse(
+    execution_context: AgentExecutionContext,
+    disposition,
+    *,
+    reason: str,
+    resumable: bool = False,
+) -> str:
+    value = disposition.value if isinstance(disposition, RunDisposition) else str(disposition)
+    state = {
+        RunDisposition.COMPLETED.value: RunState.COMPLETED,
+        RunDisposition.CANCELLED.value: RunState.CANCELLED,
+        RunDisposition.ERROR.value: RunState.FAILED,
+        "error": RunState.FAILED,
+        RunDisposition.AWAITING_INPUT.value: RunState.WAITING_USER,
+        RunDisposition.AWAITING_APPROVAL.value: RunState.WAITING_APPROVAL,
+    }.get(value, RunState.INCOMPLETE)
+    return encode_runtime_sse(
+        execution_context.event_factory.create(
+            "run_state",
+            {
+                "state": state.value,
+                "disposition": value,
+                "reason": reason,
+                "resumable": bool(resumable),
+                "terminal": state.terminal,
+            },
+        )
+    )
 
 
 def _bash_timeout_for_block(block) -> Optional[float]:
@@ -292,28 +329,23 @@ def _load_mcp_disabled_map() -> Dict[str, set]:
 # Each tool section is keyed by tool name(s) it covers.
 # Sections with multiple tools use a tuple key.
 TOOL_SECTIONS = {
-    "bash": """\
-```bash
-<shell command>
+    "run_sandbox_command": """\
+```run_sandbox_command
+{"command":"<shell command>","timeout_seconds":120}
 ```
-Run any shell command. Output is returned to you. Use for: installing packages, checking files, git, system info, process management, etc.
+Run a non-interactive command inside the exact execution root with Bubblewrap, a minimal environment, no network, resource limits, bounded output, cancellation, and no host fallback. The runtime binds the sandbox target; there is no target or host argument.
 Foreground commands time out after 120 seconds by default. For a shorter explicit watchdog, use JSON: `{"command":"<shell command>","timeout_seconds":3}` (allowed range 1-1800 seconds).
 Do NOT use bash/curl for web lookup/search/latest/current requests when `web_search` or `web_fetch` is available.
-NEVER use bash to create or change files — no `>`/`>>` redirects, no heredocs (`cat > f << 'EOF'`), no `tee`, `sed -i`, `awk -i`, no `python -c` that writes. To CREATE or fully rewrite a file use `write_file`; to change part of an existing file use `edit_file`. Those show a diff and are the ONLY allowed way to write files. (bash is for read-only inspection: `ls`, `cat` to READ, `grep`, `git status`/`git diff`, builds, installs.)
-For LONG-running commands (package installs, pip/npm, ffmpeg, model downloads, training, builds — anything that may take more than ~20s), make the FIRST line `#!bg` to run it in the BACKGROUND. You get a job id back immediately and are automatically re-invoked with the full output when it finishes — so you never block the chat waiting. Example:
-```bash
-#!bg
-pip install openai-whisper
-```
+NEVER use command redirects, heredocs, `tee`, `sed -i`, or scripts to create or change workspace files. Use `patch_workspace`, which stages, validates, journals, and reports effects.
 SANDBOX LIMITS: stdin/stdout are pipes, so there is NO interactive terminal — `input()`, `curses`, `termios`, `pygame`, and `tkinter` will all fail. Don't try to RUN interactive terminal games or GUI apps here — verify syntax (`python -c "import py_compile; py_compile.compile('x.py')"`) and tell the user to run it themselves in their own terminal. For anything the USER should play/use interactively (games, UIs, demos), prefer a single self-contained HTML file with `<canvas>` + inline JS — save it via `create_document` with language="html" and tell the user to hit the Run / Preview button (▶) in the document editor toolbar; it renders inline in a sandboxed iframe so the game is playable right there. Works from any machine that can reach the Odysseus UI — no need to copy files out.
-NEVER pipe multi-line Python through `python -c "..."` — shell quoting eats real newlines and `\\n` arrives as literal backslash-n, which Python parses as a line-continuation error on line 1. To run multi-line code, either use the dedicated `python` tool block above, or save to a file first with a quoted HEREDOC (`cat > /tmp/x.py << 'EOF' ... EOF`) and then `python /tmp/x.py`.""",
+Use `run_python` for multi-line Python so code is passed directly to the interpreter without shell parsing.""",
 
-    "python": """\
-```python
-<python code>
+    "run_python": """\
+```run_python
+{"code":"<python code>","timeout_seconds":120}
 ```
 Execute Python code. Use for computation, data processing, scripting. NOT for writing code for the user (use create_document for that). Same sandbox limits as bash — no TTY, no GUI, no `input()`; for anything the user should interact with, generate a single HTML file with inline JS instead.
-Prefer a dedicated tool whenever one fits the job (reading, searching, or writing files); use python only for computation/processing no dedicated tool covers - not for reading or writing files.
+Prefer `read_files`, `search_text`, and `patch_workspace` for workspace operations; use Python for computation or verification.
 Do NOT use Python/requests for web lookup/search/latest/current requests when `web_search` or `web_fetch` is available.""",
 
     "web_search": """\
@@ -334,60 +366,35 @@ Use this instead of `bash`, `curl`, `python`, `requests`, or scraping code for w
 ```
 Fetch and read the text content of a SPECIFIC URL the user names (e.g. "check example.com", "what does this page say <url>"). A bare domain like `example.com` works (defaults to https). Use this when you already have a concrete URL. For open-ended lookups use `web_search`, and for "research X" jobs use `trigger_research`.""",
 
-    "read_file": """\
-```read_file
-<file path>
+    "read_files": """\
+```read_files
+{"requests":[{"path":"src/app.py","start_line":1,"end_line":200}],"max_output_chars":40000}
 ```
-Read a file and return its contents.""",
+Read one or more workspace-confined ranges under one total output budget. Paths are canonical and relative to the execution root; per-file failures are isolated. A single-file read is a one-element request array.""",
 
-    "ls": """\
-```ls
-{"path": "<optional directory>"}
+    "find_files": """\
+```find_files
+{"path":".","patterns":["**/*.py"],"exclude":["vendor/**"],"max_results":200}
 ```
-List workspace directory entries. An empty object lists the workspace root.""",
+Find canonical workspace-relative files with stable continuation.""",
 
-    "glob": """\
-```glob
-{"pattern": "**/*.py", "path": "<optional directory>"}
+    "search_text": """\
+```search_text
+{"pattern":"ClassName","path":"src","fixed_string":true,"include":["*.py"],"max_results":200}
 ```
-Find workspace paths matching a glob pattern.""",
+Search bounded structured matches with ripgrep when available and a disclosed Python fallback otherwise. Continuations are stable for the returned workspace revision.""",
 
-    "grep": """\
-```grep
-{"pattern": "<regular expression>", "path": "<optional directory>", "glob": "<optional file glob>"}
+    "patch_workspace": """\
+```patch_workspace
+{"operations":[{"type":"replace","path":"src/app.py","old":"old text","new":"new text","expected_sha256":"..."}],"expected_workspace_revision":"...","dry_run":false}
 ```
-Search workspace file contents and return bounded file:line matches.""",
+Stage workspace-confined create, exact replacement, structured patch, move, and explicitly approved delete operations. Expected revisions and hashes detect conflicts. Failed commits restore originals or retain recovery information.""",
 
-    "write_file": """\
-```write_file
-<file path>
-<file contents>
+    "plan": """\
+```plan
+{"action":"replace","steps":[{"content":"Inspect current code","status":"in_progress"},{"content":"Verify behavior","status":"pending"}]}
 ```
-Write content to a file. First line is the path, rest is the content.""",
-
-    "edit_file": """\
-```edit_file
-{"path": "<file path>", "old_string": "<exact text to replace>", "new_string": "<replacement>", "replace_all": false}
-```
-Edit an EXISTING file by exact string replacement. PREFER this over bash (sed/echo/redirects) for changing files — it shows a before/after diff. `old_string` must match the file exactly and be unique unless `replace_all` is true. Use write_file to create a new file.""",
-
-    "apply_patch": """\
-```apply_patch
-*** Begin Patch
-*** Update File: <file path>
-@@
- <context>
--<old line>
-+<new line>
-*** End Patch
-```
-Apply a staged source-code transaction to real workspace files. Use this for multi-file implementation/refactor/debug work where the edits belong together. Each replacement is atomic and ordinary commit failures roll back, but the collection is not globally crash-atomic. The patch is workspace-confined, exact-context based, and returns a diff. Supported sections: `*** Add File:`, `*** Update File:`, `*** Delete File:`. Do NOT use bash redirects/heredocs/sed to edit files.""",
-
-    "todowrite": """\
-```todowrite
-{"todos":[{"content":"Inspect current code","status":"in_progress","priority":"high"},{"content":"Patch implementation","status":"pending","priority":"high"}]}
-```
-Maintain a structured task list for multi-step coding work. Use it when the task has several phases (inspect, edit, test, fix). Keep statuses current; only one todo should be `in_progress`.""",
+Maintain the structured plan. Keep statuses current and only one step in progress.""",
 
     "manage_bg_jobs": """\
 ```manage_bg_jobs
@@ -395,10 +402,17 @@ Maintain a structured task list for multi-step coding work. Use it when the task
 ```
 Inspect or stop background shell jobs belonging to this chat.""",
 
-    "get_workspace": """\
-```get_workspace
+    "run_host_command": """\
+```run_host_command
+{"command":"<shell command>","timeout_seconds":120}
 ```
-Return the absolute path of the active workspace folder. File tools are CONFINED to it (paths can be RELATIVE to it). Process execution is authorized independently as safe workspace or full host mode; the workspace itself grants neither. Call this first when the user says "the project"/"the code"/"this folder" without a path, instead of asking them. No arguments.""",
+Run at the exact server-bound host root. This tool exists only for a one-run host authorization. Sensitive or opaque effects require additional approval; the runtime binds HOST and ignores target-like model arguments.""",
+
+    "workspace_context": """\
+```workspace_context
+{}
+```
+Return the immutable execution root, source, writability, revision, and independently bound execution target. No ambient working directory is consulted.""",
 
     "create_document": """\
 ```create_document
@@ -515,7 +529,6 @@ If the user asks for a reminder/alarm before the event, pass `reminder_minutes` 
     "pipeline": "- ```pipeline``` — Run a multi-step AI pipeline. Args (JSON) with ordered steps, each specifying a model and prompt. Use for complex workflows.",
     "ui_control": "- ```ui_control``` — Control the UI: toggle tools on/off, OPEN PANELS, open email reply drafts, switch models, change themes. Commands: `toggle <name> on/off` (names: bash/shell, web/search, research, incognito, document_editor/documents), `open_panel <name>` (panels: documents, gallery, email, sessions, notes, memories/brain, skills, settings, cookbook), `open_email_reply <uid> <folder> <reply|reply-all|ai-reply> <body text>` (opens an email compose document pre-filled with body, DOES NOT send; use this for normal “write/draft a reply saying X” requests), `set_mode agent/chat`, `switch_model <name>`, `set_theme <preset>`, `create_theme <name> <bg> <fg> <panel> <border> <accent>` (optional key=val for advanced colors AND background effects: bgPattern=<none|dots|synapse|rain|constellations|perlin-flow|petals|sparkles|embers>, bgEffectColor=#RRGGBB, bgEffectIntensity=<num>, bgEffectSize=<num>, frosted=true|false). \"open documents\" / \"open library\" / \"show gallery\" / \"open inbox\" / \"open notes\" / \"open cookbook\" all map to `open_panel <name>`. Built-in theme presets: dark, light, midnight, paper, cyberpunk, retrowave, forest, ocean, ume, copper, terminal, organs, lavender, gpt, claude, cute. For any other vibe/name, use create_theme.",
     "ask_user": "- ```ask_user``` — Ask the user a multiple-choice question when the task is genuinely ambiguous and the answer changes what you do next (pick an approach, confirm an assumption, choose a target). Args (JSON): {\"question\": \"...\", \"options\": [{\"label\": \"...\", \"description\": \"...\"?}, ...], \"multi\": false?}. 2-6 options. The user gets clickable buttons; calling this ENDS your turn and their choice comes back as your next message. Prefer sensible defaults — only ask when you truly can't proceed well without their input.",
-    "update_plan": "- ```update_plan``` — While executing an approved plan, write the plan back: tick steps done or revise them. Args (JSON): {\"plan\": \"- [x] done step\\n- [ ] next step\"}. Always pass the COMPLETE checklist, not a diff. Call it after finishing each step (mark it `- [x]`) and whenever the user asks to change the plan. The user's docked plan window updates live. Does nothing if there's no active plan.",
     "list_served_models": "- ```list_served_models``` — Show what the Cookbook (LLM-serving subsystem) is currently running. NO args. Use this for ANY 'what's running' / 'what's serving' / 'show my cookbook' / 'is anything up' query. DO NOT shell out (`ps aux`, `docker ps`, etc.) — this tool is the source of truth. Failed serve tasks include recent logs plus diagnosis/retry suggestions; use those suggestions to call `serve_model` again with an adjusted command when appropriate.",
     "stop_served_model": "- ```stop_served_model``` — Stop a running model server. Args (JSON): {\"session_id\": \"<from list_served_models>\"}. Use for 'kill my cookbook' / 'stop the model' / 'shut down vLLM'.",
     "tail_serve_output": "- ```tail_serve_output``` — Read the actual tmux stderr/traceback of a CURRENTLY failing cookbook task. Args (JSON): {\"session_id\": \"<from list_served_models>\", \"tail\": 150?}. **Use ONLY after** you just launched something via `serve_model` AND `list_served_models` reports YOUR new task as `crashed`/`error`. DO NOT use it on old stopped/completed download tasks (they're historical noise — won't predict whether a new launch succeeds). DO NOT call it before launching a fresh attempt. When you do call it, bump `tail` to 400+ only if the visible error references 'see root cause above'.",
@@ -573,7 +586,25 @@ def get_builtin_overrides() -> dict:
 def _section_text(name: str, default: str) -> str:
     """Effective TOOL_SECTIONS text for a tool — user override if set,
     else the shipped default."""
-    return _prompt_section_text(name, default, get_builtin_overrides())
+    overrides = get_builtin_overrides()
+    legacy_override_names = {
+        "run_sandbox_command": ("bash",),
+        "run_host_command": ("bash",),
+        "run_python": ("python",),
+        "read_files": ("read_file",),
+        "find_files": ("glob", "ls"),
+        "search_text": ("grep", "rg"),
+        "patch_workspace": ("apply_patch", "edit_file", "write_file"),
+        "plan": ("manage_plan", "update_plan", "todowrite"),
+        "workspace_context": ("get_workspace",),
+    }
+    if name not in overrides:
+        for legacy_name in legacy_override_names.get(name, ()):
+            value = overrides.get(legacy_name)
+            if isinstance(value, str) and value.strip():
+                overrides = {**overrides, name: value}
+                break
+    return _prompt_section_text(name, default, overrides)
 
 
 _CONTEXT_BUDGET_MANAGER = ContextBudgetManager()
@@ -644,9 +675,19 @@ def _domain_rules_with_shell_guidance(tool_names: set[str]) -> list[str]:
 
 def _assemble_prompt(tool_names: set, disabled_tools: set = None, compact: bool = False) -> str:
     """Build the system prompt with only the specified tools included."""
+    from src.agent.tools.bootstrap import TOOL_REGISTRY
+
+    canonical_tools = {
+        (TOOL_REGISTRY.get(str(name)).name if TOOL_REGISTRY.get(str(name)) else str(name))
+        for name in tool_names
+    }
+    canonical_disabled = {
+        (TOOL_REGISTRY.get(str(name)).name if TOOL_REGISTRY.get(str(name)) else str(name))
+        for name in (disabled_tools or set())
+    }
     return _assemble_prompt_component(
-        set(tool_names),
-        disabled_tools=set(disabled_tools or set()),
+        canonical_tools,
+        disabled_tools=canonical_disabled,
         compact=compact,
         tool_sections=TOOL_SECTIONS,
         agent_preamble=_AGENT_PREAMBLE,
@@ -1427,6 +1468,7 @@ async def stream_agent_loop(
     workload: str = "foreground",
     _is_teacher_run: bool = False,
     shell_enabled: Optional[bool | str] = None,
+    execution_context: Optional[AgentExecutionContext] = None,
 ) -> AsyncGenerator[str, None]:
     """Streaming agent loop generator.
 
@@ -1440,7 +1482,45 @@ async def stream_agent_loop(
     """
 
     _settings = AgentSettingsSnapshot.capture(get_setting)
+    if execution_context is None:
+        _compatibility_disabled = set(disabled_tools or ())
+        if tool_policy is not None:
+            _compatibility_disabled.update(tool_policy.all_disabled_names())
+        _compatibility_disabled.update(blocked_tools_for_owner(owner))
+        if plan_mode:
+            _compatibility_disabled.update(plan_mode_disabled_tools())
+        _legacy_mode = normalize_execution_mode(
+            shell_enabled,
+            shell_enabled=shell_enabled,
+        )
+        _legacy_budgets = RunBudgets(
+            max_rounds=max_rounds,
+            max_tool_calls=(max_tool_calls if max_tool_calls and max_tool_calls > 0 else 256),
+            max_provider_requests=min(max(max_rounds * 3, 1), 128),
+        )
+        execution_context, _ = prepare_execution_context(
+            owner_id=owner,
+            session_id=str(session_id or "compatibility-run"),
+            requested_mode=_legacy_mode,
+            selected_workspace=workspace,
+            budgets=_legacy_budgets,
+            tool_catalog_revision=TOOL_REGISTRY.revision,
+            plan_mode=plan_mode,
+            sandbox_default=get_setting("agent_sandbox_default_root", None),
+            host_default=get_setting("agent_host_default_root", None),
+            disabled_tools=TOOL_REGISTRY.canonicalize_names(
+                _compatibility_disabled, None
+            ),
+        )
+    workspace = execution_context.execution_root.path
+    shell_enabled = execution_context.execution_mode.value
     _preparation_started = time.perf_counter()
+    yield encode_runtime_sse(
+        execution_context.event_factory.create(
+            "run_state",
+            {"state": RunState.PREPARING.value, "reason": "request_prepared"},
+        )
+    )
     yield f'data: {json.dumps({"type": "run_status", "phase": "preparing", "label": "Preparing agent", "ephemeral": True})}\n\n'
     logger.info(
         "[agent-timing] phase=preparation_start session=%s model=%s",
@@ -1450,9 +1530,8 @@ async def stream_agent_loop(
     mcp_mgr = get_mcp_manager()
     prep_timings: Dict[str, float] = {}
     _workspace_started = time.perf_counter()
-    if workspace:
-        from src.tool_execution import vet_workspace
-        workspace = vet_workspace(workspace)
+    # ExecutionRoot was canonicalized exactly once during request preparation.
+    # The loop consumes that immutable value and never rebinds to process CWD.
     prep_timings["workspace_resolution"] = time.perf_counter() - _workspace_started
     logger.info(
         "[agent-timing] phase=workspace_resolution_complete session=%s "
@@ -1532,31 +1611,6 @@ async def stream_agent_loop(
     # Tool retrieval uses the latest message by default. It may inherit recent
     # user turns only for explicit continuations ("yes", "do it", "1").
     _retrieval_query = str(_intent.get("retrieval_query") or _last_user)
-    if _explicitly_references_missing_workspace(_retrieval_query, workspace):
-        msg = (
-            "No active workspace is set. Use `/workspace pick` or "
-            "`/workspace set /absolute/path`, then rerun the request."
-        )
-        yield f"data: {json.dumps({'delta': msg})}\n\n"
-        metrics = {
-            "model": model,
-            "requested_model": model,
-            "input_tokens": estimate_tokens(messages),
-            "output_tokens": max(len(msg) // 4, 1),
-            "total_time": 0,
-            "response_time": 0,
-            "agent_rounds": 0,
-            "tool_calls": 0,
-            "missing_workspace": True,
-        }
-        yield f"data: {json.dumps({'type': 'metrics', 'data': metrics})}\n\n"
-        yield _run_state_event(
-            RunDisposition.BLOCKED,
-            reason="missing_workspace",
-            resumable=True,
-        )
-        yield "data: [DONE]\n\n"
-        return
     logger.info(
         "[agent-intent] latest=%r continuation=%s low_signal=%s domains=%s active_doc_relevant=%s retrieval_query=%r",
         _last_user[:120],
@@ -1674,6 +1728,12 @@ async def stream_agent_loop(
         else:
             _direct_disposition = RunDisposition.COMPLETED
             _direct_reason = "direct_response"
+        yield _runtime_run_state_sse(
+            execution_context,
+            _direct_disposition,
+            reason=_direct_reason,
+            resumable=_direct_disposition is RunDisposition.INCOMPLETE,
+        )
         yield _run_state_event(
             _direct_disposition,
             reason=_direct_reason,
@@ -2073,6 +2133,7 @@ async def stream_agent_loop(
     if _needs_admin and _relevant_tools is not None:
         _relevant_tools.update(_ADMIN_TOOLS)
 
+    _runtime_function_schemas = TOOL_REGISTRY.function_schemas(execution_context)
     _preview_mcp_schemas = (
         mcp_mgr.get_all_openai_schemas(_mcp_disabled_map or {})
         if mcp_mgr
@@ -2085,23 +2146,32 @@ async def stream_agent_loop(
     _mcp_schema_names.discard(None)
     _native_schema_names = {
         (schema.get("function") or {}).get("name")
-        for schema in FUNCTION_TOOL_SCHEMAS
+        for schema in _runtime_function_schemas
     }
     _native_schema_names.discard(None)
-    _registered_tool_names = set(TOOL_TAGS) | _mcp_schema_names
+    _registered_tool_names = set(TOOL_REGISTRY.canonical_names) | _mcp_schema_names
     _provider_uses_native_tools = _is_api_model and not _ody_qwen_finetune_model
-    _provider_usable_tool_names = (
-        (_native_schema_names | _mcp_schema_names)
-        if _provider_uses_native_tools
-        else (set(TOOL_SECTIONS) | _mcp_schema_names)
-    )
+    # Exposure is registry-derived for native and fenced providers alike.
+    # Fenced-call support must not make a hidden host definition reachable.
+    _provider_usable_tool_names = _native_schema_names | _mcp_schema_names
     # None is not consent. Legacy direct callers can opt into sandboxing with
     # shell_enabled=True, but only an explicit typed mode can grant host access.
-    _execution_mode = normalize_execution_mode(
-        shell_enabled,
-        shell_enabled=shell_enabled,
-    )
+    _execution_mode = execution_context.execution_mode
     _shell_is_enabled = _execution_mode.enabled
+    disabled_tools = set(
+        TOOL_REGISTRY.canonicalize_names(disabled_tools, execution_context)
+    )
+    _relevant_tools = (
+        set(TOOL_REGISTRY.canonicalize_names(_relevant_tools, execution_context))
+        if _relevant_tools is not None
+        else None
+    )
+    forced_tools = set(
+        TOOL_REGISTRY.canonicalize_names(forced_tools, execution_context)
+    )
+    _fallback_tool_names = set(
+        TOOL_REGISTRY.canonicalize_names(_fallback_tool_names, execution_context)
+    )
     if not _shell_is_enabled:
         from src.effective_tools import SHELL_FOUNDATIONAL_TOOLS
         disabled_tools.update(SHELL_FOUNDATIONAL_TOOLS)
@@ -2113,7 +2183,7 @@ async def stream_agent_loop(
         disabled_tools=disabled_tools,
         security_blocked_tools=public_blocked_tools,
         authenticated_role="owner_admin" if not public_blocked_tools else "public",
-        workspace_enabled=bool(workspace),
+        workspace_enabled=True,
         shell_enabled=_shell_is_enabled,
         fallback_tools=_fallback_tool_names,
         exclusive_tools=(
@@ -2135,6 +2205,15 @@ async def stream_agent_loop(
     _effective_diagnostic.update({
         "execution_mode": _execution_mode.value,
         "shell_available": _shell_is_enabled,
+        "run_id": execution_context.run_id,
+        "execution_root": {
+            "path": execution_context.execution_root.path,
+            "source": execution_context.execution_root.source.value,
+            "writable": execution_context.execution_root.writable,
+            "workspace_revision": execution_context.execution_root.workspace_revision,
+        },
+        "authority_revision": execution_context.authority_grant.revision,
+        "tool_catalog_revision": execution_context.tool_catalog_revision,
     })
     yield f"data: {json.dumps(_effective_diagnostic)}\n\n"
 
@@ -2310,7 +2389,7 @@ async def stream_agent_loop(
     _truncation_continuation_count = 0
     _MAX_TRUNCATION_CONTINUATIONS = 4
     # Per-run by construction: concurrent sessions never share observations.
-    _observation_ledger = ObservationLedger()
+    _observation_ledger = execution_context.observation_ledger
 
     # Set when the loop runs out of rounds while the agent was still actively
     # using tools — i.e. it was cut off, not finished. Drives a "Continue" event
@@ -2318,6 +2397,13 @@ async def stream_agent_loop(
     _exhausted_rounds = False
     _run_disposition: Optional[RunDisposition] = None
     _run_disposition_reason = ""
+
+    yield encode_runtime_sse(
+        execution_context.event_factory.create(
+            "run_state",
+            {"state": RunState.RUNNING.value, "reason": "orchestration_started"},
+        )
+    )
 
     for round_num in range(1, max_rounds + 1):
         if _provider_requests >= _max_provider_requests:
@@ -2375,7 +2461,7 @@ async def stream_agent_loop(
             force_answer=_force_answer,
             is_api_model=_is_api_model,
             relevant_tools=_relevant_tools,
-            function_schemas=FUNCTION_TOOL_SCHEMAS,
+            function_schemas=_runtime_function_schemas,
             mcp_schemas=mcp_schemas,
             odysseus_qwen_finetune=_ody_qwen_finetune_model,
             disabled_tools=disabled_tools,
@@ -2443,6 +2529,7 @@ async def stream_agent_loop(
                     3,
                     _max_provider_requests - _provider_requests,
                 ),
+                execution_context=execution_context,
             ),
             _round_stream,
             _provider_stream_factory,
@@ -2500,6 +2587,11 @@ async def stream_agent_loop(
             )
             if _provider_outcome.terminal_error_chunk:
                 yield _provider_outcome.terminal_error_chunk
+            yield _runtime_run_state_sse(
+                execution_context,
+                RunDisposition.ERROR,
+                reason="provider_error",
+            )
             yield _run_state_event("error", reason="provider_error")
             yield "data: [DONE]\n\n"
             return
@@ -2988,6 +3080,13 @@ async def stream_agent_loop(
         ):
             yield _encode_legacy_sse(_event)
 
+        _normalized_calls = normalize_tool_calls(
+            tool_blocks,
+            converted_calls,
+            execution_context=execution_context,
+            provider_name=actual_model or model,
+        )
+
         _batch_state = ToolBatchState(
             messages=messages,
             full_response=full_response,
@@ -3009,6 +3108,8 @@ async def stream_agent_loop(
                 owner=owner,
                 workspace=workspace,
                 execution_mode=_execution_mode.value,
+                normalized_calls=_normalized_calls,
+                execution_context=execution_context,
                 disabled_tools=set(disabled_tools or set()),
                 allowed_tools=set(_effective_tools.names),
                 tool_policy=tool_policy,
@@ -3045,6 +3146,10 @@ async def stream_agent_loop(
         if _batch_disposition is BatchDisposition.BUDGET_EXHAUSTED:
             _run_disposition = RunDisposition.BUDGET_EXHAUSTED
             _run_disposition_reason = "tool_call_budget_exhausted"
+            break
+        if _batch_disposition is BatchDisposition.AWAIT_APPROVAL:
+            _run_disposition = RunDisposition.AWAITING_APPROVAL
+            _run_disposition_reason = "awaiting_effect_approval"
             break
         if _batch_disposition is BatchDisposition.AWAIT_USER:
             _run_disposition = RunDisposition.AWAITING_INPUT
@@ -3207,8 +3312,15 @@ async def stream_agent_loop(
         RunDisposition.BUDGET_EXHAUSTED,
         RunDisposition.ROUNDS_EXHAUSTED,
         RunDisposition.AWAITING_INPUT,
+        RunDisposition.AWAITING_APPROVAL,
         RunDisposition.BLOCKED,
     }
+    yield _runtime_run_state_sse(
+        execution_context,
+        _run_disposition,
+        reason=_run_disposition_reason or _run_disposition.value,
+        resumable=_resumable,
+    )
     yield _run_state_event(
         _run_disposition,
         reason=_run_disposition_reason or _run_disposition.value,

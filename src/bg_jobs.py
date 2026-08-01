@@ -92,6 +92,7 @@ def launch(
     *,
     owner: Optional[str] = None,
     execution_mode: str = "disabled",
+    execution_context: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Launch `command` detached. Returns the job record (status='running').
 
@@ -99,7 +100,39 @@ def launch(
     server restart. The process is put in its own session (setsid) so it
     outlives the request/stream that started it.
     """
-    mode = normalize_execution_mode(execution_mode)
+    context_snapshot: Dict[str, Any] = {}
+    if execution_context is not None:
+        if str(session_id) != str(execution_context.session_id):
+            raise ValueError("background session does not match execution context")
+        if str(owner or "") != str(execution_context.owner_id):
+            raise ValueError("background owner does not match execution context")
+        canonical_cwd = os.path.realpath(str(cwd or ""))
+        if canonical_cwd != execution_context.execution_root.path:
+            raise ValueError("background root does not match execution context")
+        mode = execution_context.execution_mode
+        max_runtime_s = max(
+            1,
+            min(
+                int(max_runtime_s),
+                int(execution_context.budgets.wall_clock_seconds),
+            ),
+        )
+        context_snapshot = {
+            "run_id": execution_context.run_id,
+            "execution_target": mode.value,
+            "execution_root": execution_context.execution_root.path,
+            "workspace_revision": execution_context.execution_root.workspace_revision,
+            "authority_revision": execution_context.authority_grant.revision,
+            "resource_limits": {
+                "wall_clock_seconds": execution_context.budgets.wall_clock_seconds,
+                "idle_seconds": execution_context.budgets.idle_seconds,
+                "max_output_chars": execution_context.budgets.max_output_chars,
+            },
+            "cancellation_identity": execution_context.cancellation_token.identity,
+            "bounded_output_chars": _MAX_OUTPUT_CHARS,
+        }
+    else:
+        mode = normalize_execution_mode(execution_mode)
     if not mode.enabled:
         raise RuntimeError("background execution has no process authority")
     active_jobs = [
@@ -191,6 +224,7 @@ def launch(
         if mode is ExecutionMode.HOST:
             log_handle.close()
 
+    started_at = time.time()
     rec = {
         "id": job_id,
         "session_id": session_id,
@@ -199,13 +233,15 @@ def launch(
         "command": command,
         "status": "running",       # running | done | failed
         "pid": proc.pid,
-        "started_at": time.time(),
+        "started_at": started_at,
+        "deadline": started_at + max_runtime_s,
         "ended_at": None,
         "exit_code": None,
         "max_runtime_s": max_runtime_s,
         "followed_up": False,       # has the agent been re-invoked with the result?
         "log_path": str(log_path),
         "exit_path": str(exit_path),
+        **context_snapshot,
     }
     jobs = _load()
     jobs[job_id] = rec

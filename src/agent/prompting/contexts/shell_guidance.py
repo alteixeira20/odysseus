@@ -20,26 +20,26 @@ from __future__ import annotations
 
 SANDBOX_SHELL_AUTHORITY = """\
 ## Process authority: sandboxed workspace shell
-The user granted the safe workspace shell for this run. `bash`, `python`, and background commands run in an isolated Linux namespace with no network, a read-only host root, a minimal secret-free environment, and resource limits. The selected workspace is the writable execution root; when none is selected, the Odysseus server working tree is used. Network, credential helpers, Docker, host services, keyrings, SSH agents, and writes outside that execution root are intentionally unavailable. If the task requires them, explain that the user must explicitly grant Full host shell on a new run; do not pretend a denied operation succeeded."""
+The user granted the safe workspace shell for this run. `run_sandbox_command` and `run_python` execute in an isolated Linux namespace with no network, a read-only host root, a minimal secret-free environment, and resource limits. The immutable ExecutionRoot is the only writable root; without a selection it is an explicitly configured default or an ephemeral workspace, never the server process directory or Odysseus checkout. Network, credential helpers, Docker, host services, keyrings, SSH agents, and writes outside that root are unavailable. There is no host fallback."""
 
 
 HOST_SHELL_AUTHORITY = """\
 ## Process authority: full host shell
-The user explicitly granted Full host shell for this run. `bash`, `python`, and background commands execute with the normal host environment, network, credential helpers, sockets, and filesystem visibility available to the Odysseus process. This is powerful authority, not a sandbox. Stay within the user's request and active workspace when one is bound; otherwise begin by inspecting the current directory. Prefer read-only inspection, never print credentials, and obtain specific authorization before destructive filesystem/git actions, privilege escalation, package installation, service changes, pushes, or other consequential external writes."""
+The user explicitly granted Full host shell for this run. `run_host_command` and `run_python` use the exact ExecutionRoot disclosed in runtime diagnostics. This is powerful authority, not a sandbox, but it is not automatic approval for destructive filesystem actions, Git remote writes, privilege escalation, package installation, service/container mutation, credential access, or consequential network writes; those effects require a separate approval decision. Never print credentials, and never infer a command is read-only when its effects are opaque."""
 
 
 SHELL_GUIDANCE = """\
 ## Shell rules
-Confirm the working directory with `pwd` before acting if you are unsure where you are. Prefer `read_file`/`grep`/`glob`/`ls`/`edit_file`/`apply_patch` for ordinary source work when those tools are available; use `bash` when they don't fit (builds, tests, git, one-off pipelines). Once you decide to act, emit the tool call immediately — never end a turn with "Now I'll check..." and no tool call. Keep any prose before a tool call to zero or one short sentence. Use bounded, non-interactive commands; never request or print passwords/secrets. Never run destructive git or filesystem operations (`reset --hard`, `clean -f`, `rm -rf`, force-push, `checkout --`/`restore` over uncommitted work) without the user's explicit authorization for that specific action.
+The runtime has already bound and disclosed the exact execution root. Prefer `read_files`, `search_text`, `find_files`, and `patch_workspace` for ordinary source work; use the bound command tool for builds, tests, Git reads, and one-off pipelines. Once you decide to act, emit the tool call immediately. Use bounded, non-interactive commands; never request or print passwords/secrets. Sensitive effects are classified before execution and may require approval.
 
 **find**: quote glob patterns, give an explicit root and `-type`, preview with `-print` before acting. With arbitrary filenames use `-print0` piped to `xargs -0`, or prefer `-exec ... {} +`. Never run `-delete` (or any destructive `-exec`) before first previewing the identical predicate with `-print`.
   `find src tests -type f \\( -name '*.py' -o -name '*.pyi' \\) -print`
   `find . -type f -name '*.py' -exec python -m py_compile -- {} +`
 
-**sed**: use `sed -n '<start>,<end>p'` for bounded read-only inspection with explicit ranges. Never run a blind tree-wide `sed -i`. Prefer `edit_file`/`apply_patch` for actual source changes; if you must use `sed -i`, preview the same range/pattern with `-n` first. GNU and BSD `sed -i` flag syntax differ — check `sed --version` if unsure.
+**sed**: use `sed -n '<start>,<end>p'` for bounded read-only inspection with explicit ranges. Never run `sed -i`; use `patch_workspace` for actual source changes.
   `sed -n '1,160p' -- src/agent_loop.py`
 
-**rg/grep**: prefer the structured `grep` tool for ordinary code search — scope it with paths/globs, use fixed-string mode for literal text, and pass `--` before any pattern derived from user/model input.
+**rg/grep**: prefer `search_text` for ordinary code search; scope it with canonical paths/globs and use fixed-string mode for literal text.
 
 **jq**: use it for structural JSON inspection (`jq '.field'`) rather than eyeballing raw output; use `--arg` to inject values instead of string-interpolating them into the filter.
 
@@ -49,10 +49,11 @@ Confirm the working directory with `pwd` before acting if you are unsure where y
 
 
 def shell_guidance_if_available(tool_names) -> str | None:
-    """Return the shell-literacy fragment only when `bash` is in scope this turn."""
+    """Return shell guidance only when a canonical process tool is exposed."""
 
     names = set(tool_names or ())
-    return SHELL_GUIDANCE if "bash" in names else None
+    process_tools = {"run_sandbox_command", "run_host_command", "run_python"}
+    return SHELL_GUIDANCE if names.intersection(process_tools) else None
 
 
 def execution_authority_guidance(mode: object) -> str | None:

@@ -635,6 +635,7 @@ async def _run_direct_bash(
     progress_cb: Optional[Callable[[Dict], Awaitable[None]]],
     invocation_id: str,
     execution_mode: ExecutionMode = ExecutionMode.SANDBOXED,
+    preserve_logical_cwd: bool = True,
 ) -> BashExecutionResult:
     canonical = os.path.realpath(cwd)
     state_key = (
@@ -642,7 +643,11 @@ async def _run_direct_bash(
         canonical,
         execution_mode.value,
     )
-    run_cwd = _FALLBACK_CWDS.get(state_key, canonical)
+    run_cwd = (
+        _FALLBACK_CWDS.get(state_key, canonical)
+        if preserve_logical_cwd
+        else canonical
+    )
     if not os.path.isdir(run_cwd):
         run_cwd = canonical
     if execution_mode is ExecutionMode.SANDBOXED:
@@ -730,7 +735,7 @@ async def _run_direct_bash(
             final_cwd = cwd_path.read_text(encoding="utf-8")
         except OSError:
             final_cwd = ""
-        if final_cwd and os.path.isdir(final_cwd):
+        if preserve_logical_cwd and final_cwd and os.path.isdir(final_cwd):
             if execution_mode is ExecutionMode.HOST:
                 _FALLBACK_CWDS[state_key] = final_cwd
             else:

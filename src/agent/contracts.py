@@ -4,6 +4,9 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Mapping, Optional, Sequence
 
+from src.agent.runtime_v2.contracts import NormalizedToolCall
+from src.agent.runtime_v2.contracts import AgentExecutionContext
+
 
 @dataclass(frozen=True)
 class AgentLimits:
@@ -64,6 +67,7 @@ class AgentRunRequest:
     approved_plan: Optional[str] = None
     workload: str = "foreground"
     is_teacher_run: bool = False
+    execution_context: Optional[AgentExecutionContext] = None
 
     @classmethod
     def from_legacy_arguments(
@@ -95,6 +99,7 @@ class AgentRunRequest:
         _is_teacher_run: bool = False,
         shell_enabled: Optional[bool | str] = None,
         execution_mode: Optional[str] = None,
+        execution_context: Optional[AgentExecutionContext] = None,
     ) -> "AgentRunRequest":
         return cls(
             endpoint_url=endpoint_url,
@@ -152,6 +157,7 @@ class AgentRunRequest:
             approved_plan=approved_plan,
             workload=workload,
             is_teacher_run=_is_teacher_run,
+            execution_context=execution_context,
         )
 
 
@@ -191,13 +197,6 @@ class AgentRunState:
     round_number: int = 0
 
 
-@dataclass(frozen=True)
-class NormalizedToolCall:
-    name: str
-    arguments: Mapping[str, Any]
-    call_id: Optional[str] = None
-
-
 class RoundTermination(str, Enum):
     COMPLETED = "completed"
     TOOL_CALLS = "tool_calls"
@@ -228,6 +227,7 @@ class RunDisposition(str, Enum):
     BUDGET_EXHAUSTED = "budget_exhausted"
     ROUNDS_EXHAUSTED = "rounds_exhausted"
     AWAITING_INPUT = "awaiting_input"
+    AWAITING_APPROVAL = "awaiting_approval"
     BLOCKED = "blocked"
     CANCELLED = "cancelled"
     ERROR = "error"

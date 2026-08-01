@@ -67,6 +67,7 @@ async def stream(request: AgentRunRequest) -> AsyncGenerator[str, None]:
             if request.policy.execution_mode is not None
             else request.policy.shell_enabled
         ),
+        "execution_context": request.execution_context,
     }
     async for event in _legacy_stream(**arguments):
         yield event
@@ -99,6 +100,7 @@ async def stream_agent_loop(
     workload: str = "foreground",
     _is_teacher_run: bool = False,
     shell_enabled: Optional[bool | str] = None,
+    execution_context=None,
 ) -> AsyncGenerator[str, None]:
     """Compatibility-shaped route entry point backed by a typed request."""
 
@@ -129,6 +131,7 @@ async def stream_agent_loop(
         workload=workload,
         _is_teacher_run=_is_teacher_run,
         shell_enabled=shell_enabled,
+        execution_context=execution_context,
     )
     async for event in stream(request):
         yield event

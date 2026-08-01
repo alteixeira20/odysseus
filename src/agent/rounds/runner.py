@@ -17,6 +17,7 @@ from src.agent.providers.finish_reason import ProviderFinishReason
 from src.agent.providers.termination import error_kind_to_termination_kind
 from src.agent.rounds.provider_events import ProviderRoundAccumulator
 from src.agent.rounds.stream_consumer import stream_with_idle_status
+from src.agent.runtime_v2.contracts import AgentExecutionContext
 
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,7 @@ class ProviderAttemptRequest:
     first_visible_seen: bool = False
     first_tool_call_seen: bool = False
     create_document_blocked: bool = False
+    execution_context: Optional[AgentExecutionContext] = None
 
 
 @dataclass(frozen=True)

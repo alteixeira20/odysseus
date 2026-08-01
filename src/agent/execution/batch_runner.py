@@ -20,6 +20,15 @@ from src.agent.providers.adapters.odysseus_qwen import (
     terminal_tool_summary,
 )
 from src.agent.rounds.document_stream import normalize_odysseus_qwen_text
+from src.agent.runtime_v2.contracts import (
+    AgentExecutionContext,
+    NormalizedToolCall,
+    ToolResult,
+    ToolResultStatus,
+)
+from src.agent.runtime_v2.events import encode_runtime_sse
+from src.agent.runtime_v2.executor import execute_normalized_tool_call
+from src.agent.tools.bootstrap import TOOL_REGISTRY
 
 
 logger = logging.getLogger(__name__)
@@ -29,6 +38,7 @@ class BatchDisposition(str, Enum):
     CONTINUE = "continue"
     BUDGET_EXHAUSTED = "budget_exhausted"
     AWAIT_USER = "await_user"
+    AWAIT_APPROVAL = "await_approval"
     DOCUMENT_CREATE_COMPLETE = "document_create_complete"
     DOCUMENT_TOOL_COMPLETE = "document_tool_complete"
     DETERMINISTIC_COMPLETE = "deterministic_complete"
@@ -59,6 +69,8 @@ class ToolBatchRequest:
     disabled_tools: set[str]
     allowed_tools: set[str]
     execution_mode: str = "disabled"
+    normalized_calls: tuple[NormalizedToolCall, ...] = ()
+    execution_context: Optional[AgentExecutionContext] = None
     tool_policy: Any = None
     odysseus_qwen_finetune: bool = False
     odysseus_notes_finetune: bool = False
@@ -110,11 +122,12 @@ class ToolBatchRunner:
         tool_result_texts: list[str] = []
         budget_hit = False
         awaiting_user = False
+        awaiting_approval = False
         doc_stream_create_completed = False
         doc_tool_completed = False
         deterministic_tool_completed = False
 
-        for block in request.tool_blocks:
+        for block_index, block in enumerate(request.tool_blocks):
             if (
                 request.max_tool_calls > 0
                 and state.total_tool_calls >= request.max_tool_calls
@@ -130,48 +143,78 @@ class ToolBatchRunner:
                 break
 
             state.total_tool_calls += 1
-            is_document_tool = block.tool_type in DOCUMENT_TOOL_NAMES
+            normalized_call = (
+                request.normalized_calls[block_index]
+                if block_index < len(request.normalized_calls)
+                else None
+            )
+            canonical_tool_name = (
+                normalized_call.canonical_name
+                if normalized_call is not None
+                else block.tool_type
+            )
+            definition = TOOL_REGISTRY.resolve(
+                canonical_tool_name,
+                request.execution_context,
+            )
+            runtime_v2 = bool(
+                normalized_call is not None
+                and request.execution_context is not None
+                and definition is not None
+                and definition.runtime_v2
+            )
+            is_document_tool = canonical_tool_name in DOCUMENT_TOOL_NAMES
             full_command = block.content.strip()
-            call_id = self.invocation_id(18)
+            call_id = (
+                normalized_call.call_id
+                if normalized_call is not None
+                else self.invocation_id(18)
+            )
             bash_timeout = self.bash_timeout_for_block(block)
             command = (
                 block.content.split("\n")[0].strip()[:80]
                 if is_document_tool
                 else full_command
             )
+            runtime_result: Optional[ToolResult] = None
 
             clamped_tool_allowed = (
                 request.odysseus_notes_finetune
-                and block.tool_type
+                and canonical_tool_name
                 in {"manage_notes", "manage_calendar", "manage_tasks"}
             )
             if (
+                not runtime_v2
+                and
                 request.tool_policy
-                and request.tool_policy.blocks(block.tool_type)
+                and (
+                    request.tool_policy.blocks(block.tool_type)
+                    or request.tool_policy.blocks(canonical_tool_name)
+                )
                 and not clamped_tool_allowed
             ):
-                description = f"{block.tool_type}: BLOCKED"
+                description = f"{canonical_tool_name}: BLOCKED"
                 result = {
                     "error": request.tool_policy.reason_for(
-                        block.tool_type
+                        canonical_tool_name
                     ),
                     "exit_code": 1,
                     "blocked": True,
                 }
                 logger.info(
                     "Tool blocked before start by policy: %s",
-                    block.tool_type,
+                    canonical_tool_name,
                 )
             else:
                 yield run_status_event(
                     "executing_tool",
-                    f"Executing {block.tool_type}",
-                    tool=block.tool_type,
+                    f"Executing {canonical_tool_name}",
+                    tool=canonical_tool_name,
                     round=request.round_number,
                 )
                 start_event = {
                     "type": "tool_start",
-                    "tool": block.tool_type,
+                    "tool": canonical_tool_name,
                     "command": command,
                     "full_command": full_command,
                     "round": request.round_number,
@@ -179,9 +222,33 @@ class ToolBatchRunner:
                 }
                 if bash_timeout is not None:
                     start_event["timeout_seconds"] = bash_timeout
-                yield self._event(start_event)
+                if runtime_v2:
+                    yield encode_runtime_sse(
+                        request.execution_context.event_factory.create(
+                            "tool_started",
+                            {
+                                "call_id": call_id,
+                                "canonical_name": canonical_tool_name,
+                                "raw_name": normalized_call.raw_name,
+                                "round": request.round_number,
+                                "command": command,
+                            },
+                            caused_by=call_id,
+                        )
+                    )
+                else:
+                    yield self._event(start_event)
 
                 async def run_tool(push_progress):
+                    if runtime_v2:
+                        return (
+                            canonical_tool_name,
+                            await execute_normalized_tool_call(
+                                normalized_call,
+                                request.execution_context,
+                                progress_cb=push_progress,
+                            ),
+                        )
                     return await self.execute_tool(
                         block,
                         session_id=request.session_id,
@@ -200,7 +267,7 @@ class ToolBatchRunner:
                         yield self._event(
                             {
                                 "type": "tool_progress",
-                                "tool": block.tool_type,
+                                "tool": canonical_tool_name,
                                 "round": request.round_number,
                                 "invocation_id": call_id,
                                 **progress,
@@ -208,9 +275,29 @@ class ToolBatchRunner:
                         )
                     description, result = await execution.result()
 
+                if runtime_v2:
+                    runtime_result = result
+                    description = (
+                        f"{canonical_tool_name}: {runtime_result.status.value}"
+                    )
+                    result = runtime_result.legacy_projection()
+                    yield encode_runtime_sse(
+                        request.execution_context.event_factory.create(
+                            "tool_result",
+                            {
+                                "result": runtime_result.as_dict(),
+                                "round": request.round_number,
+                                "command": command,
+                            },
+                            caused_by=call_id,
+                        )
+                    )
+                    if runtime_result.status is ToolResultStatus.APPROVAL_REQUIRED:
+                        awaiting_approval = True
+
             if request.observation_ledger is not None:
                 observation_notice = request.observation_ledger.note_tool_result(
-                    tool=block.tool_type,
+                    tool=canonical_tool_name,
                     content=block.content,
                     result=result,
                 )
@@ -236,6 +323,8 @@ class ToolBatchRunner:
             if projection.awaiting_user:
                 awaiting_user = True
             for event in projection.before_summary_events:
+                if runtime_v2 and event.get("type") == "tool_output":
+                    continue
                 yield self._event(event)
 
             notes_text = self._notes_result_text(block, result)
@@ -307,10 +396,16 @@ class ToolBatchRunner:
                 yield self._event(event)
 
             state.tool_events.append(projection.tool_event)
-            if block.tool_type in self.effectful_tools:
+            if canonical_tool_name in self.effectful_tools or (
+                runtime_result is not None and runtime_result.committed_effects
+            ):
                 state.effectful_used = True
 
-            formatted = self.format_result(description, result)
+            formatted = (
+                json.dumps(runtime_result.as_dict(), ensure_ascii=False, default=str)
+                if runtime_result is not None
+                else self.format_result(description, result)
+            )
             tool_results.append(formatted)
             tool_result_texts.append(formatted)
             if (
@@ -335,6 +430,8 @@ class ToolBatchRunner:
         disposition = BatchDisposition.CONTINUE
         if budget_hit:
             disposition = BatchDisposition.BUDGET_EXHAUSTED
+        elif awaiting_approval:
+            disposition = BatchDisposition.AWAIT_APPROVAL
         elif awaiting_user:
             disposition = BatchDisposition.AWAIT_USER
         elif doc_stream_create_completed:

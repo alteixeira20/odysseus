@@ -24,7 +24,20 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+import hashlib
+import json
 from typing import Any, Callable, Mapping, Optional
+
+import jsonschema
+
+from src.execution_policy import ExecutionMode
+from src.agent.runtime_v2.contracts import (
+    AgentExecutionContext,
+    Capability,
+    Effect,
+    ToolResult,
+)
+from src.agent.runtime_v2.effect_policy import DefinitionApprovalPolicy
 
 
 class ToolCategory(str, Enum):
@@ -71,7 +84,12 @@ class ToolIdempotency(str, Enum):
     UNKNOWN = "unknown"
 
 
-ToolHandler = Callable[[str, dict], Any]
+ToolHandler = Callable[..., Any]
+EffectResolver = Callable[
+    [Mapping[str, Any], AgentExecutionContext], tuple[Effect, ...]
+]
+ExposurePolicy = Callable[[Optional[AgentExecutionContext]], bool]
+ArgumentAdapter = Callable[[Any, str], Mapping[str, Any]]
 
 
 @dataclass(frozen=True)
@@ -110,6 +128,67 @@ class ToolDefinition:
     # resolved dynamically at dispatch time, not through TOOL_HANDLERS.
     externally_dispatched: bool = False
 
+    # Runtime V2 fields. Legacy definitions retain compatibility defaults;
+    # migrated definitions populate every field explicitly and are the only
+    # source for schema, validation, policy, dispatch, and frontend metadata.
+    required_capabilities: frozenset[Capability] = frozenset()
+    effect_resolver: Optional[EffectResolver] = None
+    approval_policy: DefinitionApprovalPolicy = (
+        DefinitionApprovalPolicy.CAPABILITY_ONLY
+    )
+    exposure_policy: Optional[ExposurePolicy] = None
+    timeout_seconds: float = 30.0
+    provider_schema: Optional[Mapping[str, Any]] = None
+    argument_adapter: Optional[ArgumentAdapter] = None
+    runtime_v2: bool = False
+
+    def validate_arguments(self, arguments: Mapping[str, Any]) -> dict[str, Any]:
+        if not isinstance(arguments, Mapping):
+            raise ValueError(f"{self.name} arguments must be an object")
+        value = dict(arguments)
+        if self.input_schema:
+            try:
+                jsonschema.Draft202012Validator(self.input_schema).validate(value)
+            except jsonschema.ValidationError as exc:
+                path = ".".join(str(item) for item in exc.absolute_path)
+                location = f" at {path}" if path else ""
+                raise ValueError(
+                    f"invalid arguments for {self.name}{location}: {exc.message}"
+                ) from exc
+        return value
+
+    def resolve_effects(
+        self,
+        arguments: Mapping[str, Any],
+        context: AgentExecutionContext,
+    ) -> tuple[Effect, ...]:
+        if self.effect_resolver is None:
+            return ()
+        return tuple(self.effect_resolver(arguments, context))
+
+    def validate_result(self, result: ToolResult) -> ToolResult:
+        if not isinstance(result, ToolResult):
+            raise ValueError(f"{self.name} handler returned a non-ToolResult")
+        if result.canonical_name != self.name:
+            raise ValueError(
+                f"{self.name} handler returned result for {result.canonical_name!r}"
+            )
+        if not result.call_id:
+            raise ValueError(f"{self.name} result is missing call_id")
+        if self.result_schema:
+            try:
+                jsonschema.Draft202012Validator(self.result_schema).validate(
+                    result.as_dict()
+                )
+            except jsonschema.ValidationError as exc:
+                raise ValueError(
+                    f"malformed result for {self.name}: {exc.message}"
+                ) from exc
+        return result
+
+    def exposed(self, context: Optional[AgentExecutionContext]) -> bool:
+        return self.exposure_policy(context) if self.exposure_policy else True
+
 
 class ToolRegistryError(Exception):
     """Raised by ToolRegistry.validate_or_raise() with every problem found."""
@@ -130,19 +209,35 @@ class ToolValidationProblem:
 # specs/agent-runtime-v2-progress.md).
 PROTECTED_FOUNDATIONAL_NAMES = frozenset(
     {
+        "workspace_context",
+        "read_files",
+        "patch_workspace",
+        "find_files",
+        "search_text",
+        "run_sandbox_command",
+        "run_host_command",
+        "run_python",
+        "ask_user",
+        "plan",
+    }
+)
+
+PROTECTED_FOUNDATIONAL_ALIASES = frozenset(
+    {
+        "bash",
+        "python",
         "get_workspace",
+        "glob",
+        "ls",
+        "grep",
+        "rg",
         "read_file",
         "write_file",
         "edit_file",
         "apply_patch",
-        "ls",
-        "glob",
-        "grep",
-        "bash",
-        "python",
-        "manage_bg_jobs",
+        "update_plan",
         "manage_plan",
-        "ask_user",
+        "todowrite",
     }
 )
 
@@ -165,6 +260,44 @@ class ToolRegistry:
         canonical = self._alias_to_name.get(name)
         return self._by_name.get(canonical) if canonical else None
 
+    def resolve(
+        self,
+        name: str,
+        context: Optional[AgentExecutionContext] = None,
+    ) -> Optional[ToolDefinition]:
+        raw = str(name or "")
+        if raw == "bash" and context is not None:
+            target = (
+                "run_host_command"
+                if context.execution_mode is ExecutionMode.HOST
+                else "run_sandbox_command"
+            )
+            return self._by_name.get(target)
+        return self.get(raw)
+
+    def canonical_name(
+        self,
+        name: str,
+        context: Optional[AgentExecutionContext] = None,
+    ) -> Optional[str]:
+        definition = self.resolve(name, context)
+        return definition.name if definition is not None else None
+
+    def canonicalize_names(
+        self,
+        names,
+        context: Optional[AgentExecutionContext] = None,
+    ) -> frozenset[str]:
+        canonical: set[str] = set()
+        for name in names or ():
+            raw = str(name)
+            if raw == "bash" and context is None:
+                canonical.update({"run_sandbox_command", "run_host_command"})
+                continue
+            resolved = self.canonical_name(raw, context)
+            canonical.add(resolved or raw)
+        return frozenset(canonical)
+
     def __contains__(self, name: str) -> bool:
         return self.get(name) is not None
 
@@ -180,10 +313,15 @@ class ToolRegistry:
 
     # ── Derivations ──────────────────────────────────────────────────
 
-    def function_schemas(self) -> list[dict]:
+    def function_schemas(
+        self,
+        context: Optional[AgentExecutionContext] = None,
+    ) -> list[dict]:
         """Native function-calling schemas, one per tool with a schema."""
         return [
-            {
+            dict(d.provider_schema)
+            if d.provider_schema is not None
+            else {
                 "type": "function",
                 "function": {
                     "name": d.name,
@@ -192,7 +330,7 @@ class ToolRegistry:
                 },
             }
             for d in self._by_name.values()
-            if d.input_schema
+            if d.input_schema and d.exposed(context)
         ]
 
     def handlers(self) -> dict[str, ToolHandler]:
@@ -207,6 +345,25 @@ class ToolRegistry:
         names = set(self._by_name.keys())
         names.update(self._alias_to_name.keys())
         return frozenset(names)
+
+    @property
+    def revision(self) -> str:
+        payload = [
+            {
+                "name": definition.name,
+                "aliases": sorted(definition.aliases),
+                "schema": definition.input_schema,
+                "runtime_v2": definition.runtime_v2,
+            }
+            for definition in self._by_name.values()
+        ]
+        encoded = json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode()
+        return hashlib.sha256(encoded).hexdigest()
 
     def foundational_groups(self) -> dict[str, frozenset[str]]:
         groups: dict[str, set[str]] = {}
@@ -269,6 +426,28 @@ class ToolRegistry:
                         "and is not marked externally_dispatched",
                     )
                 )
+            if d.runtime_v2:
+                if d.handler is None:
+                    problems.append(
+                        ToolValidationProblem(
+                            "runtime_v2_handler_missing",
+                            f"{name!r} has no authoritative handler",
+                        )
+                    )
+                if d.effect_resolver is None:
+                    problems.append(
+                        ToolValidationProblem(
+                            "runtime_v2_effect_resolver_missing",
+                            f"{name!r} has no argument-aware effect resolver",
+                        )
+                    )
+                if d.result_schema is None:
+                    problems.append(
+                        ToolValidationProblem(
+                            "runtime_v2_result_schema_missing",
+                            f"{name!r} has no canonical result schema",
+                        )
+                    )
             if d.handler is not None and not d.input_schema and not d.description:
                 problems.append(
                     ToolValidationProblem(
@@ -299,7 +478,11 @@ class ToolRegistry:
                         f"{name!r} is long_running but supports_cancellation=False",
                     )
                 )
-            if d.frontend_event_types and not d.supports_progress and not d.supports_background:
+            lifecycle_events = set(d.frontend_event_types) - {
+                "tool_started",
+                "tool_result",
+            }
+            if lifecycle_events and not d.supports_progress and not d.supports_background:
                 problems.append(
                     ToolValidationProblem(
                         "frontend_events_without_lifecycle",
@@ -339,9 +522,15 @@ class ToolRegistry:
         """MCP tools may extend the catalogue but must never shadow a
         protected local foundational tool (bash, read_file, ask_user, ...).
         """
+        protected_names = set(PROTECTED_FOUNDATIONAL_NAMES)
+        protected_names.update(PROTECTED_FOUNDATIONAL_ALIASES)
+        for canonical in PROTECTED_FOUNDATIONAL_NAMES:
+            definition = self._by_name.get(canonical)
+            if definition is not None:
+                protected_names.update(definition.aliases)
         problems = []
         for name in mcp_tool_names:
-            if name in PROTECTED_FOUNDATIONAL_NAMES:
+            if name in protected_names:
                 problems.append(
                     ToolValidationProblem(
                         "mcp_collision_with_protected_local_tool",

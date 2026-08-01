@@ -1476,7 +1476,13 @@ def function_call_to_tool_block(name: str, arguments: str) -> Optional[ToolBlock
     # Email tools are implemented as MCP — route them to email
     if name in BUILTIN_EMAIL_TOOLS:
         return ToolBlock(f"mcp__email__{name}", json.dumps(args) if args else "{}")
-    if tool_type not in TOOL_TAGS:
+    try:
+        from src.agent.tools.bootstrap import TOOL_REGISTRY
+
+        _known_tool = TOOL_REGISTRY.resolve(tool_type) is not None
+    except (ImportError, RuntimeError):
+        _known_tool = tool_type in TOOL_TAGS
+    if not _known_tool:
         logger.warning(f"Unknown function call: {name}")
         return None
 
