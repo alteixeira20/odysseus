@@ -420,6 +420,23 @@ class SessionManager:
 
         return self.sessions[session_id]
 
+    def get_session_snapshot(self, session_id: str) -> Session:
+        """Load an uncached preparation snapshot without touching access time."""
+
+        db = SessionLocal()
+        try:
+            db_session = db.query(DbSession).filter(DbSession.id == session_id).first()
+            if db_session is None:
+                raise KeyError(f"Session {session_id} not found")
+            session = self._db_to_session(db_session, db)
+            if session is None:
+                session = self._db_to_session_meta(db_session)
+            if session is None:
+                raise KeyError(f"Session {session_id} could not be loaded")
+            return session
+        finally:
+            db.close()
+
     def sync_session_metadata(self, session_id: str) -> bool:
         """Refresh non-message session fields from the DB into the cached object."""
         session = self.sessions.get(session_id)

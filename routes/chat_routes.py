@@ -34,8 +34,10 @@ from core.log_safety import redact_url
 from routes.research_routes import _resolve_research_endpoint
 from routes.model_routes import _visible_models
 from routes.chat_helpers import (
+    _append_incognito_message,
     resolve_session_auth,
     build_chat_context,
+    fire_message_event,
     save_assistant_response,
     run_post_response_tasks,
     clean_thinking_for_save,
@@ -253,7 +255,7 @@ def _session_url_matches_endpoint(session_url: str, endpoint_base: str) -> bool:
     return sess in variants or sess.startswith(base + "/")
 
 
-def _clear_orphaned_session_endpoint(sess, owner: str | None = None) -> bool:
+def _clear_orphaned_session_endpoint(sess, owner: str | None = None, *, persist: bool = True) -> bool:
     """Clear a session model if its endpoint was deleted from ModelEndpoint."""
     if not getattr(sess, "endpoint_url", ""):
         return False
@@ -268,7 +270,7 @@ def _clear_orphaned_session_endpoint(sess, owner: str | None = None) -> bool:
             if _session_url_matches_endpoint(sess.endpoint_url or "", ep.base_url or ""):
                 return False
         db_session = db.query(DBSession).filter(DBSession.id == sess.id).first()
-        if db_session:
+        if db_session and persist:
             db_session.endpoint_url = ""
             db_session.model = ""
             db_session.updated_at = datetime.utcnow()
@@ -366,7 +368,7 @@ def _first_image_attachment(chat_handler, att_ids: List[str], owner: str | None 
     return None
 
 
-def _recover_empty_session_model(sess, session_id: str, owner: str | None = None) -> bool:
+def _recover_empty_session_model(sess, session_id: str, owner: str | None = None, *, persist: bool = True) -> bool:
     """Re-populate sess.model from the matching endpoint's cached models.
 
     Covers the window between endpoint setup and the first chat send: the
@@ -433,7 +435,7 @@ def _recover_empty_session_model(sess, session_id: str, owner: str | None = None
                     _base, api_key = resolve_endpoint_runtime(ep, owner=owner)
                     if api_key:
                         live_models = fetch_available_models(api_key)
-                        if live_models:
+                        if live_models and persist:
                             ep.cached_models = json.dumps(live_models)
                             db.commit()
                 except Exception:
@@ -463,7 +465,7 @@ def _recover_empty_session_model(sess, session_id: str, owner: str | None = None
         if owner:
             db_session_q = db_session_q.filter(DBSession.owner == owner)
         db_session = db_session_q.first()
-        if db_session:
+        if db_session and persist:
             db_session.model = model
             db_session.updated_at = datetime.utcnow()
             db.commit()
@@ -485,6 +487,8 @@ def _reconcile_selected_route_from_request(
     session_id: str,
     form_data,
     owner: str | None = None,
+    *,
+    persist: bool = True,
 ) -> bool:
     """Apply the model route the browser selected before streaming.
 
@@ -545,7 +549,7 @@ def _reconcile_selected_route_from_request(
     db = SessionLocal()
     try:
         db_session = db.query(DBSession).filter(DBSession.id == session_id).first()
-        if db_session:
+        if db_session and persist:
             db_session.model = selected_model
             db_session.endpoint_url = endpoint_url
             db_session.headers = sess.headers or {}
@@ -916,14 +920,6 @@ def setup_chat_routes(
         active_email_folder = form_data.get("active_email_folder", "INBOX").strip() or "INBOX"
         active_email_account = form_data.get("active_email_account", "").strip()
         active_email_ctx: Optional[Dict[str, str]] = None
-        # Always reset between requests so a stale active-email pointer from
-        # a previous turn (different reader closed, different account, etc.)
-        # can't leak in when the user has no email open this turn.
-        try:
-            from src.tool_implementations import clear_active_email
-            clear_active_email()
-        except Exception:
-            pass
         if active_email_uid:
             active_email_ctx = {
                 "uid": active_email_uid,
@@ -950,18 +946,6 @@ def setup_chat_routes(
                         active_email_ctx["body_preview"] = _body_preview
             except Exception as _e:
                 logger.debug(f"[email-inject] cache enrich skipped: {_e}")
-            # Stash so email tools can resolve "this email" without UID guessing.
-            try:
-                from src.tool_implementations import set_active_email
-                set_active_email(
-                    uid=active_email_uid,
-                    folder=active_email_folder,
-                    account=active_email_account or None,
-                    subject=active_email_ctx.get("subject"),
-                    sender=active_email_ctx.get("from"),
-                )
-            except Exception as _e:
-                logger.debug(f"[email-inject] set_active_email failed: {_e}")
             logger.info(
                 "[email-inject] active_email uid=%s folder=%s account=%s subject=%r",
                 active_email_uid, active_email_folder, active_email_account or "(default)",
@@ -976,12 +960,21 @@ def setup_chat_routes(
                 or bool(form_data.get("attachments"))
             )
             message, session = coerce_message_and_session(
-                body, message, session, session_manager, allow_empty=_has_atts,
+                body,
+                message,
+                session,
+                session_manager,
+                allow_empty=_has_atts,
+                prepare_only=True,
             )
             # Verify ownership AFTER coerce (which may resolve a default session)
             # but BEFORE loading. Prevents cross-user session hijack.
             _verify_session_owner(request, session)
-            sess = session_manager.get_session(session)
+            _persistent_sess = None
+            try:
+                sess = session_manager.get_session_snapshot(session)
+            except KeyError as exc:
+                raise HTTPException(404, f"Session '{session}' not found") from exc
             owner = effective_user(request)
             # Prepare a compare-and-set ownership transition without touching
             # the current detached run. Model, privilege, context and endpoint
@@ -990,8 +983,10 @@ def setup_chat_routes(
                 session_id=str(session),
                 owner=str(owner) if owner else None,
             )
-            _reconcile_selected_route_from_request(request, sess, session, form_data, owner=owner)
-            if _clear_orphaned_session_endpoint(sess, owner=owner):
+            _reconcile_selected_route_from_request(
+                request, sess, session, form_data, owner=owner, persist=False
+            )
+            if _clear_orphaned_session_endpoint(sess, owner=owner, persist=False):
                 raise HTTPException(400, "Selected model endpoint was removed. Pick another model in Settings.")
             # Issue #587: picker shows a model from the endpoint cache but
             # s.model never made it onto the DB row (first-send race after
@@ -999,7 +994,7 @@ def setup_chat_routes(
             # the first cached model off the matching endpoint so the
             # upstream isn't called with model="" (which surfaces as a
             # generic 401/503).
-            _recover_empty_session_model(sess, session, owner=owner)
+            _recover_empty_session_model(sess, session, owner=owner, persist=False)
             if not getattr(sess, "model", "").strip():
                 raise HTTPException(
                     400,
@@ -1054,7 +1049,12 @@ def setup_chat_routes(
         _enforce_chat_privileges(request, sess)
 
         # Ensure session has auth headers
-        resolve_session_auth(sess, session, owner=effective_user(request))
+        resolve_session_auth(
+            sess,
+            session,
+            owner=effective_user(request),
+            persist=False,
+        )
 
         # Check for research_pending BEFORE mode persist overwrites it
         do_research = str(use_research).lower() == "true"
@@ -1104,12 +1104,14 @@ def setup_chat_routes(
             # index would be useless / unwanted noise.
             agent_mode=(chat_mode == "agent"),
             allow_tool_preprocessing=allow_tool_preprocessing,
+            prepare_only=True,
         )
 
         _research_flags = {"do": do_research}  # Mutable container for generator scope
 
         # Query active document — prefer explicit ID from frontend, fall back to session lookup
         active_doc = None
+        _active_doc_rebind_id = None
         _doc_db = SessionLocal()
         try:
             if active_doc_id:
@@ -1144,12 +1146,7 @@ def setup_chat_routes(
                                 "[doc-inject] cross-session active_doc_id %s (was session %s, now %s) — accepting and rebinding",
                                 active_doc_id, doc_session, session,
                             )
-                            try:
-                                active_doc.session_id = session
-                                _doc_db.commit()
-                            except Exception as _e:
-                                _doc_db.rollback()
-                                logger.warning(f"[doc-inject] session rebind failed: {_e}")
+                            _active_doc_rebind_id = active_doc.id
                         logger.info(f"[doc-inject] found by ID: title={active_doc.title!r}, lang={active_doc.language!r}, is_active={active_doc.is_active}, content_len={len(active_doc.current_content or '')}")
                 else:
                     logger.warning(f"[doc-inject] NOT FOUND by ID {active_doc_id}")
@@ -1367,14 +1364,12 @@ def setup_chat_routes(
         # Persist session mode after policy/privilege gates so blocked research
         # turns remain ordinary chat/agent streams and saved messages.
         _effective_mode = 'research' if effective_do_research else (chat_mode or 'chat')
-        if _effective_mode in ('agent', 'research', 'chat'):
-            set_session_mode(session, _effective_mode)
 
         _execution_context = None
         _tool_budget = 0
         _max_rounds = 1
         if _effective_mode == "agent":
-            from src.agent.runtime_v2.authority import prepare_execution_context
+            from src.agent.runtime_v2.authority import prepare_execution_context_async
             from src.agent.runtime_v2.contracts import Capability, RunBudgets
             from src.agent.tools.bootstrap import TOOL_REGISTRY
             from src.agent_tools import MAX_AGENT_ROUNDS as _DEFAULT_ROUNDS
@@ -1397,7 +1392,7 @@ def setup_chat_routes(
                 max_tool_calls=(_tool_budget if _tool_budget > 0 else 256),
                 max_provider_requests=min(max(_max_rounds * 3, 1), 128),
             )
-            _execution_context, _context_reason = prepare_execution_context(
+            _execution_context, _context_reason = await prepare_execution_context_async(
                 owner_id=str(_user or ""),
                 session_id=str(session),
                 requested_mode=execution_mode,
@@ -2134,10 +2129,118 @@ def setup_chat_routes(
             """Wrapper that guarantees _active_streams cleanup even if stream_with_save
             raises before reaching a mode-specific finally block."""
             try:
+                if att_ids:
+                    await chat_handler.preprocess_message(
+                        message,
+                        att_ids,
+                        _persistent_sess,
+                        auto_opened_docs=ctx.auto_opened_docs,
+                        allow_tool_preprocessing=allow_tool_preprocessing,
+                        persist_preprocessing=True,
+                    )
                 async for chunk in stream_with_save():
                     yield chunk
             finally:
                 _active_streams.pop(session, None)
+
+        def _commit_request_mutations() -> None:
+            """Apply request-side state only after the prepared-turn CAS wins."""
+
+            nonlocal _persistent_sess
+            _persistent_sess = session_manager.get_session(session)
+
+            if not incognito and not session_manager.replace_messages(
+                session,
+                list(getattr(sess, "history", []) or []),
+            ):
+                raise RuntimeError("failed to commit prepared session history")
+
+            persisted_headers = getattr(sess, "headers", {}) or {}
+            try:
+                from src.chatgpt_subscription import is_chatgpt_subscription_base
+
+                if is_chatgpt_subscription_base(getattr(sess, "endpoint_url", "") or ""):
+                    persisted_headers = {}
+            except Exception:
+                pass
+
+            db = SessionLocal()
+            try:
+                db_session_q = db.query(DBSession).filter(DBSession.id == session)
+                if owner:
+                    db_session_q = db_session_q.filter(DBSession.owner == owner)
+                db_session = db_session_q.first()
+                if db_session:
+                    db_session.model = getattr(sess, "model", "") or ""
+                    db_session.endpoint_url = getattr(sess, "endpoint_url", "") or ""
+                    db_session.headers = persisted_headers
+                    db_session.updated_at = datetime.utcnow()
+                if _active_doc_rebind_id:
+                    document_q = db.query(DBDocument).filter(
+                        DBDocument.id == _active_doc_rebind_id
+                    )
+                    document = _owner_session_filter(document_q, ctx.user).first()
+                    if document:
+                        document.session_id = session
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+            finally:
+                db.close()
+            for field in ("model", "endpoint_url", "headers", "name"):
+                try:
+                    if hasattr(sess, field):
+                        setattr(_persistent_sess, field, getattr(sess, field))
+                except Exception as exc:
+                    logger.warning("Deferred in-memory session commit failed for %s: %s", field, exc)
+            if incognito:
+                user_meta = (
+                    {"attachments": ctx.preprocessed.attachment_meta}
+                    if ctx.preprocessed.attachment_meta
+                    else None
+                )
+                try:
+                    _append_incognito_message(
+                        session,
+                        "user",
+                        ctx.preprocessed.user_content,
+                        user_meta,
+                    )
+                except Exception as exc:
+                    logger.warning("Deferred incognito transcript commit failed: %s", exc)
+            try:
+                if _effective_mode in ("agent", "research", "chat"):
+                    set_session_mode(session, _effective_mode)
+            except Exception as exc:
+                logger.warning("Deferred session-mode commit failed: %s", exc)
+            try:
+                from src.tool_implementations import clear_active_email, set_active_email
+
+                clear_active_email()
+                if active_email_ctx and active_email_ctx.get("uid"):
+                    set_active_email(
+                        uid=active_email_uid,
+                        folder=active_email_folder,
+                        account=active_email_account or None,
+                        subject=active_email_ctx.get("subject"),
+                        sender=active_email_ctx.get("from"),
+                    )
+            except Exception as exc:
+                logger.debug("[email-inject] deferred active-email commit failed: %s", exc)
+            if not incognito:
+                fire_message_event(
+                    request,
+                    webhook_manager,
+                    session,
+                    _persistent_sess,
+                    message,
+                    compare_mode,
+                )
+            try:
+                session_manager.save_sessions()
+            except Exception as exc:
+                logger.warning("Deferred session snapshot save failed: %s", exc)
 
         # Compare panes are short-lived, single-shot generations whose sessions
         # exist only to drive that one pane — there's nothing to "resume" and
@@ -2165,6 +2268,7 @@ def setup_chat_routes(
                     _prepared_turn,
                     session_id=str(session),
                     execution_context=_execution_context,
+                    commit_callback=_commit_request_mutations,
                 )
             except Exception as exc:
                 from src.agent.runtime_v2.ownership import OwnershipError
@@ -2186,6 +2290,7 @@ def setup_chat_routes(
                 owner=str(_user) if _user else None,
                 execution_context=_execution_context,
                 prepared_turn=_prepared_turn,
+                commit_callback=_commit_request_mutations,
             )
         except agent_runs.RunCapacityError as exc:
             await _detached_source.aclose()

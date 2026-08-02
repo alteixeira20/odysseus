@@ -325,6 +325,7 @@ async def maybe_compact(
     messages: List[Dict],
     headers: Optional[Dict] = None,
     owner: Optional[str] = None,
+    persist_session: bool = True,
 ) -> tuple:
     """Check context usage and compact if above threshold.
 
@@ -416,7 +417,16 @@ async def maybe_compact(
     # offset — session.history INCLUDES the system messages, but
     # split_point is indexed against convo_msgs which does NOT. Without
     # this, the slice drops the leading system message(s).
-    _update_session_history(session, split_point, summary, system_msg_count=len(system_msgs))
+    _update_session_history(
+        session,
+        split_point,
+        summary,
+        system_msg_count=len(system_msgs),
+        persist_session=(
+            persist_session
+            and not bool(getattr(session, "_defer_compaction_persistence", False))
+        ),
+    )
 
     new_used = estimate_tokens(compacted)
     logger.info(
@@ -427,8 +437,13 @@ async def maybe_compact(
     return compacted, context_length, True
 
 
-def _update_session_history(session, split_point: int, summary: str,
-                            system_msg_count: int = 0):
+def _update_session_history(
+    session,
+    split_point: int,
+    summary: str,
+    system_msg_count: int = 0,
+    persist_session: bool = True,
+):
     """Update the in-memory session history after compaction.
 
     `split_point` is the index in `convo_msgs` (system-stripped). The
@@ -461,7 +476,7 @@ def _update_session_history(session, split_point: int, summary: str,
         manager = get_session_manager_instance()
     except Exception:
         manager = None
-    if manager and getattr(session, "id", None):
+    if persist_session and manager and getattr(session, "id", None):
         if manager.replace_messages(session.id, new_history):
             return
     session.history = new_history

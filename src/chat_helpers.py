@@ -250,7 +250,8 @@ def validate_file_upload(file: UploadFile) -> UploadFile:
 
 def coerce_message_and_session(req_json: dict | None, message: str | None,
                                session: str | None, session_manager,
-                               allow_empty: bool = False):
+                               allow_empty: bool = False,
+                               prepare_only: bool = False):
     """Extract message and session from request, with validation.
 
     If allow_empty=True (e.g. attachment-only sends), the message-required
@@ -283,7 +284,8 @@ def coerce_message_and_session(req_json: dict | None, message: str | None,
                 }
             )
         try:
-            session_manager.get_session(session)
+            if not prepare_only:
+                session_manager.get_session(session)
         except KeyError:
             raise HTTPException(
                 status_code=404,

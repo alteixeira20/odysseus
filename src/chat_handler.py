@@ -127,6 +127,7 @@ class ChatHandler:
         sess,
         auto_opened_docs: Optional[List[Dict[str, Any]]] = None,
         allow_tool_preprocessing: bool = True,
+        persist_preprocessing: bool = True,
     ) -> tuple:
         """
         Common preprocessing for both chat endpoints.
@@ -237,7 +238,8 @@ class ChatHandler:
                                     _vtext = _vf.read().strip()
                                 if _vtext:
                                     enhanced_message += f"\n[User-corrected caption / OCR for this image — treat as authoritative]:\n{_vtext}"
-                                    _sync_upload_vision_to_gallery(file_info, owner, _vtext)
+                                    if persist_preprocessing:
+                                        _sync_upload_vision_to_gallery(file_info, owner, _vtext)
                                     _m = meta_by_id.get(att_id)
                                     if _m is not None:
                                         _m["vision"] = _vtext
@@ -257,7 +259,8 @@ class ChatHandler:
                                     cached_desc = _vf.read().strip()
                                 if cached_desc and not cached_desc.startswith("["):
                                     vl_desc = cached_desc
-                                    _sync_upload_vision_to_gallery(file_info, owner, vl_desc)
+                                    if persist_preprocessing:
+                                        _sync_upload_vision_to_gallery(file_info, owner, vl_desc)
                             except Exception:
                                 vl_desc = None
                         if not vl_desc:
@@ -266,6 +269,8 @@ class ChatHandler:
                             vl_model = vl_result.get("model", "")
                             if vl_desc and not vl_desc.startswith("["):
                                 try:
+                                    if not persist_preprocessing:
+                                        raise OSError("preparation is side-effect free")
                                     os.makedirs(os.path.join(UPLOAD_DIR, ".vision"), exist_ok=True)
                                     with open(_vcache, "w", encoding="utf-8") as _vf:
                                         _vf.write(vl_desc)
@@ -283,7 +288,7 @@ class ChatHandler:
 
         user_content = build_user_content(
             enhanced_message, effective_att_ids, UPLOAD_DIR, self.upload_handler,
-            session_id=getattr(sess, "id", None),
+            session_id=(getattr(sess, "id", None) if persist_preprocessing else None),
             auto_opened_docs=auto_opened_docs,
             owner=owner,
             resolved_uploads=files_by_id,

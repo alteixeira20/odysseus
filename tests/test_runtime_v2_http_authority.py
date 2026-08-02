@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import json
@@ -48,6 +49,16 @@ class _SessionManager:
             raise KeyError(session_id)
         return self.session
 
+    def get_session_snapshot(self, session_id):
+        return copy.deepcopy(self.get_session(session_id))
+
+    def replace_messages(self, session_id, messages):
+        self.get_session(session_id).history = list(messages)
+        return True
+
+    def save_sessions(self):
+        return None
+
 
 class _EmptyQuery:
     def filter(self, *args, **kwargs):
@@ -65,6 +76,12 @@ class _EmptyDatabase:
         return _EmptyQuery()
 
     def close(self):
+        return None
+
+    def commit(self):
+        return None
+
+    def rollback(self):
         return None
 
 
@@ -135,6 +152,9 @@ def test_production_http_preparation_binds_roots_and_one_run_host_authority(
 
     async def build_context(*args, **kwargs):
         message = kwargs["message"]
+        args[0].history.append(
+            SimpleNamespace(role="user", content=message, metadata=None)
+        )
         return ChatContext(
             preface=[],
             rag_sources=[],
@@ -408,7 +428,10 @@ def test_production_http_preparation_binds_roots_and_one_run_host_authority(
         prepared_turn = kwargs["prepared_turn"]
         from src.agent.runtime_v2.authority import activate_execution_context
 
+        before_commit_count = len(session_manager.session.history)
         activate_execution_context(execution_context, prepared_turn.lease)
+        kwargs["commit_callback"]()
+        assert len(session_manager.session.history) == before_commit_count + 1
         captured_contexts.append(execution_context)
         buffered = []
 

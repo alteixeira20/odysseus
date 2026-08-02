@@ -394,6 +394,7 @@ async def preprocess(
     chat_handler, message, att_ids, sess,
     auto_opened_docs: Optional[list] = None,
     allow_tool_preprocessing: bool = True,
+    persist_preprocessing: bool = True,
 ) -> PreprocessedMessage:
     """Run chat_handler.preprocess_message and wrap the result."""
     enhanced, user_content, text_ctx, yt_transcripts, att_meta = (
@@ -403,6 +404,7 @@ async def preprocess(
             sess,
             auto_opened_docs=auto_opened_docs,
             allow_tool_preprocessing=allow_tool_preprocessing,
+            persist_preprocessing=persist_preprocessing,
         )
     )
     return PreprocessedMessage(
@@ -516,7 +518,7 @@ def _has_auth_keys(headers) -> bool:
     )
 
 
-def resolve_session_auth(sess, session_id: str, owner: Optional[str] = None):
+def resolve_session_auth(sess, session_id: str, owner: Optional[str] = None, *, persist: bool = True):
     """Ensure session has auth headers — resolve from endpoint DB if missing."""
     try:
         from src.chatgpt_subscription import is_chatgpt_subscription_base
@@ -562,11 +564,13 @@ def resolve_session_auth(sess, session_id: str, owner: Optional[str] = None):
                     if owner:
                         stale_q = stale_q.filter(DBSession.owner == owner)
                     stored = stale_q.first()
-                    if stored is not None and _has_auth_keys(stored.headers):
+                    if persist and stored is not None and _has_auth_keys(stored.headers):
                         stale_q.update({"headers": {}})
                         db.commit()
                         logger.info(f"Cleared persisted ChatGPT Subscription bearer from session {session_id}")
                     logger.debug(f"Resolved request-local ChatGPT Subscription auth for session {session_id}")
+                    return
+                if not persist:
                     return
                 update_q = db.query(DBSession).filter(DBSession.id == session_id)
                 if owner:
@@ -687,6 +691,7 @@ async def build_chat_context(
     use_enhanced_message: bool = False,
     agent_mode: bool = False,
     allow_tool_preprocessing: bool = True,
+    prepare_only: bool = False,
 ) -> ChatContext:
     """Build the full context (preface + messages) for an LLM call.
 
@@ -705,19 +710,32 @@ async def build_chat_context(
         chat_handler, message, att_ids or [], sess,
         auto_opened_docs=auto_opened_docs,
         allow_tool_preprocessing=allow_tool_preprocessing,
+        persist_preprocessing=not prepare_only,
     )
 
     # Add user message to history. Nobody/incognito uses a request-local
     # transcript store instead of session history so stale saved chats cannot
     # bleed into context and the turn is not persisted.
+    incognito_user_message = None
     if incognito:
         user_meta = {"attachments": preprocessed.attachment_meta} if preprocessed.attachment_meta else None
-        _append_incognito_message(session_id, "user", preprocessed.user_content, user_meta)
+        incognito_user_message = {"role": "user", "content": preprocessed.user_content}
+        if user_meta:
+            incognito_user_message["metadata"] = dict(user_meta)
+        if not prepare_only:
+            _append_incognito_message(session_id, "user", preprocessed.user_content, user_meta)
+    elif prepare_only:
+        user_meta = {"attachments": preprocessed.attachment_meta} if preprocessed.attachment_meta else None
+        sess.history.append(
+            ChatMessage("user", preprocessed.user_content, metadata=user_meta)
+        )
+        sess.message_count = len(sess.history)
+        chat_handler.update_session_name_if_needed(sess, preprocessed.text_for_context)
     else:
         add_user_message(sess, chat_handler, preprocessed, incognito=False)
 
     # Fire events
-    if not incognito:
+    if not incognito and not prepare_only:
         fire_message_event(request, webhook_manager, session_id, sess, message, compare_mode)
 
     # Resolve owner-scoped prefs/context. Browser requests keep the cookie user;
@@ -808,7 +826,13 @@ async def build_chat_context(
     # Build messages. In Nobody/incognito mode, never read saved session
     # history: the session id may be a temporary wrapper or, in buggy clients, a
     # stale normal session id. Only the ephemeral incognito transcript is safe.
-    messages = preface + (_incognito_messages(session_id) if incognito else sess.get_context_messages())
+    if incognito:
+        request_messages = _incognito_messages(session_id)
+        if prepare_only and incognito_user_message is not None:
+            request_messages.append(incognito_user_message)
+    else:
+        request_messages = sess.get_context_messages()
+    messages = preface + request_messages
 
     # Current date/time — injected as a standalone *user*-role context message
     # placed immediately before the latest user turn, NOT folded into the
@@ -831,8 +855,15 @@ async def build_chat_context(
             logger.debug("Failed to add current date/time context", exc_info=True)
 
     # Auto-compact
+    if prepare_only:
+        setattr(sess, "_defer_compaction_persistence", True)
     messages, context_length, was_compacted = await maybe_compact(
-        sess, sess.endpoint_url, sess.model, messages, sess.headers, owner=user,
+        sess,
+        sess.endpoint_url,
+        sess.model,
+        messages,
+        sess.headers,
+        owner=user,
     )
     _before_trim_messages = len(messages)
     _before_trim_tokens = estimate_tokens(messages)

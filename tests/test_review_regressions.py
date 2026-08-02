@@ -415,10 +415,12 @@ async def test_build_chat_context_incognito_does_not_duplicate_current_user_mess
         message="hello",
         session_id="s1",
         incognito=True,
+        prepare_only=True,
     )
 
     user_messages = [m for m in ctx.messages if m.get("role") == "user" and m.get("content") == "hello"]
     assert len(user_messages) == 1
+    assert chat_helpers._INCOGNITO_CONTEXTS == {}
 
 
 @pytest.mark.asyncio
