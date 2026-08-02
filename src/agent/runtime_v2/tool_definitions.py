@@ -291,11 +291,22 @@ def _adapt_command(raw: Any, raw_name: str) -> Mapping[str, Any]:
             arguments["command"] = str(command)
         arguments.pop("cmd", None)
         arguments.pop("code", None)
+        command_text = str(arguments.get("command") or "")
+        lines = command_text.splitlines()
+        marker = bool(
+            lines
+            and lines[0].strip().casefold()
+            in {"#!bg", "# bg", "# background", "#background"}
+        )
+        if marker:
+            command_text = "\n".join(lines[1:]).strip()
+        arguments["command"] = command_text
+        arguments["background"] = bool(arguments.get("background") or marker)
         return arguments
     text = str(raw or "")
     if text.lstrip().startswith("{"):
         return _adapt_command(_json_object(text), raw_name)
-    return {"command": text}
+    return _adapt_command({"command": text}, raw_name)
 
 
 def _adapt_python(raw: Any, raw_name: str) -> Mapping[str, Any]:
@@ -578,13 +589,14 @@ async def _run_command_named(
     progress_cb=None,
     invocation_id: Optional[str] = None,
     effect_started_cb=None,
+    spawn_started_cb=None,
+    spawn_failed_cb=None,
+    approval_id: Optional[str] = None,
     expected_process_identity: Optional[str] = None,
 ) -> ToolResult:
     started = time.perf_counter()
     command = str(arguments.get("command") or "")
-    lines = command.splitlines()
-    if lines and lines[0].strip().casefold() in {"#!bg", "# bg", "# background", "#background"}:
-        background_command = "\n".join(lines[1:]).strip()
+    if bool(arguments.get("background")):
         try:
             if expected_process_identity:
                 current_identity = snapshot_process(
@@ -597,9 +609,13 @@ async def _run_command_named(
                         "host background process identity changed after approval"
                     )
             record = PROCESS_SERVICE.launch_background(
-                background_command,
+                command,
                 context,
                 effect_started_cb=effect_started_cb,
+                spawn_started_cb=spawn_started_cb,
+                spawn_failed_cb=spawn_failed_cb,
+                approval_id=approval_id,
+                approval_identity=expected_process_identity,
             )
         except (ProcessServiceError, RuntimeError, ValueError) as exc:
             return _failure(
@@ -627,6 +643,8 @@ async def _run_command_named(
             progress_cb=progress_cb,
             invocation_id=invocation_id,
             effect_started_cb=effect_started_cb,
+            spawn_started_cb=spawn_started_cb,
+            spawn_failed_cb=spawn_failed_cb,
             expected_process_identity=expected_process_identity,
         )
     except (ProcessSandboxUnavailable, ProcessServiceError) as exc:
@@ -658,6 +676,9 @@ async def _run_sandbox(
     progress_cb=None,
     invocation_id: Optional[str] = None,
     effect_started_cb=None,
+    spawn_started_cb=None,
+    spawn_failed_cb=None,
+    approval_id: Optional[str] = None,
     expected_process_identity: Optional[str] = None,
 ) -> ToolResult:
     return await _run_command_named(
@@ -667,6 +688,9 @@ async def _run_sandbox(
         progress_cb=progress_cb,
         invocation_id=invocation_id,
         effect_started_cb=effect_started_cb,
+        spawn_started_cb=spawn_started_cb,
+        spawn_failed_cb=spawn_failed_cb,
+        approval_id=approval_id,
         expected_process_identity=expected_process_identity,
     )
 
@@ -678,6 +702,9 @@ async def _run_host(
     progress_cb=None,
     invocation_id: Optional[str] = None,
     effect_started_cb=None,
+    spawn_started_cb=None,
+    spawn_failed_cb=None,
+    approval_id: Optional[str] = None,
     expected_process_identity: Optional[str] = None,
 ) -> ToolResult:
     return await _run_command_named(
@@ -687,6 +714,9 @@ async def _run_host(
         progress_cb=progress_cb,
         invocation_id=invocation_id,
         effect_started_cb=effect_started_cb,
+        spawn_started_cb=spawn_started_cb,
+        spawn_failed_cb=spawn_failed_cb,
+        approval_id=approval_id,
         expected_process_identity=expected_process_identity,
     )
 
@@ -698,6 +728,9 @@ async def _run_python(
     progress_cb=None,
     invocation_id: Optional[str] = None,
     effect_started_cb=None,
+    spawn_started_cb=None,
+    spawn_failed_cb=None,
+    approval_id: Optional[str] = None,
     expected_process_identity: Optional[str] = None,
 ) -> ToolResult:
     started = time.perf_counter()
@@ -707,6 +740,8 @@ async def _run_python(
             context,
             progress_cb=progress_cb,
             effect_started_cb=effect_started_cb,
+            spawn_started_cb=spawn_started_cb,
+            spawn_failed_cb=spawn_failed_cb,
             expected_process_identity=expected_process_identity,
         )
     except (ProcessSandboxUnavailable, ProcessServiceError) as exc:
@@ -847,6 +882,10 @@ def build_runtime_v2_definitions() -> dict[str, ToolDefinition]:
                 "maximum": 1800,
                 "default": 120,
             },
+            "background": {
+                "type": "boolean",
+                "description": "Launch the exact normalized command as a detached job.",
+            },
         },
         ("command",),
     )
@@ -973,7 +1012,11 @@ def build_runtime_v2_definitions() -> dict[str, ToolDefinition]:
         ),
         _definition(
             name="run_host_command",
-            description="Run one exact-approved generic command at the server-bound host root from a revalidated process snapshot.",
+            description=(
+                "Run one exact-approved opaque command at the server-bound host root. "
+                "The sanitized environment and known dependencies are revalidated; "
+                "dynamic shell dependencies are disclosed as unsealed."
+            ),
             schema=command_schema, handler=_run_host, category=ToolCategory.EXECUTION, risk=ToolRisk.PRIVILEGED,
             required={Capability.PROCESS_HOST}, effects=resolve_command_effects,
             approval=DefinitionApprovalPolicy.ALWAYS_APPROVE, exposure=_expose_host,

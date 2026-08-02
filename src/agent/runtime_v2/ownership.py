@@ -43,6 +43,7 @@ class RunOwnershipStore:
 
     def __init__(self) -> None:
         self._records: dict[str, _TurnRecord] = {}
+        self._prepared_rollbacks: dict[str, Optional[_TurnRecord]] = {}
         self._lock = threading.RLock()
 
     def claim_turn(self, *, owner_id: str, conversation_id: str) -> TurnLease:
@@ -107,6 +108,24 @@ class RunOwnershipStore:
                 run_id=str(run_id) if run_id else None,
                 run_active=bool(run_id),
             )
+            self._prepared_rollbacks[lease.turn_id] = current
+
+    def finalize_prepared_turn(self, lease: TurnLease) -> None:
+        with self._lock:
+            self._prepared_rollbacks.pop(lease.turn_id, None)
+
+    def rollback_prepared_turn(self, lease: TurnLease) -> None:
+        """Restore the predecessor when request-state commit fails before start."""
+
+        with self._lock:
+            current = self._records.get(lease.conversation_id)
+            if current is None or current.turn_id != lease.turn_id:
+                return
+            previous = self._prepared_rollbacks.pop(lease.turn_id, None)
+            if previous is None:
+                self._records.pop(lease.conversation_id, None)
+            else:
+                self._records[lease.conversation_id] = previous
 
     def bind_run(
         self,

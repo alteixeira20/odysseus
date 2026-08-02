@@ -792,6 +792,7 @@ def start(
     owner: Optional[str] = None,
     execution_context: Optional[AgentExecutionContext] = None,
     prepared_turn: Optional[PreparedTurn] = None,
+    commit_callback=None,
 ) -> _Run:
     """Start a run with explicit ownership semantics.
 
@@ -819,26 +820,36 @@ def start(
                 raise OwnershipError(
                     "conversation run changed while the replacement request was preparing"
                 )
-            if execution_context is not None:
-                from src.agent.runtime_v2.authority import activate_execution_context
+            try:
+                if execution_context is not None:
+                    from src.agent.runtime_v2.authority import activate_execution_context
 
-                activate_execution_context(execution_context, prepared_turn.lease)
-            else:
-                RUN_OWNERSHIP.commit_prepared_turn(prepared_turn.lease)
+                    activate_execution_context(execution_context, prepared_turn.lease)
+                else:
+                    RUN_OWNERSHIP.commit_prepared_turn(prepared_turn.lease)
+                if commit_callback is not None:
+                    commit_callback()
+            except BaseException:
+                RUN_OWNERSHIP.rollback_prepared_turn(prepared_turn.lease)
+                raise
+            RUN_OWNERSHIP.finalize_prepared_turn(prepared_turn.lease)
         elif execution_context is not None:
             RUN_OWNERSHIP.validate_context(execution_context)
+        if prepared_turn is None and commit_callback is not None:
+            commit_callback()
         previous_task: Optional[asyncio.Task] = None
-        if previous:
-            if previous.task and not previous.task.done():
-                if previous.execution_context is not None:
-                    previous.execution_context.cancellation_token.cancel()
-                previous.task.cancel()
-                previous_task = previous.task
-            if previous.evict_task and not previous.evict_task.done():
-                previous.evict_task.cancel()
+        if previous and previous.task and not previous.task.done():
+            previous_task = previous.task
         run = _Run(mode, owner, execution_context)
         _RUNS[session_id] = run
         run.task = asyncio.create_task(_drain(session_id, agen, previous_task))
+        if previous:
+            if previous_task is not None:
+                if previous.execution_context is not None:
+                    previous.execution_context.cancellation_token.cancel()
+                previous_task.cancel()
+            if previous.evict_task and not previous.evict_task.done():
+                previous.evict_task.cancel()
 
     def _ensure_terminal(task: asyncio.Task) -> None:
         # Cancellation can win the race before _drain executes its first line,
@@ -910,6 +921,7 @@ def commit_prepared_turn(
     *,
     session_id: str,
     execution_context: Optional[AgentExecutionContext],
+    commit_callback=None,
 ) -> None:
     """Commit ownership for a direct (non-managed) stream after preparation."""
 
@@ -919,12 +931,19 @@ def commit_prepared_turn(
             raise OwnershipError(
                 "conversation run changed while the replacement request was preparing"
             )
-        if execution_context is not None:
-            from src.agent.runtime_v2.authority import activate_execution_context
+        try:
+            if execution_context is not None:
+                from src.agent.runtime_v2.authority import activate_execution_context
 
-            activate_execution_context(execution_context, prepared.lease)
-        else:
-            RUN_OWNERSHIP.commit_prepared_turn(prepared.lease)
+                activate_execution_context(execution_context, prepared.lease)
+            else:
+                RUN_OWNERSHIP.commit_prepared_turn(prepared.lease)
+            if commit_callback is not None:
+                commit_callback()
+        except BaseException:
+            RUN_OWNERSHIP.rollback_prepared_turn(prepared.lease)
+            raise
+        RUN_OWNERSHIP.finalize_prepared_turn(prepared.lease)
         if previous and previous.task and not previous.task.done():
             if previous.execution_context is not None:
                 previous.execution_context.cancellation_token.cancel()

@@ -132,14 +132,20 @@ async def _run_exec(*args: str, timeout: float = 10) -> Tuple[str, str, int]:
     try:
         out_b, err_b = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except asyncio.TimeoutError:
-        proc.kill()
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
         try:
             await asyncio.wait_for(proc.wait(), timeout=1)
         except (asyncio.TimeoutError, ProcessLookupError):
             pass
         return "", "timeout", 124
     except asyncio.CancelledError:
-        proc.kill()
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
         try:
             await asyncio.wait_for(proc.wait(), timeout=1)
         except (asyncio.TimeoutError, ProcessLookupError):
@@ -304,6 +310,42 @@ async def _terminate_owned_group(pgid: Optional[int]) -> Tuple[str, ...]:
         if await _wait_group_gone(pgid, grace):
             break
     return tuple(escalation)
+
+
+async def _terminate_and_reap(
+    proc: asyncio.subprocess.Process,
+    *,
+    terminate_process_group: bool = True,
+) -> Tuple[Tuple[str, ...], bool]:
+    """Finish process cleanup even when the owning task is cancelled again."""
+
+    async def _cleanup() -> Tuple[str, ...]:
+        escalation: Tuple[str, ...] = ()
+        try:
+            if terminate_process_group:
+                if os.name == "posix":
+                    escalation = await _terminate_owned_group(proc.pid)
+                else:
+                    await asyncio.to_thread(kill_process_tree, proc.pid)
+                    escalation = ("process_tree_killed",)
+            elif proc.returncode is None:
+                proc.kill()
+        finally:
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=2)
+            except (asyncio.TimeoutError, ProcessLookupError):
+                pass
+        return escalation
+
+    cleanup_task = asyncio.create_task(_cleanup())
+    cancellation_seen = False
+    while not cleanup_task.done():
+        try:
+            await asyncio.shield(cleanup_task)
+        except asyncio.CancelledError:
+            cancellation_seen = True
+            continue
+    return cleanup_task.result(), cancellation_seen
 
 
 def _isolated_shell_script(*, capture_to_files: bool = False) -> str:
@@ -584,32 +626,17 @@ async def _run_subprocess_streaming(
                 })
             except Exception:
                 pass
-        if terminate_process_group:
-            if os.name == "posix":
-                escalation = await _terminate_owned_group(proc.pid)
-            else:
-                await asyncio.to_thread(kill_process_tree, proc.pid)
-                escalation = ("process_tree_killed",)
-        elif proc.returncode is None:
-            proc.kill()
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=2)
-        except (asyncio.TimeoutError, ProcessLookupError):
-            pass
+        escalation, cancelled_during_cleanup = await _terminate_and_reap(
+            proc,
+            terminate_process_group=terminate_process_group,
+        )
+        if cancelled_during_cleanup:
+            raise asyncio.CancelledError
     except asyncio.CancelledError:
-        if terminate_process_group:
-            if os.name == "posix":
-                await asyncio.shield(_terminate_owned_group(proc.pid))
-            else:
-                await asyncio.shield(
-                    asyncio.to_thread(kill_process_tree, proc.pid)
-                )
-        elif proc.returncode is None:
-            proc.kill()
-        try:
-            await asyncio.shield(asyncio.wait_for(proc.wait(), timeout=2))
-        except (asyncio.TimeoutError, ProcessLookupError):
-            pass
+        await _terminate_and_reap(
+            proc,
+            terminate_process_group=terminate_process_group,
+        )
         for t in (rd_out, rd_err):
             t.cancel()
         if prog_task is not None:
@@ -650,6 +677,8 @@ async def _run_direct_bash(
     preserve_logical_cwd: bool = True,
     workspace_writable: bool = True,
     effect_started_cb: Optional[Callable[[], None]] = None,
+    spawn_started_cb: Optional[Callable[[], None]] = None,
+    spawn_failed_cb: Optional[Callable[[], None]] = None,
     bash_executable_override: Optional[str] = None,
 ) -> BashExecutionResult:
     canonical = os.path.realpath(cwd)
@@ -738,24 +767,48 @@ async def _run_direct_bash(
             process_kwargs["start_new_session"] = True
         elif os.name == "nt":
             process_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-        proc = await asyncio.create_subprocess_exec(
-            *sandbox_argv,
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=child_env,
-            cwd=run_cwd,
-            **process_kwargs,
+        if spawn_started_cb is not None:
+            try:
+                spawn_started_cb()
+            except BaseException:
+                if spawn_failed_cb is not None:
+                    spawn_failed_cb()
+                raise
+        spawn_task = asyncio.create_task(
+            asyncio.create_subprocess_exec(
+                *sandbox_argv,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=child_env,
+                cwd=run_cwd,
+                **process_kwargs,
+            )
         )
+        cancelled_during_spawn = False
+        while not spawn_task.done():
+            try:
+                await asyncio.shield(spawn_task)
+            except asyncio.CancelledError:
+                cancelled_during_spawn = True
+                continue
+        try:
+            proc = spawn_task.result()
+        except BaseException:
+            # asyncio's subprocess constructor either returns the owned process
+            # transport or raises after cleaning up its failed transport.  Only
+            # this branch proves that no process handle was returned.
+            if spawn_failed_cb is not None:
+                spawn_failed_cb()
+            raise
+        if cancelled_during_spawn:
+            await _terminate_and_reap(proc)
+            raise asyncio.CancelledError
         if effect_started_cb is not None:
             try:
                 effect_started_cb()
             except BaseException:
-                if os.name == "posix":
-                    await _terminate_owned_group(proc.pid)
-                elif proc.returncode is None:
-                    proc.kill()
-                await proc.wait()
+                await _terminate_and_reap(proc)
                 raise
         stdout, stderr, rc, timed_out, escalation = await _run_subprocess_streaming(
             proc,

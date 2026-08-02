@@ -84,6 +84,13 @@ def resolve_command_effects(
     opaque = mode is ExecutionMode.HOST
     process_metadata: dict[str, Any] = {
         "execution_root": context.execution_root.path,
+        "binding": "exact_opaque_command",
+        "complete_dependency_seal": False,
+        "dependency_guarantee": (
+            "known dependencies are revalidated; dynamic shell resolution remains opaque"
+        ),
+        "one_execution_attempt": True,
+        "background": bool(arguments.get("background")),
     }
     effects: list[Effect] = [
         Effect(
@@ -102,7 +109,11 @@ def resolve_command_effects(
                 Capability.PROCESS_WORKSPACE_WRITE,
                 consequential=True,
                 opaque=True,
-                metadata={"staging": "direct_workspace_interim"},
+                metadata={
+                    "staging": "non_transactional_direct_process_write",
+                    "rollback_guaranteed": False,
+                    "warning": "partial workspace changes may survive failure, timeout, or cancellation",
+                },
             )
         )
     lowered = command.casefold()
@@ -236,6 +247,7 @@ def resolve_command_effects(
                 "executable": identity.executable,
                 "environment_digest": identity.environment_digest,
                 "dependency_digests": list(identity.dependency_digests),
+                "known_dependency_snapshot": identity.digest,
             }
         )
         effects[0] = Effect(
@@ -283,6 +295,9 @@ def resolve_python_effects(
                     "executable": identity.executable,
                     "environment_digest": identity.environment_digest,
                     "dependency_digests": list(identity.dependency_digests),
+                    "binding": "typed_python_invocation",
+                    "complete_dependency_seal": False,
+                    "known_dependency_snapshot": identity.digest,
                 },
             ),
         ]
@@ -294,7 +309,11 @@ def resolve_python_effects(
                     Capability.PROCESS_WORKSPACE_WRITE,
                     consequential=True,
                     opaque=True,
-                    metadata={"staging": "direct_workspace_interim"},
+                    metadata={
+                        "staging": "non_transactional_direct_process_write",
+                        "rollback_guaranteed": False,
+                        "warning": "partial workspace changes may survive failure, timeout, or cancellation",
+                    },
                 )
             )
         return tuple(effects)
@@ -314,7 +333,11 @@ def resolve_python_effects(
                 Capability.PROCESS_WORKSPACE_WRITE,
                 consequential=True,
                 opaque=True,
-                metadata={"staging": "direct_workspace_interim"},
+                metadata={
+                    "staging": "non_transactional_direct_process_write",
+                    "rollback_guaranteed": False,
+                    "warning": "partial workspace changes may survive failure, timeout, or cancellation",
+                },
             )
         )
     return tuple(effects)

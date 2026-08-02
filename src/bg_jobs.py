@@ -24,6 +24,7 @@ import json
 import os
 import base64
 import shlex
+import signal
 import subprocess
 import time
 import uuid
@@ -65,6 +66,28 @@ MAX_RUNNING_JOBS_PER_OWNER = 8
 MAX_RUNNING_JOBS_PER_SESSION = 4
 
 
+def _terminate_spawned_process(proc: subprocess.Popen) -> None:
+    """Synchronously terminate and reap a just-created detached process."""
+
+    kill_process_tree(proc.pid)
+    try:
+        proc.wait(timeout=2)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        if os.name == "posix":
+            os.killpg(proc.pid, signal.SIGKILL)
+        else:
+            proc.kill()
+    except (OSError, ProcessLookupError):
+        pass
+    try:
+        proc.wait(timeout=2)
+    except (subprocess.TimeoutExpired, ProcessLookupError):
+        pass
+
+
 def _load() -> Dict[str, Dict[str, Any]]:
     try:
         if _STORE.exists():
@@ -99,6 +122,10 @@ def launch(
     execution_mode: str = "disabled",
     execution_context: Optional[Any] = None,
     effect_started_cb: Optional[Any] = None,
+    spawn_started_cb: Optional[Any] = None,
+    spawn_failed_cb: Optional[Any] = None,
+    approval_id: Optional[str] = None,
+    approval_identity: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Launch `command` detached. Returns the job record (status='running').
 
@@ -240,23 +267,32 @@ def launch(
         )
 
     try:
-        proc = subprocess.Popen(
-            argv,
-            stdout=popen_stdout,
-            stderr=popen_stderr,
-            stdin=subprocess.DEVNULL,
-            cwd=cwd or None,
-            env=child_environment,
-            **detached_popen_kwargs(),  # setsid / DETACHED_PROCESS
-        )
+        if spawn_started_cb is not None:
+            try:
+                spawn_started_cb()
+            except BaseException:
+                if spawn_failed_cb is not None:
+                    spawn_failed_cb()
+                raise
+        try:
+            proc = subprocess.Popen(
+                argv,
+                stdout=popen_stdout,
+                stderr=popen_stderr,
+                stdin=subprocess.DEVNULL,
+                cwd=cwd or None,
+                env=child_environment,
+                **detached_popen_kwargs(),  # setsid / DETACHED_PROCESS
+            )
+        except BaseException:
+            if spawn_failed_cb is not None:
+                spawn_failed_cb()
+            raise
         if effect_started_cb is not None:
             try:
                 effect_started_cb()
             except BaseException:
-                try:
-                    proc.terminate()
-                except OSError:
-                    pass
+                _terminate_spawned_process(proc)
                 raise
     finally:
         if mode is ExecutionMode.HOST:
@@ -277,6 +313,11 @@ def launch(
         "exit_code": None,
         "max_runtime_s": max_runtime_s,
         "followed_up": False,       # has the agent been re-invoked with the result?
+        "approval_id": approval_id,
+        "approval_identity": approval_identity,
+        "approval_binding": "exact_opaque_command",
+        "complete_dependency_seal": False,
+        "detached_outcome": "detached_executing",
         "log_path": str(log_path),
         "exit_path": str(exit_path),
         **context_snapshot,
@@ -360,10 +401,12 @@ def refresh() -> Dict[str, Dict[str, Any]]:
             try:
                 from src.agent.runtime_v2.workspace_service import WORKSPACE_SERVICE
 
-                observed = WORKSPACE_SERVICE.revision(rec["execution_root"])
+                observed = WORKSPACE_SERVICE.revision(
+                    rec["execution_root"], force=True
+                )
                 if observed != rec["workspace_revision"]:
                     rec["workspace_revision_after"] = WORKSPACE_SERVICE.note_external_mutation(
-                        rec["execution_root"]
+                        rec["execution_root"], observed_revision=observed
                     )
                     rec["workspace_mutated"] = True
                     if not rec.get(
@@ -375,6 +418,24 @@ def refresh() -> Dict[str, Dict[str, Any]]:
                         rec["exit_code"] = -1
             except Exception:
                 rec["workspace_revision_unavailable"] = True
+        if completed_now:
+            if rec.get("timed_out"):
+                detached_outcome = "detached_timed_out"
+            elif rec.get("cancelled_with_run") or rec.get("killed"):
+                detached_outcome = "detached_cancelled"
+            elif rec.get("status") == "done" and rec.get("exit_code") == 0:
+                detached_outcome = "detached_completed"
+            else:
+                detached_outcome = "detached_failed"
+            rec["detached_outcome"] = detached_outcome
+            approval_id = rec.get("approval_id")
+            if approval_id:
+                try:
+                    from src.agent.runtime_v2.approvals import EFFECT_APPROVALS
+
+                    EFFECT_APPROVALS.finalize_detached(approval_id, detached_outcome)
+                except Exception:
+                    rec["approval_finalization_unavailable"] = True
     if _prune(jobs, now):
         changed = True
     if changed:
@@ -432,8 +493,18 @@ def kill_for_session_since(session_id: str, started_at: float) -> int:
         rec["ended_at"] = time.time()
         rec["killed"] = True
         rec["cancelled_with_run"] = True
+        rec["detached_outcome"] = "detached_cancelled"
         rec["followed_up"] = True
         killed += 1
+        if rec.get("approval_id"):
+            try:
+                from src.agent.runtime_v2.approvals import EFFECT_APPROVALS
+
+                EFFECT_APPROVALS.finalize_detached(
+                    rec["approval_id"], "detached_cancelled"
+                )
+            except Exception:
+                rec["approval_finalization_unavailable"] = True
     if killed:
         _save(jobs)
     return killed
@@ -454,7 +525,17 @@ def kill(job_id: str) -> Optional[Dict[str, Any]]:
         rec["exit_code"] = -1
         rec["ended_at"] = time.time()
         rec["killed"] = True
+        rec["detached_outcome"] = "detached_cancelled"
         rec["followed_up"] = True
+        if rec.get("approval_id"):
+            try:
+                from src.agent.runtime_v2.approvals import EFFECT_APPROVALS
+
+                EFFECT_APPROVALS.finalize_detached(
+                    rec["approval_id"], "detached_cancelled"
+                )
+            except Exception:
+                rec["approval_finalization_unavailable"] = True
         _save(jobs)
     return rec
 

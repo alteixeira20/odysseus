@@ -331,6 +331,15 @@ def prepare_execution_context(
     return context, reason
 
 
+async def prepare_execution_context_async(**kwargs):
+    """Production async entry point; cold workspace hashing runs off-loop."""
+
+    return await __import__("asyncio").to_thread(
+        prepare_execution_context,
+        **kwargs,
+    )
+
+
 def _bind_initial_contract(context: AgentExecutionContext) -> None:
     # Direct internal callers historically receive an immediately usable
     # context.  Bind the widest registry-derived contract here, then the real

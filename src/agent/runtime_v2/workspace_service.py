@@ -5,7 +5,6 @@ from __future__ import annotations
 import base64
 import difflib
 import hashlib
-import heapq
 import json
 import os
 import shutil
@@ -14,6 +13,10 @@ import tempfile
 import threading
 import time
 import uuid
+import asyncio
+import sqlite3
+import ctypes
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Optional, Sequence
 
@@ -38,6 +41,31 @@ class WorkspaceHashConflict(WorkspaceConflict):
 
 class WorkspacePathError(WorkspaceError):
     code = "invalid_workspace_path"
+
+
+@dataclass(frozen=True)
+class WorkspaceSnapshot:
+    root: str
+    filesystem_identity: tuple[int, int, int, int]
+    generation: int
+    git_identity: str
+    revision: str
+    stable: bool
+    created_at: float
+    probe: tuple[tuple[str, int, int, int, int], ...] = ()
+    watch_fd: int = -1
+
+
+@dataclass
+class _TraversalState:
+    traversal_id: str
+    base: str
+    revision: str
+    query: str
+    index_path: str
+    iterator: Any
+    complete: bool = False
+    updated_at: float = 0.0
 
 
 class WorkspaceService:
@@ -97,6 +125,9 @@ class WorkspaceService:
         self._lock = threading.RLock()
         self._revisions: dict[str, int] = {}
         self._root_locks: dict[str, threading.RLock] = {}
+        self._snapshots: dict[str, WorkspaceSnapshot] = {}
+        self._snapshot_builds: dict[str, int] = {}
+        self._traversals: dict[str, _TraversalState] = {}
         configured_journal_base = os.environ.get("ODYSSEUS_RUNTIME_JOURNAL_DIR")
         if configured_journal_base:
             self._journal_bases = (
@@ -130,14 +161,91 @@ class WorkspaceService:
             raise WorkspacePathError(f"invalid execution root: {canonical}")
         return canonical
 
-    def revision(self, root: str | os.PathLike[str]) -> str:
+    def revision(self, root: str | os.PathLike[str], *, force: bool = False) -> str:
         canonical = self._root(root)
+        # Serialize cold builds per root. Concurrent detached runs must share
+        # one immutable snapshot instead of each hashing the checkout.
+        with self._root_lock(canonical):
+            return self._revision_locked(canonical, force=force)
+
+    def _revision_locked(self, canonical: str, *, force: bool = False) -> str:
+        info = os.stat(canonical, follow_symlinks=False)
+        filesystem_identity = (
+            int(info.st_dev),
+            int(info.st_ino),
+            int(info.st_mtime_ns),
+            int(info.st_ctime_ns),
+        )
+        git_identity = HARDENED_GIT.inspect(canonical)
         with self._lock:
             number = self._revisions.setdefault(canonical, 1)
+            cached = self._snapshots.get(canonical)
+            if (
+                not force
+                and cached is not None
+                and cached.watch_fd >= 0
+                and cached.filesystem_identity == filesystem_identity
+                and cached.generation == number
+                and cached.git_identity == git_identity.digest
+                and self._snapshot_probe_matches(cached)
+            ):
+                return cached.revision
         root_id = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
-        fingerprint, stable = self._workspace_fingerprint(canonical)
+        fingerprint, stable, probe, watch_fd = self._workspace_fingerprint(canonical)
         strength = "strong" if stable else "partial"
-        return f"{root_id}.{number}.{strength}.{fingerprint[:20]}"
+        revision = f"{root_id}.{number}.{strength}.{fingerprint[:20]}"
+        snapshot = WorkspaceSnapshot(
+            root=canonical,
+            filesystem_identity=filesystem_identity,
+            generation=number,
+            git_identity=git_identity.digest,
+            revision=revision,
+            stable=stable,
+            created_at=time.monotonic(),
+            probe=probe,
+            watch_fd=watch_fd,
+        )
+        with self._lock:
+            # Do not overwrite a newer generation built concurrently.
+            if self._revisions.get(canonical, 1) == number:
+                previous = self._snapshots.get(canonical)
+                self._snapshots[canonical] = snapshot
+                self._snapshot_builds[canonical] = self._snapshot_builds.get(canonical, 0) + 1
+                if previous is not None and previous.watch_fd >= 0:
+                    try:
+                        os.close(previous.watch_fd)
+                    except OSError:
+                        pass
+                if len(self._snapshots) > 64:
+                    oldest_root, oldest = min(
+                        self._snapshots.items(),
+                        key=lambda item: item[1].created_at,
+                    )
+                    if oldest_root != canonical:
+                        self._snapshots.pop(oldest_root, None)
+                        if oldest.watch_fd >= 0:
+                            try:
+                                os.close(oldest.watch_fd)
+                            except OSError:
+                                pass
+            elif watch_fd >= 0:
+                try:
+                    os.close(watch_fd)
+                except OSError:
+                    pass
+        return revision
+
+    async def revision_async(
+        self, root: str | os.PathLike[str], *, force: bool = False
+    ) -> str:
+        """Build a cold strong snapshot without blocking the event loop."""
+
+        return await asyncio.to_thread(self.revision, root, force=force)
+
+    def snapshot_build_count(self, root: str | os.PathLike[str]) -> int:
+        canonical = self._root(root)
+        with self._lock:
+            return self._snapshot_builds.get(canonical, 0)
 
     @staticmethod
     def revision_is_strong(revision: str) -> bool:
@@ -148,13 +256,71 @@ class WorkspaceService:
         with self._lock:
             return self._root_locks.setdefault(canonical, threading.RLock())
 
-    def note_external_mutation(self, root: str) -> str:
+    def note_external_mutation(
+        self, root: str, *, observed_revision: Optional[str] = None
+    ) -> str:
         """Advance the process generation after a granted shell changed files."""
 
         canonical = self._root(root)
-        return self._bump_revision(canonical)
+        with self._lock:
+            snapshot = self._snapshots.get(canonical)
+            self._revisions[canonical] = self._revisions.get(canonical, 1) + 1
+            generation = self._revisions[canonical]
+            if snapshot is not None and snapshot.revision == observed_revision:
+                parts = snapshot.revision.split(".", 3)
+                if len(parts) == 4:
+                    revised = f"{parts[0]}.{generation}.{parts[2]}.{parts[3]}"
+                    self._snapshots[canonical] = WorkspaceSnapshot(
+                        root=snapshot.root,
+                        filesystem_identity=snapshot.filesystem_identity,
+                        generation=generation,
+                        git_identity=snapshot.git_identity,
+                        revision=revised,
+                        stable=snapshot.stable,
+                        created_at=snapshot.created_at,
+                        probe=snapshot.probe,
+                        watch_fd=snapshot.watch_fd,
+                    )
+                    return revised
+            stale = self._snapshots.pop(canonical, None)
+            if stale is not None and stale.watch_fd >= 0:
+                try:
+                    os.close(stale.watch_fd)
+                except OSError:
+                    pass
+        return self.revision(canonical)
 
-    def _workspace_fingerprint(self, root: str) -> tuple[str, bool]:
+    @staticmethod
+    def _snapshot_probe_matches(snapshot: WorkspaceSnapshot) -> bool:
+        if snapshot.watch_fd >= 0:
+            try:
+                return not bool(os.read(snapshot.watch_fd, 4096))
+            except BlockingIOError:
+                return True
+            except OSError:
+                return False
+        for path, mode, size, mtime_ns, inode in snapshot.probe:
+            try:
+                info = os.stat(path, follow_symlinks=False)
+            except OSError:
+                return False
+            if (
+                int(info.st_mode) != mode
+                or int(info.st_size) != size
+                or int(info.st_mtime_ns) != mtime_ns
+                or int(info.st_ino) != inode
+            ):
+                return False
+        return True
+
+    def _workspace_fingerprint(
+        self, root: str
+    ) -> tuple[
+        str,
+        bool,
+        tuple[tuple[str, int, int, int, int], ...],
+        int,
+    ]:
         """Hash non-executing Git identity plus bounded workspace contents."""
 
         material = hashlib.sha256()
@@ -164,38 +330,123 @@ class WorkspaceService:
         examined = 0
         content_bytes = 0
         content_budget = self._MAX_REVISION_CONTENT_BYTES
-        for current, directories, files in os.walk(root, followlinks=False):
-            directories[:] = sorted(
-                item
-                for item in directories
-                if item.casefold() not in self.SKIP_DIRECTORIES
-                and item != self.INTERNAL_DIRECTORY
-            )
-            for name in sorted(directories + files):
-                examined += 1
-                if examined > self._MAX_REVISION_ENTRIES:
-                    return material.hexdigest(), False
-                path = os.path.join(current, name)
+        probe: list[tuple[str, int, int, int, int]] = []
+        watch_fd = -1
+        inotify_add_watch = None
+        if os.name == "posix" and __import__("sys").platform.startswith("linux"):
+            try:
+                libc = ctypes.CDLL(None, use_errno=True)
+                watch_fd = int(libc.inotify_init1(os.O_NONBLOCK | os.O_CLOEXEC))
+                if watch_fd >= 0:
+                    inotify_add_watch = libc.inotify_add_watch
+                    inotify_add_watch.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_uint32]
+                    inotify_add_watch.restype = ctypes.c_int
+            except Exception:
+                watch_fd = -1
+                inotify_add_watch = None
+        # MODIFY, ATTRIB, CLOSE_WRITE, move/create/delete and watched-dir
+        # self changes. Deliberately exclude ACCESS/OPEN/CLOSE_NOWRITE so the
+        # snapshot's own hashing does not invalidate its watcher.
+        watch_mask = 0x00000FCE
+        def add_watch(directory: str) -> None:
+            nonlocal watch_fd, inotify_add_watch
+            if inotify_add_watch is not None:
+                result = inotify_add_watch(
+                    watch_fd,
+                    os.fsencode(directory),
+                    watch_mask,
+                )
+                if result < 0:
+                    try:
+                        os.close(watch_fd)
+                    except OSError:
+                        pass
+                    watch_fd = -1
+                    inotify_add_watch = None
+
+        # ``os.walk`` eagerly materializes every child name in one directory.
+        # Keep scandir iterators open by depth instead, collect at most the
+        # strong-snapshot budget, then sort that bounded collection so the
+        # digest remains deterministic.
+        entries: list[tuple[str, str, os.stat_result]] = []
+        stack: list[Any] = []
+        traversal_stable = True
+        exceeded_entry_budget = False
+        try:
+            add_watch(root)
+            stack.append(os.scandir(root))
+            while stack:
                 try:
-                    info = os.stat(path, follow_symlinks=False)
+                    entry = next(stack[-1])
+                except StopIteration:
+                    stack.pop().close()
+                    continue
                 except OSError:
+                    traversal_stable = False
+                    stack.pop().close()
+                    continue
+                path = entry.path
+                try:
+                    info = entry.stat(follow_symlinks=False)
+                except OSError:
+                    traversal_stable = False
                     continue
                 relative = os.path.relpath(path, root).replace(os.sep, "/")
-                material.update(
-                    f"{relative}\0{info.st_mode}:{info.st_size}:{info.st_mtime_ns}:{info.st_ino}\0".encode(
-                        "utf-8", errors="surrogateescape"
+                entries.append((relative, path, info))
+                examined += 1
+                if examined > self._MAX_REVISION_ENTRIES:
+                    entries.pop()
+                    exceeded_entry_budget = True
+                    break
+                if (
+                    stat.S_ISDIR(info.st_mode)
+                    and not stat.S_ISLNK(info.st_mode)
+                    and entry.name.casefold() not in self.SKIP_DIRECTORIES
+                    and entry.name != self.INTERNAL_DIRECTORY
+                ):
+                    try:
+                        add_watch(path)
+                        stack.append(os.scandir(path))
+                    except OSError:
+                        traversal_stable = False
+        finally:
+            while stack:
+                try:
+                    stack.pop().close()
+                except Exception:
+                    pass
+
+        for relative, path, info in sorted(entries, key=lambda item: item[0]):
+            if len(probe) < 512:
+                probe.append(
+                    (
+                        path,
+                        int(info.st_mode),
+                        int(info.st_size),
+                        int(info.st_mtime_ns),
+                        int(info.st_ino),
                     )
                 )
-                if stat.S_ISREG(info.st_mode):
-                    if content_bytes + info.st_size > content_budget:
-                        return material.hexdigest(), False
-                    try:
-                        with open(path, "rb") as handle:
-                            material.update(handle.read())
-                        content_bytes += info.st_size
-                    except OSError:
-                        return material.hexdigest(), False
-        return material.hexdigest(), git_identity.stable
+            material.update(
+                f"{relative}\0{info.st_mode}:{info.st_size}:{info.st_mtime_ns}:{info.st_ino}\0".encode(
+                    "utf-8", errors="surrogateescape"
+                )
+            )
+            if stat.S_ISREG(info.st_mode):
+                if content_bytes + info.st_size > content_budget:
+                    return material.hexdigest(), False, tuple(probe), watch_fd
+                try:
+                    with open(path, "rb") as handle:
+                        material.update(handle.read())
+                    content_bytes += info.st_size
+                except OSError:
+                    return material.hexdigest(), False, tuple(probe), watch_fd
+        return (
+            material.hexdigest(),
+            git_identity.stable and traversal_stable and not exceeded_entry_budget,
+            tuple(probe),
+            watch_fd,
+        )
 
     def transaction_parent(self, root: str) -> str:
         canonical = self._root(root)
@@ -229,6 +480,12 @@ class WorkspaceService:
     def _bump_revision(self, root: str) -> str:
         with self._lock:
             self._revisions[root] = self._revisions.get(root, 1) + 1
+            stale = self._snapshots.pop(root, None)
+            if stale is not None and stale.watch_fd >= 0:
+                try:
+                    os.close(stale.watch_fd)
+                except OSError:
+                    pass
         return self.revision(root)
 
     def require_revision(self, root: str, expected: Optional[str]) -> str:
@@ -494,49 +751,160 @@ class WorkspaceService:
                 "path": str(cursor.get("path") or ""),
                 "offset": max(int(cursor.get("offset") or 0), 0),
                 "line": max(int(cursor.get("line") or 0), 0),
+                "traversal_id": str(cursor.get("traversal_id") or ""),
             }
         except (TypeError, ValueError) as exc:
             raise WorkspaceConflict("invalid search continuation cursor") from exc
 
     def _iter_workspace_entries(self, base: str):
-        """Yield entries in global lexical order with a bounded frontier.
+        """Compatibility stream; callers needing lexical cursors use the index."""
 
-        A depth-first walk is not globally lexical for prefix-collision paths
-        such as ``a.txt`` and ``a/child.txt``.  A heap frontier makes the cursor
-        order exactly match iteration order without materializing the tree.
-        """
+        yield from self._stream_workspace_entries(base)
 
-        frontier: list[tuple[str, str]] = []
+    def _stream_workspace_entries(self, base: str):
+        """Depth-first scandir stream with memory bounded by directory depth."""
 
-        def push_children(path: str) -> None:
-            try:
-                entries = os.scandir(path)
-            except OSError:
-                return
-            with entries:
-                for entry in entries:
-                    relative = os.path.relpath(entry.path, base).replace(os.sep, "/")
-                    heapq.heappush(frontier, (relative, entry.path))
+        stack = []
+        try:
+            stack.append(os.scandir(base))
+            while stack:
+                try:
+                    entry = next(stack[-1])
+                except StopIteration:
+                    stack.pop().close()
+                    continue
+                path = entry.path
+                try:
+                    info = entry.stat(follow_symlinks=False)
+                except OSError:
+                    yield path, False
+                    continue
+                is_symlink = stat.S_ISLNK(info.st_mode)
+                is_directory = stat.S_ISDIR(info.st_mode)
+                is_file = stat.S_ISREG(info.st_mode)
+                yield path, bool(is_file and not is_symlink)
+                if (
+                    is_directory
+                    and not is_symlink
+                    and entry.name.casefold() not in self.SKIP_DIRECTORIES
+                    and entry.name != self.INTERNAL_DIRECTORY
+                ):
+                    try:
+                        stack.append(os.scandir(path))
+                    except OSError:
+                        pass
+        finally:
+            while stack:
+                try:
+                    stack.pop().close()
+                except Exception:
+                    pass
 
-        push_children(base)
-        while frontier:
-            _, path = heapq.heappop(frontier)
-            try:
-                entry = os.stat(path, follow_symlinks=False)
-                is_symlink = stat.S_ISLNK(entry.st_mode)
-                is_directory = stat.S_ISDIR(entry.st_mode)
-                is_file = stat.S_ISREG(entry.st_mode)
-            except OSError:
-                yield path, False
-                continue
-            yield path, bool(is_file and not is_symlink)
-            if (
-                is_directory
-                and not is_symlink
-                and os.path.basename(path).casefold() not in self.SKIP_DIRECTORIES
-                and os.path.basename(path) != self.INTERNAL_DIRECTORY
-            ):
-                push_children(path)
+    def _new_traversal(
+        self,
+        *,
+        base: str,
+        revision: str,
+        query: str,
+    ) -> _TraversalState:
+        now = time.monotonic()
+        with self._lock:
+            stale = [
+                item
+                for item in self._traversals.values()
+                if now - item.updated_at > 300
+            ]
+            if len(self._traversals) - len(stale) >= 32:
+                active = [item for item in self._traversals.values() if item not in stale]
+                if active:
+                    stale.append(min(active, key=lambda item: item.updated_at))
+        for item in stale:
+            self._drop_traversal(item)
+        fd, index_path = tempfile.mkstemp(prefix="odysseus-traversal-", suffix=".sqlite3")
+        os.close(fd)
+        os.chmod(index_path, 0o600)
+        connection = sqlite3.connect(index_path)
+        try:
+            connection.execute(
+                "CREATE TABLE entries (relative TEXT PRIMARY KEY, path TEXT NOT NULL, is_file INTEGER NOT NULL)"
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        state = _TraversalState(
+            traversal_id=uuid.uuid4().hex,
+            base=base,
+            revision=revision,
+            query=query,
+            index_path=index_path,
+            iterator=self._stream_workspace_entries(base),
+            updated_at=time.monotonic(),
+        )
+        with self._lock:
+            self._traversals[state.traversal_id] = state
+        return state
+
+    def _get_traversal(
+        self,
+        traversal_id: str,
+        *,
+        base: str,
+        revision: str,
+        query: str,
+    ) -> _TraversalState:
+        with self._lock:
+            state = self._traversals.get(traversal_id)
+        if (
+            state is None
+            or state.base != base
+            or state.revision != revision
+            or state.query != query
+            or not os.path.isfile(state.index_path)
+        ):
+            raise WorkspaceConflict("traversal continuation is no longer available")
+        return state
+
+    def _advance_traversal(
+        self,
+        state: _TraversalState,
+        *,
+        entry_budget: int,
+        deadline: float,
+    ) -> int:
+        if state.complete:
+            return 0
+        consumed = 0
+        connection = sqlite3.connect(state.index_path)
+        try:
+            while consumed < entry_budget and time.monotonic() <= deadline:
+                try:
+                    path, is_file = next(state.iterator)
+                except StopIteration:
+                    state.complete = True
+                    break
+                relative = os.path.relpath(path, state.base).replace(os.sep, "/")
+                connection.execute(
+                    "INSERT OR IGNORE INTO entries(relative, path, is_file) VALUES (?, ?, ?)",
+                    (relative, path, 1 if is_file else 0),
+                )
+                consumed += 1
+            connection.commit()
+        finally:
+            connection.close()
+        state.updated_at = time.monotonic()
+        return consumed
+
+    def _drop_traversal(self, state: _TraversalState) -> None:
+        with self._lock:
+            self._traversals.pop(state.traversal_id, None)
+        try:
+            state.iterator.close()
+        except Exception:
+            pass
+        try:
+            os.unlink(state.index_path)
+        except OSError:
+            pass
 
     def find_files(self, root: str, arguments: Mapping[str, Any]) -> dict[str, Any]:
         canonical_root = self._root(root)
@@ -572,58 +940,88 @@ class WorkspaceService:
             0.05,
             min(float(arguments.get("scan_timeout_seconds") or 2.0), 10.0),
         )
-        started = time.monotonic()
-        files: list[dict[str, Any]] = []
-        scanned = 0
-        matched = offset if cursor else 0
-        budget_exhausted = False
-        has_more = False
-        last_cursor = cursor
-        stop = False
-        for path, is_file in self._iter_workspace_entries(base):
-            relative = self.relative(canonical_root, path)
-            if cursor and relative <= cursor:
-                continue
-            if scanned >= scan_budget or time.monotonic() - started > time_budget:
-                budget_exhausted = True
-                stop = True
-                break
-            scanned += 1
-            if not is_file:
-                last_cursor = relative
-                continue
-            base_relative = self.relative(base, path)
-            if self._is_sensitive_relative(relative):
-                last_cursor = relative
-                continue
-            if not any(
-                self._path_matches(relative, pattern)
-                or self._path_matches(base_relative, pattern)
-                for pattern in patterns
-            ):
-                last_cursor = relative
-                continue
-            if any(self._path_matches(relative, pattern) for pattern in excludes):
-                last_cursor = relative
-                continue
-            if not cursor and matched < offset:
-                matched += 1
-                last_cursor = relative
-                continue
-            if len(files) >= limit:
-                has_more = True
-                stop = True
-                break
-            file_stat = os.stat(path, follow_symlinks=False)
-            files.append(
-                {
-                    "path": relative,
-                    "size": file_stat.st_size,
-                    "sha256": self.file_sha256(path),
-                }
+        query = self._query_identity("find_files", arguments)
+        last_relative = ""
+        if cursor:
+            prefix, separator, payload = cursor.partition(":")
+            traversal_id, separator2, last_relative = payload.partition(":")
+            if prefix != "index" or not separator or not separator2:
+                raise WorkspaceConflict("invalid indexed traversal cursor")
+            state = self._get_traversal(
+                traversal_id,
+                base=base,
+                revision=revision,
+                query=query,
             )
-            last_cursor = relative
-        scan_complete = not stop
+        else:
+            state = self._new_traversal(
+                base=base,
+                revision=revision,
+                query=query,
+            )
+        deadline = time.monotonic() + time_budget
+        scanned = self._advance_traversal(
+            state,
+            entry_budget=scan_budget,
+            deadline=deadline,
+        )
+        files: list[dict[str, Any]] = []
+        matched = offset
+        has_more = False
+        query_exhausted = False
+        if state.complete:
+            connection = sqlite3.connect(state.index_path)
+            try:
+                rows = connection.execute(
+                    "SELECT relative, path FROM entries "
+                    "WHERE is_file = 1 AND relative > ? ORDER BY relative",
+                    (last_relative,),
+                )
+                considered = 0
+                for base_relative, path in rows:
+                    considered += 1
+                    candidate_relative = str(base_relative)
+                    relative = self.relative(canonical_root, path)
+                    if self._is_sensitive_relative(relative):
+                        last_relative = candidate_relative
+                        continue
+                    if not any(
+                        self._path_matches(relative, pattern)
+                        or self._path_matches(base_relative, pattern)
+                        for pattern in patterns
+                    ):
+                        last_relative = candidate_relative
+                        continue
+                    if any(self._path_matches(relative, pattern) for pattern in excludes):
+                        last_relative = candidate_relative
+                        continue
+                    if not cursor and matched > len(files):
+                        # Deprecated offset applies only to the first page.
+                        matched -= 1
+                        last_relative = candidate_relative
+                        continue
+                    if len(files) >= limit:
+                        has_more = True
+                        break
+                    try:
+                        file_stat = os.stat(path, follow_symlinks=False)
+                    except OSError:
+                        last_relative = candidate_relative
+                        continue
+                    files.append(
+                        {
+                            "path": relative,
+                            "size": file_stat.st_size,
+                            "sha256": self.file_sha256(path),
+                        }
+                    )
+                    last_relative = candidate_relative
+                    if considered >= scan_budget and len(files) < limit:
+                        query_exhausted = True
+                        break
+            finally:
+                connection.close()
+        budget_exhausted = not state.complete or query_exhausted
         continuation = None
         if has_more or budget_exhausted:
             continuation = self._next_continuation(
@@ -631,20 +1029,18 @@ class WorkspaceService:
                 revision=revision,
                 arguments=arguments,
                 offset=offset + len(files),
-                total=(
-                    offset + len(files) + 1
-                    if has_more
-                    else None
-                ),
-                cursor=last_cursor,
-                remaining=None if budget_exhausted else 1,
+                total=None,
+                cursor=f"index:{state.traversal_id}:{last_relative}",
+                remaining=None,
             )
+        else:
+            self._drop_traversal(state)
         return {
             "files": files,
             "workspace_revision": revision,
             "continuation": continuation,
-            "backend": "python_walk",
-            "scan_complete": scan_complete,
+            "backend": "sqlite_bounded_walk",
+            "scan_complete": state.complete and not has_more and not query_exhausted,
             "budget_exhausted": budget_exhausted,
             "scanned_entries": scanned,
             "scan_budget_entries": scan_budget,
@@ -841,14 +1237,26 @@ class WorkspaceService:
             allow_missing=False,
         )
         paths: Any
+        traversal_state = None
+        indexed_entries = 0
         if os.path.isfile(search_path):
             paths = iter((search_path,))
         else:
-            paths = (
-                path
-                for path, is_file in self._iter_workspace_entries(search_path)
-                if is_file
-            )
+            traversal_id = str((scan_cursor or {}).get("traversal_id") or "")
+            query = self._query_identity("search_text", arguments)
+            if traversal_id:
+                traversal_state = self._get_traversal(
+                    traversal_id,
+                    base=search_path,
+                    revision=self.revision(root),
+                    query=query,
+                )
+            else:
+                traversal_state = self._new_traversal(
+                    base=search_path,
+                    revision=self.revision(root),
+                    query=query,
+                )
         scan_budget = max(
             1,
             min(int(arguments.get("max_scan_entries") or 20_000), 100_000),
@@ -871,6 +1279,56 @@ class WorkspaceService:
         incomplete = False
         timed_out = False
         next_cursor: Optional[dict[str, Any]] = None
+        remaining_entry_budget = scan_budget
+
+        if traversal_state is not None:
+            indexed_entries = self._advance_traversal(
+                traversal_state,
+                entry_budget=scan_budget,
+                deadline=started + timeout,
+            )
+            if not traversal_state.complete:
+                return (
+                    [],
+                    True,
+                    time.monotonic() - started > timeout,
+                    indexed_entries,
+                    0,
+                    {
+                        "path": "",
+                        "offset": 0,
+                        "line": 0,
+                        "traversal_id": traversal_state.traversal_id,
+                    },
+                )
+            remaining_entry_budget = max(scan_budget - indexed_entries, 0)
+            if remaining_entry_budget == 0:
+                return (
+                    [],
+                    True,
+                    time.monotonic() > started + timeout,
+                    indexed_entries,
+                    0,
+                    {
+                        "path": "",
+                        "offset": 0,
+                        "line": 0,
+                        "traversal_id": traversal_state.traversal_id,
+                    },
+                )
+
+            def indexed_paths():
+                connection = sqlite3.connect(traversal_state.index_path)
+                try:
+                    rows = connection.execute(
+                        "SELECT path FROM entries WHERE is_file = 1 ORDER BY relative"
+                    )
+                    for (indexed_path,) in rows:
+                        yield indexed_path
+                finally:
+                    connection.close()
+
+            paths = indexed_paths()
 
         for path in paths:
             relative = self.relative(root, path)
@@ -887,7 +1345,7 @@ class WorkspaceService:
             # one-entry page can become permanently stuck on the prior file.
             if relative == cursor_path and start_offset >= file_size:
                 continue
-            if scanned_entries >= scan_budget:
+            if scanned_entries >= remaining_entry_budget:
                 incomplete = True
                 break
             if time.monotonic() - started > timeout:
@@ -913,6 +1371,8 @@ class WorkspaceService:
                     handle.seek(min(start_offset, file_size))
                     while True:
                         if len(matches) >= max_results:
+                            if handle.tell() >= file_size:
+                                break
                             incomplete = True
                             next_cursor = {
                                 "path": relative,
@@ -979,11 +1439,15 @@ class WorkspaceService:
                 continue
             if incomplete:
                 break
+        if next_cursor is not None and traversal_state is not None:
+            next_cursor["traversal_id"] = traversal_state.traversal_id
+        if not incomplete and traversal_state is not None:
+            self._drop_traversal(traversal_state)
         return (
             matches,
             incomplete,
             timed_out,
-            scanned_entries,
+            scanned_entries + indexed_entries,
             scanned_bytes,
             next_cursor if incomplete else None,
         )
@@ -1609,6 +2073,13 @@ class WorkspaceService:
         staged: dict[str, str] = {}
         originals: dict[str, Optional[str]] = {}
         try:
+            # The first temporary file is itself a workspace filesystem
+            # effect and will trigger the snapshot watcher. Revalidate and
+            # claim the effect boundary immediately before any staging file is
+            # created, rather than after our own staging has invalidated the
+            # approved snapshot.
+            if changes and effect_started_cb is not None:
+                effect_started_cb()
             for index, (path, new) in enumerate(changes.items()):
                 relative = self.relative(canonical_root, path)
                 self._assert_target_still_confined(canonical_root, path)
@@ -1662,7 +2133,6 @@ class WorkspaceService:
             self._fsync_directory(journal_root)
             committed: list[str] = []
             try:
-                boundary_started = False
                 for path, new in changes.items():
                     self._assert_target_still_confined(canonical_root, path)
                     self._check_hash(
@@ -1670,9 +2140,6 @@ class WorkspaceService:
                         before_hashes[path],
                         self.relative(canonical_root, path),
                     )
-                    if not boundary_started and effect_started_cb is not None:
-                        effect_started_cb()
-                        boundary_started = True
                     if new is None:
                         os.unlink(path)
                     else:

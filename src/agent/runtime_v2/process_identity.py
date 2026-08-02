@@ -1,4 +1,10 @@
-"""Behavioral identity snapshots for approved generic process execution."""
+"""Known-dependency snapshots for exact-approved generic process execution.
+
+Generic shell text can resolve dependencies dynamically.  This module binds
+only the dependencies it can identify without claiming a complete behavioral
+seal; the exact command, root and sanitized environment remain the approval's
+enforceable identity.
+"""
 
 from __future__ import annotations
 
@@ -29,6 +35,8 @@ class ProcessIdentity:
     executable: str
     environment_digest: str
     dependency_digests: tuple[tuple[str, str], ...]
+    binding: str = "exact_opaque_command"
+    complete_dependency_seal: bool = False
 
 
 def execution_environment() -> dict[str, str]:
@@ -197,7 +205,7 @@ def snapshot_process(
     root: str,
     execution_mode: ExecutionMode | str = ExecutionMode.HOST,
 ) -> ProcessIdentity:
-    """Hash the shell, reachable executable/script inputs, environment and Git metadata.
+    """Hash known shell/executable/script inputs, environment and Git metadata.
 
     The command remains exact-approved as text.  This snapshot additionally
     prevents that approval from surviving executable, interpreter, explicit
@@ -273,7 +281,9 @@ def snapshot_process(
     git_identity = HARDENED_GIT.inspect(canonical_root)
     workspace_revision = WORKSPACE_SERVICE.revision(canonical_root)
     payload = {
-        "version": 2,
+        "version": 3,
+        "binding": "exact_opaque_command",
+        "complete_dependency_seal": False,
         "execution_mode": mode.value,
         "command": str(command),
         "root": canonical_root,

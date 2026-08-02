@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
+import time
 
 import pytest
 
@@ -762,11 +763,13 @@ async def test_prepare_then_commit_preserves_valid_run_and_rejects_concurrent_re
     async def losing_source():
         yield "data: [DONE]\n\n"
 
+    committed_mutations = []
     winner = agent_runs.start(
         session,
         first_source(),
         owner="owner",
         prepared_turn=first,
+        commit_callback=lambda: committed_mutations.append("winner"),
     )
     loser = losing_source()
     with pytest.raises(OwnershipError, match="changed while"):
@@ -775,11 +778,13 @@ async def test_prepare_then_commit_preserves_valid_run_and_rejects_concurrent_re
             loser,
             owner="owner",
             prepared_turn=second,
+            commit_callback=lambda: committed_mutations.append("loser"),
         )
     await loser.aclose()
     await asyncio.sleep(0)
     assert not winner.task.done()
     assert agent_runs.is_active(session)
+    assert committed_mutations == ["winner"]
 
     new_release.set()
     await winner.task
@@ -832,3 +837,527 @@ def test_two_processes_cannot_share_process_local_runtime_state(tmp_path):
         except subprocess.TimeoutExpired:
             first.kill()
             first.wait(timeout=5)
+
+
+@pytest.mark.asyncio
+async def test_cancellation_immediately_before_kernel_spawn_proves_no_child(
+    tmp_path, monkeypatch
+):
+    import src.agent_tools.subprocess_tools as subprocess_tools
+
+    context = _context(tmp_path, mode="host", session="cancel-before-spawn")
+    call = _call(context, "run_host_command", {"command": "sleep 30"})
+    approval_id = await _approved_request(context, call)
+    original_mark_spawning = EFFECT_APPROVALS.mark_spawning
+    spawn_called = False
+
+    def cancel_after_spawn_claim(*args, **kwargs):
+        original_mark_spawning(*args, **kwargs)
+        raise asyncio.CancelledError
+
+    async def forbidden_spawn(*args, **kwargs):
+        nonlocal spawn_called
+        spawn_called = True
+        raise AssertionError("kernel spawn must not be attempted")
+
+    monkeypatch.setattr(EFFECT_APPROVALS, "mark_spawning", cancel_after_spawn_claim)
+    monkeypatch.setattr(subprocess_tools.asyncio, "create_subprocess_exec", forbidden_spawn)
+    result = await execute_normalized_tool_call(call, context, approval_id=approval_id)
+
+    assert result.status is ToolResultStatus.CANCELLED
+    assert spawn_called is False
+    assert EFFECT_APPROVALS.state(approval_id) is ApprovalRecordState.FAILED_BEFORE_EFFECT
+
+
+@pytest.mark.asyncio
+async def test_cancellation_during_kernel_spawn_owns_and_reaps_returned_process(
+    tmp_path, monkeypatch
+):
+    import src.agent_tools.subprocess_tools as subprocess_tools
+
+    context = _context(tmp_path, mode="host", session="cancel-during-spawn")
+    call = _call(context, "run_host_command", {"command": "sleep 30"})
+    approval_id = await _approved_request(context, call)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    terminated = []
+
+    class FakeProcess:
+        pid = 424242
+        returncode = None
+
+        async def wait(self):
+            self.returncode = -15
+            return self.returncode
+
+    async def pending_spawn(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        return FakeProcess()
+
+    async def terminate_group(pid):
+        terminated.append(pid)
+
+    monkeypatch.setattr(subprocess_tools.asyncio, "create_subprocess_exec", pending_spawn)
+    monkeypatch.setattr(subprocess_tools, "_terminate_owned_group", terminate_group)
+    task = asyncio.create_task(
+        execute_normalized_tool_call(call, context, approval_id=approval_id)
+    )
+    await entered.wait()
+    assert EFFECT_APPROVALS.state(approval_id) is ApprovalRecordState.SPAWNING
+    task.cancel()
+    release.set()
+    result = await task
+
+    assert result.status is ToolResultStatus.CANCELLED
+    assert terminated == [424242]
+    assert EFFECT_APPROVALS.state(approval_id) is ApprovalRecordState.FAILED_AFTER_UNKNOWN_EFFECT
+    replay = await execute_normalized_tool_call(call, context, approval_id=approval_id)
+    assert replay.status is ToolResultStatus.DENIED
+
+
+@pytest.mark.asyncio
+async def test_repeated_cancellation_during_group_termination_cannot_orphan_child(
+    tmp_path, monkeypatch
+):
+    import src.agent_tools.subprocess_tools as subprocess_tools
+
+    context = _context(tmp_path, mode="host", session="cancel-during-termination")
+    call = _call(context, "run_host_command", {"command": "sleep 30"})
+    approval_id = await _approved_request(context, call)
+    spawn_entered = asyncio.Event()
+    spawn_release = asyncio.Event()
+    termination_entered = asyncio.Event()
+    termination_release = asyncio.Event()
+    termination_finished = asyncio.Event()
+
+    class FakeProcess:
+        pid = 424243
+        returncode = None
+
+        async def wait(self):
+            self.returncode = -15
+            return self.returncode
+
+    async def pending_spawn(*args, **kwargs):
+        spawn_entered.set()
+        await spawn_release.wait()
+        return FakeProcess()
+
+    async def slow_termination(pid):
+        assert pid == 424243
+        termination_entered.set()
+        await termination_release.wait()
+        termination_finished.set()
+        return ("sigterm",)
+
+    monkeypatch.setattr(subprocess_tools.asyncio, "create_subprocess_exec", pending_spawn)
+    monkeypatch.setattr(subprocess_tools, "_terminate_owned_group", slow_termination)
+    task = asyncio.create_task(
+        execute_normalized_tool_call(call, context, approval_id=approval_id)
+    )
+    await spawn_entered.wait()
+    task.cancel()
+    spawn_release.set()
+    await termination_entered.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+    termination_release.set()
+    result = await task
+
+    assert result.status is ToolResultStatus.CANCELLED
+    assert termination_finished.is_set()
+    assert EFFECT_APPROVALS.state(approval_id) is ApprovalRecordState.FAILED_AFTER_UNKNOWN_EFFECT
+
+
+@pytest.mark.asyncio
+async def test_pid_returned_before_executing_transition_is_reaped_and_burned(
+    tmp_path, monkeypatch
+):
+    import src.agent_tools.subprocess_tools as subprocess_tools
+
+    context = _context(tmp_path, mode="host", session="cancel-after-pid")
+    call = _call(context, "run_host_command", {"command": "sleep 30"})
+    approval_id = await _approved_request(context, call)
+    terminated = []
+
+    class FakeProcess:
+        pid = 434343
+        returncode = None
+
+        async def wait(self):
+            self.returncode = -15
+            return self.returncode
+
+    async def immediate_spawn(*args, **kwargs):
+        return FakeProcess()
+
+    async def terminate_group(pid):
+        terminated.append(pid)
+
+    def cancel_at_pid_boundary(candidate):
+        assert EFFECT_APPROVALS.state(candidate) is ApprovalRecordState.SPAWNING
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(subprocess_tools.asyncio, "create_subprocess_exec", immediate_spawn)
+    monkeypatch.setattr(subprocess_tools, "_terminate_owned_group", terminate_group)
+    monkeypatch.setattr(EFFECT_APPROVALS, "mark_executing", cancel_at_pid_boundary)
+    result = await execute_normalized_tool_call(call, context, approval_id=approval_id)
+
+    assert result.status is ToolResultStatus.CANCELLED
+    assert terminated == [434343]
+    assert EFFECT_APPROVALS.state(approval_id) is ApprovalRecordState.FAILED_AFTER_UNKNOWN_EFFECT
+
+
+@pytest.mark.asyncio
+async def test_superseded_run_during_spawn_reaps_child_before_return(tmp_path, monkeypatch):
+    import src.agent_tools.subprocess_tools as subprocess_tools
+    from src.agent.runtime_v2.ownership import RUN_OWNERSHIP
+
+    context = _context(tmp_path, mode="host", session="supersede-during-spawn")
+    call = _call(context, "run_host_command", {"command": "sleep 30"})
+    approval_id = await _approved_request(context, call)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    terminated = []
+
+    class FakeProcess:
+        pid = 444444
+        returncode = None
+
+        async def wait(self):
+            self.returncode = -15
+            return self.returncode
+
+    async def pending_spawn(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        return FakeProcess()
+
+    async def terminate_group(pid):
+        terminated.append(pid)
+
+    monkeypatch.setattr(subprocess_tools.asyncio, "create_subprocess_exec", pending_spawn)
+    monkeypatch.setattr(subprocess_tools, "_terminate_owned_group", terminate_group)
+    task = asyncio.create_task(
+        execute_normalized_tool_call(call, context, approval_id=approval_id)
+    )
+    await entered.wait()
+    RUN_OWNERSHIP.claim_turn(owner_id="owner", conversation_id=context.conversation_id)
+    release.set()
+    result = await task
+
+    assert result.status is ToolResultStatus.ERROR
+    assert terminated == [444444]
+    assert EFFECT_APPROVALS.state(approval_id) is ApprovalRecordState.FAILED_AFTER_UNKNOWN_EFFECT
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "PATH=/tmp/bin:$PATH helper",
+        "PYTHONPATH=/tmp/plugins python -c 'import plugin'",
+        "source ./setup.sh",
+        "cmd=$(cat command-name); \"$cmd\"",
+        "npm test",
+        "pnpm test",
+        "make target",
+        "python -c 'import installed_package'",
+    ],
+)
+def test_dynamic_host_commands_are_exact_opaque_not_falsely_sealed(tmp_path, command):
+    (tmp_path / "setup.sh").write_text("true\n", encoding="utf-8")
+    context = _context(tmp_path, mode="host", session=f"opaque-{abs(hash(command))}")
+    definition = TOOL_REGISTRY.resolve("run_host_command", context)
+    arguments = definition.validate_arguments({"command": command})
+    effect = definition.resolve_effects(arguments, context)[0]
+
+    assert effect.opaque is True
+    assert effect.metadata["binding"] == "exact_opaque_command"
+    assert effect.metadata["complete_dependency_seal"] is False
+    assert effect.metadata["known_dependency_snapshot"]
+
+
+@pytest.mark.asyncio
+async def test_explicit_sourced_file_drift_invalidates_known_dependency_snapshot(tmp_path):
+    setup = tmp_path / "setup.sh"
+    setup.write_text("VALUE=approved\n", encoding="utf-8")
+    context = _context(tmp_path, mode="host", session="sourced-drift")
+    call = _call(
+        context,
+        "run_host_command",
+        {"command": "source ./setup.sh; printf '%s' \"$VALUE\""},
+    )
+    approval_id = await _approved_request(context, call)
+    setup.write_text("VALUE=changed\n", encoding="utf-8")
+
+    denied = await execute_normalized_tool_call(
+        call, context, approval_id=approval_id
+    )
+    assert denied.status is ToolResultStatus.DENIED
+    assert EFFECT_APPROVALS.state(approval_id) is ApprovalRecordState.INVALIDATED
+
+
+def test_background_marker_is_normalized_before_effect_and_identity(tmp_path):
+    context = _context(tmp_path, mode="host", session="normalized-background")
+    call = _call(
+        context,
+        "run_host_command",
+        {"command": "#!bg\nprintf normalized"},
+    )
+    assert call.arguments == {"command": "printf normalized", "background": True}
+    definition = TOOL_REGISTRY.resolve("run_host_command", context)
+    effects = definition.resolve_effects(call.arguments, context)
+    assert call.arguments["command"] == "printf normalized"
+    assert effects[0].metadata["background"] is True
+
+
+@pytest.mark.asyncio
+async def test_workspace_snapshot_reuse_is_off_loop_and_constant_for_approval_checks(tmp_path):
+    for index in range(50):
+        (tmp_path / f"file-{index}.txt").write_text("content\n", encoding="utf-8")
+    before = WORKSPACE_SERVICE.snapshot_build_count(str(tmp_path))
+    heartbeat = []
+
+    async def beat():
+        started = time.perf_counter()
+        await asyncio.sleep(0)
+        heartbeat.append(time.perf_counter() - started)
+
+    beat_task = asyncio.create_task(beat())
+    cold_started = time.perf_counter()
+    cold = await WORKSPACE_SERVICE.revision_async(str(tmp_path))
+    cold_latency = time.perf_counter() - cold_started
+    await beat_task
+    repeated_started = time.perf_counter()
+    repeated = [WORKSPACE_SERVICE.revision(str(tmp_path)) for _ in range(10)]
+    repeated_latency = time.perf_counter() - repeated_started
+
+    assert repeated == [cold] * 10
+    assert WORKSPACE_SERVICE.snapshot_build_count(str(tmp_path)) == before + 1
+    assert repeated_latency < max(cold_latency, 0.05)
+    assert heartbeat[0] < 0.05
+
+
+@pytest.mark.asyncio
+async def test_concurrent_detached_snapshot_checks_share_one_cold_build(tmp_path):
+    for index in range(25):
+        (tmp_path / f"concurrent-{index}.txt").write_text("content\n", encoding="utf-8")
+    before = WORKSPACE_SERVICE.snapshot_build_count(str(tmp_path))
+
+    revisions = await asyncio.gather(
+        *(WORKSPACE_SERVICE.revision_async(str(tmp_path)) for _ in range(8))
+    )
+
+    assert len(set(revisions)) == 1
+    assert WORKSPACE_SERVICE.snapshot_build_count(str(tmp_path)) == before + 1
+
+
+def test_high_fanout_find_index_consumes_only_scan_budget(tmp_path, monkeypatch):
+    WORKSPACE_SERVICE.revision(str(tmp_path))
+    import src.agent.runtime_v2.workspace_service as workspace_module
+
+    real_scandir = workspace_module.os.scandir
+    consumed = 0
+
+    class FakeEntry:
+        def __init__(self, index):
+            self.name = f"entry-{index:09d}.txt"
+            self.path = str(tmp_path / self.name)
+
+        def stat(self, *, follow_symlinks=False):
+            class Info:
+                st_mode = 0o100644
+            return Info()
+
+    class FakeScandir:
+        def __init__(self):
+            self.index = 0
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            nonlocal consumed
+            if self.index >= 1_000_000:
+                raise StopIteration
+            item = FakeEntry(self.index)
+            self.index += 1
+            consumed += 1
+            return item
+
+        def close(self):
+            pass
+
+    def bounded_scandir(path):
+        if os.path.realpath(path) == os.path.realpath(tmp_path):
+            return FakeScandir()
+        return real_scandir(path)
+
+    monkeypatch.setattr(workspace_module.os, "scandir", bounded_scandir)
+    page = WORKSPACE_SERVICE.find_files(
+        str(tmp_path),
+        {
+            "patterns": ["**/*"],
+            "max_results": 10,
+            "max_scan_entries": 7,
+            "scan_timeout_seconds": 1,
+        },
+    )
+
+    assert consumed == 7
+    assert page["files"] == []
+    assert page["budget_exhausted"] is True
+    assert page["continuation"] is not None
+
+
+def test_high_fanout_strong_snapshot_stops_at_identity_budget(tmp_path, monkeypatch):
+    import src.agent.runtime_v2.workspace_service as workspace_module
+
+    service = workspace_module.WorkspaceService()
+    monkeypatch.setattr(service, "_MAX_REVISION_ENTRIES", 7)
+    real_scandir = workspace_module.os.scandir
+    consumed = 0
+
+    class FakeEntry:
+        def __init__(self, index):
+            self.name = f"entry-{index:09d}"
+            self.path = str(tmp_path / self.name)
+
+        def stat(self, *, follow_symlinks=False):
+            class Info:
+                st_mode = 0o040755
+                st_size = 0
+                st_mtime_ns = 1
+                st_ino = 100
+            return Info()
+
+    class FakeScandir:
+        def __init__(self):
+            self.index = 0
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            nonlocal consumed
+            item = FakeEntry(self.index)
+            self.index += 1
+            consumed += 1
+            return item
+
+        def close(self):
+            pass
+
+    def bounded_scandir(path):
+        if os.path.realpath(path) == os.path.realpath(tmp_path):
+            return FakeScandir()
+        return real_scandir(path)
+
+    monkeypatch.setattr(workspace_module.os, "scandir", bounded_scandir)
+    revision = service.revision(str(tmp_path))
+
+    assert consumed == 8
+    assert ".partial." in revision
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "posix", reason="detached host lifecycle uses POSIX process groups")
+async def test_detached_approval_uses_normalized_command_and_reaches_final_state(
+    tmp_path, monkeypatch
+):
+    from src import bg_jobs
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    jobs_dir = tmp_path / "jobs"
+    jobs_dir.mkdir()
+    monkeypatch.setattr(bg_jobs, "_JOBS_DIR", jobs_dir)
+    monkeypatch.setattr(bg_jobs, "_STORE", tmp_path / "jobs.json")
+    context = _context(workspace, mode="host", session="detached-finalization")
+    call = _call(
+        context,
+        "run_host_command",
+        {"command": "#!bg\nprintf detached-complete"},
+    )
+    approval_id = await _approved_request(context, call)
+
+    launched = await execute_normalized_tool_call(
+        call, context, approval_id=approval_id
+    )
+    assert launched.status is ToolResultStatus.SUCCESS
+    assert EFFECT_APPROVALS.state(approval_id) is ApprovalRecordState.DETACHED_EXECUTING
+    job_id = launched.data["job_id"]
+    deadline = time.monotonic() + 5
+    record = None
+    while time.monotonic() < deadline:
+        record = bg_jobs.get(job_id)
+        if record and record.get("detached_outcome") != "detached_executing":
+            break
+        await asyncio.sleep(0.02)
+
+    assert record is not None
+    assert record["command"] == "printf detached-complete"
+    assert record["approval_identity"]
+    assert record["complete_dependency_seal"] is False
+    assert record["detached_outcome"] == "detached_completed"
+    assert EFFECT_APPROVALS.state(approval_id) is ApprovalRecordState.DETACHED_COMPLETED
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name != "posix", reason="detached host lifecycle uses POSIX process groups")
+async def test_concurrent_detached_runs_reuse_snapshot_and_all_finalize(tmp_path, monkeypatch):
+    from src import bg_jobs
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    jobs_dir = tmp_path / "jobs"
+    jobs_dir.mkdir()
+    monkeypatch.setattr(bg_jobs, "_JOBS_DIR", jobs_dir)
+    monkeypatch.setattr(bg_jobs, "_STORE", tmp_path / "jobs.json")
+    before = WORKSPACE_SERVICE.snapshot_build_count(str(workspace))
+    requests = []
+    for index in range(4):
+        context = _context(
+            workspace,
+            mode="host",
+            session=f"concurrent-detached-{index}",
+        )
+        call = _call(
+            context,
+            "run_host_command",
+            {"command": "#!bg\nsleep 0.05; printf complete"},
+        )
+        approval_id = await _approved_request(context, call)
+        requests.append((context, call, approval_id))
+
+    launched = await asyncio.gather(
+        *(
+            execute_normalized_tool_call(call, context, approval_id=approval_id)
+            for context, call, approval_id in requests
+        )
+    )
+    assert all(result.status is ToolResultStatus.SUCCESS for result in launched)
+    assert WORKSPACE_SERVICE.snapshot_build_count(str(workspace)) == before + 1
+
+    deadline = time.monotonic() + 5
+    records = {}
+    while time.monotonic() < deadline:
+        records = bg_jobs.refresh()
+        if all(
+            records.get(result.data["job_id"], {}).get("detached_outcome")
+            == "detached_completed"
+            for result in launched
+        ):
+            break
+        await asyncio.sleep(0.02)
+
+    assert all(
+        records[result.data["job_id"]]["detached_outcome"] == "detached_completed"
+        for result in launched
+    )
+    assert all(
+        EFFECT_APPROVALS.state(approval_id) is ApprovalRecordState.DETACHED_COMPLETED
+        for _, _, approval_id in requests
+    )

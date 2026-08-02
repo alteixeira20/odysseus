@@ -19,7 +19,7 @@ from .contracts import (
 )
 from .effect_policy import EFFECT_POLICY
 from .ownership import OwnershipError, RUN_OWNERSHIP
-from .approvals import EFFECT_APPROVALS, EffectApprovalError
+from .approvals import ApprovalRecordState, EFFECT_APPROVALS, EffectApprovalError
 
 
 def _tool_error(
@@ -60,15 +60,60 @@ async def execute_normalized_tool_call(
     started = time.perf_counter()
     approval_claimed = False
     effect_started = False
+    spawn_started = False
     effects = ()
 
     def effect_boundary() -> None:
         nonlocal effect_started
         if effect_started:
             return
+        execution_context.cancellation_token.raise_if_cancelled()
+        RUN_OWNERSHIP.validate_call(execution_context, call)
         if approval_id:
             EFFECT_APPROVALS.mark_executing(approval_id)
         effect_started = True
+
+    def spawn_boundary() -> None:
+        nonlocal spawn_started
+        execution_context.cancellation_token.raise_if_cancelled()
+        RUN_OWNERSHIP.validate_call(execution_context, call)
+        if approval_id:
+            EFFECT_APPROVALS.mark_spawning(
+                approval_id,
+                call=call,
+                context=execution_context,
+                effects=effects,
+            )
+        spawn_started = True
+
+    def spawn_failed() -> None:
+        nonlocal spawn_started
+        if approval_id:
+            EFFECT_APPROVALS.fail_before_effect(
+                approval_id,
+                process_creation_proven_absent=True,
+            )
+        spawn_started = False
+
+    def fail_claimed_approval() -> bool:
+        """Finalize failure and report whether a process may have existed."""
+
+        if not approval_claimed or not approval_id:
+            return bool(effect_started or spawn_started)
+        state = EFFECT_APPROVALS.state(approval_id)
+        if state is ApprovalRecordState.CLAIMED:
+            EFFECT_APPROVALS.fail_before_effect(approval_id)
+            return False
+        if state is ApprovalRecordState.FAILED_BEFORE_EFFECT:
+            return False
+        if state in {
+            ApprovalRecordState.SPAWNING,
+            ApprovalRecordState.EXECUTING,
+            ApprovalRecordState.DETACHED_EXECUTING,
+        }:
+            EFFECT_APPROVALS.fail_after_unknown_effect(approval_id)
+            return True
+        return bool(effect_started or spawn_started)
     try:
         execution_context.cancellation_token.raise_if_cancelled()
         RUN_OWNERSHIP.validate_call_identity(execution_context, call)
@@ -209,6 +254,7 @@ async def execute_normalized_tool_call(
                 "consequential": effect.consequential,
                 "destructive": effect.destructive,
                 "opaque": effect.opaque,
+                "metadata": dict(effect.metadata),
             }
             for effect in effects
         ]
@@ -305,6 +351,14 @@ async def execute_normalized_tool_call(
             "run_host_command",
             "run_python",
         }:
+            handler_kwargs["spawn_started_cb"] = spawn_boundary
+            handler_kwargs["spawn_failed_cb"] = spawn_failed
+            handler_kwargs["approval_id"] = approval_id
+        if definition.name in {
+            "run_sandbox_command",
+            "run_host_command",
+            "run_python",
+        }:
             handler_kwargs["expected_process_identity"] = next(
                 (
                     str(effect.metadata.get("process_identity"))
@@ -328,11 +382,7 @@ async def execute_normalized_tool_call(
             for effect in effects
             if effect.kind.startswith("process.execute.")
         )
-        if approval_claimed:
-            if effect_started:
-                EFFECT_APPROVALS.fail_after_unknown_effect(approval_id)
-            else:
-                EFFECT_APPROVALS.fail_before_effect(approval_id)
+        process_may_have_started = fail_claimed_approval()
         return _tool_error(
             call,
             status=ToolResultStatus.TIMED_OUT,
@@ -340,8 +390,8 @@ async def execute_normalized_tool_call(
             message=f"{definition.name} exceeded its {definition.timeout_seconds:g}s timeout",
             duration_ms=(time.perf_counter() - started) * 1000,
             attempted_effects=effects,
-            observed_effects=started_process_effects if effect_started else (),
-            unknown_effects=effects if effect_started else (),
+            observed_effects=started_process_effects if process_may_have_started else (),
+            unknown_effects=effects if process_may_have_started else (),
         )
     except asyncio.CancelledError:
         started_process_effects = tuple(
@@ -349,11 +399,7 @@ async def execute_normalized_tool_call(
             for effect in effects
             if effect.kind.startswith("process.execute.")
         )
-        if approval_claimed:
-            if effect_started:
-                EFFECT_APPROVALS.fail_after_unknown_effect(approval_id)
-            else:
-                EFFECT_APPROVALS.fail_before_effect(approval_id)
+        process_may_have_started = fail_claimed_approval()
         return _tool_error(
             call,
             status=ToolResultStatus.CANCELLED,
@@ -361,8 +407,8 @@ async def execute_normalized_tool_call(
             message="run was cancelled during tool execution",
             duration_ms=(time.perf_counter() - started) * 1000,
             attempted_effects=effects,
-            observed_effects=started_process_effects if effect_started else (),
-            unknown_effects=effects if effect_started else (),
+            observed_effects=started_process_effects if process_may_have_started else (),
+            unknown_effects=effects if process_may_have_started else (),
         )
     except Exception as exc:
         started_process_effects = tuple(
@@ -370,11 +416,7 @@ async def execute_normalized_tool_call(
             for effect in effects
             if effect.kind.startswith("process.execute.")
         )
-        if approval_claimed:
-            if effect_started:
-                EFFECT_APPROVALS.fail_after_unknown_effect(approval_id)
-            else:
-                EFFECT_APPROVALS.fail_before_effect(approval_id)
+        process_may_have_started = fail_claimed_approval()
         return _tool_error(
             call,
             status=ToolResultStatus.ERROR,
@@ -382,8 +424,8 @@ async def execute_normalized_tool_call(
             message=f"{definition.name} failed: {exc}",
             duration_ms=(time.perf_counter() - started) * 1000,
             attempted_effects=effects,
-            observed_effects=started_process_effects if effect_started else (),
-            unknown_effects=effects if effect_started else (),
+            observed_effects=started_process_effects if process_may_have_started else (),
+            unknown_effects=effects if process_may_have_started else (),
         )
     try:
         bound_result = raw_result.bind_call(call)
@@ -458,17 +500,15 @@ async def execute_normalized_tool_call(
                     approval_id,
                     committed_effects=bool(validated_result.committed_effects),
                 )
+            elif bound_result.data.get("background") and effect_started:
+                EFFECT_APPROVALS.mark_detached_executing(approval_id)
             elif effect_started:
                 EFFECT_APPROVALS.fail_after_unknown_effect(approval_id)
             else:
-                EFFECT_APPROVALS.fail_before_effect(approval_id)
+                fail_claimed_approval()
         return validated_result
     except (AttributeError, TypeError, ValueError) as exc:
-        if approval_claimed:
-            if effect_started:
-                EFFECT_APPROVALS.fail_after_unknown_effect(approval_id)
-            else:
-                EFFECT_APPROVALS.fail_before_effect(approval_id)
+        fail_claimed_approval()
         return _tool_error(
             call,
             status=ToolResultStatus.ERROR,

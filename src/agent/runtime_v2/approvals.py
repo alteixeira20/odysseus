@@ -22,7 +22,13 @@ class ApprovalRecordState(str, Enum):
     GRANTED = "granted"
     DENIED = "denied"
     CLAIMED = "claimed"
+    SPAWNING = "spawning"
     EXECUTING = "executing"
+    DETACHED_EXECUTING = "detached_executing"
+    DETACHED_COMPLETED = "detached_completed"
+    DETACHED_FAILED = "detached_failed"
+    DETACHED_TIMED_OUT = "detached_timed_out"
+    DETACHED_CANCELLED = "detached_cancelled"
     COMPLETED = "completed"
     COMMITTED = "committed"
     FAILED_BEFORE_EFFECT = "failed_before_effect"
@@ -262,7 +268,13 @@ class EffectApprovalStore:
                     ApprovalRecordState.EXPIRED: "effect_approval_expired",
                     ApprovalRecordState.INVALIDATED: "effect_approval_invalidated",
                     ApprovalRecordState.CLAIMED: "effect_approval_already_claimed",
+                    ApprovalRecordState.SPAWNING: "effect_outcome_unknown_or_active",
                     ApprovalRecordState.EXECUTING: "effect_outcome_unknown_or_active",
+                    ApprovalRecordState.DETACHED_EXECUTING: "effect_outcome_unknown_or_active",
+                    ApprovalRecordState.DETACHED_COMPLETED: "effect_approval_already_completed",
+                    ApprovalRecordState.DETACHED_FAILED: "effect_outcome_unknown",
+                    ApprovalRecordState.DETACHED_TIMED_OUT: "effect_outcome_unknown",
+                    ApprovalRecordState.DETACHED_CANCELLED: "effect_outcome_unknown",
                     ApprovalRecordState.COMPLETED: "effect_approval_already_completed",
                     ApprovalRecordState.COMMITTED: "effect_approval_already_committed",
                     ApprovalRecordState.FAILED_AFTER_UNKNOWN_EFFECT: "effect_outcome_unknown",
@@ -315,12 +327,72 @@ class EffectApprovalStore:
     # transition. New code should use claim and complete the lifecycle.
     consume = claim
 
-    def mark_executing(self, approval_id: str) -> ApprovalRecordState:
+    def mark_spawning(
+        self,
+        approval_id: str,
+        *,
+        call: NormalizedToolCall,
+        context: AgentExecutionContext,
+        effects: Sequence[Effect],
+    ) -> ApprovalRecordState:
+        """Atomically burn replayability immediately before kernel spawn.
+
+        This transition is intentionally not described as atomic with process
+        creation.  ``SPAWNING`` is the uncertainty state for that unavoidable
+        gap: cancellation or failure from here is retryable only when the spawn
+        owner proves that no child was created.
+        """
+
+        context.cancellation_token.raise_if_cancelled()
+        try:
+            RUN_OWNERSHIP.validate_call(context, call)
+        except OwnershipError as exc:
+            raise EffectApprovalError(str(exc)) from exc
         with self._lock:
             record = self._records.get(str(approval_id))
             if record is None:
                 raise EffectApprovalError("approval request was not found")
             if record.state is not ApprovalRecordState.CLAIMED:
+                raise EffectApprovalError(
+                    f"approval request cannot spawn from {record.state.value}",
+                    code="effect_approval_state_conflict",
+                )
+            exact = (
+                record.owner_id == context.owner_id
+                and record.session_id == context.session_id
+                and record.run_id == context.run_id
+                and record.conversation_id == context.conversation_id
+                and record.turn_id == context.turn_id
+                and record.candidate_id == call.candidate_id
+                and record.call_id == call.call_id
+                and record.canonical_name == call.canonical_name
+                and record.arguments_digest == call.arguments_digest
+                and record.effects_digest == _effects_digest(effects)
+                and record.authority_revision == context.authority_grant.revision
+                and record.tool_contract_revision == call.tool_contract_revision
+                and record.workspace_root == context.execution_root.path
+                and record.workspace_revision
+                == WORKSPACE_SERVICE.revision(context.execution_root.path)
+            )
+            if not exact:
+                record.state = ApprovalRecordState.INVALIDATED
+                raise EffectApprovalError(
+                    "approval no longer matches at the process-spawn boundary",
+                    code="effect_approval_invalidated",
+                )
+            record.state = ApprovalRecordState.SPAWNING
+            record.executing_at = time.time()
+            return record.state
+
+    def mark_executing(self, approval_id: str) -> ApprovalRecordState:
+        with self._lock:
+            record = self._records.get(str(approval_id))
+            if record is None:
+                raise EffectApprovalError("approval request was not found")
+            if record.state not in {
+                ApprovalRecordState.CLAIMED,
+                ApprovalRecordState.SPAWNING,
+            }:
                 raise EffectApprovalError(
                     f"approval request cannot start from {record.state.value}",
                     code="effect_approval_state_conflict",
@@ -359,12 +431,21 @@ class EffectApprovalStore:
             record.finished_at = time.time()
             return record.state
 
-    def fail_before_effect(self, approval_id: str) -> ApprovalRecordState:
+    def fail_before_effect(
+        self,
+        approval_id: str,
+        *,
+        process_creation_proven_absent: bool = False,
+    ) -> ApprovalRecordState:
         with self._lock:
             record = self._records.get(str(approval_id))
             if record is None:
                 raise EffectApprovalError("approval request was not found")
-            if record.state is not ApprovalRecordState.CLAIMED:
+            allowed = record.state is ApprovalRecordState.CLAIMED or (
+                record.state is ApprovalRecordState.SPAWNING
+                and process_creation_proven_absent
+            )
+            if not allowed:
                 raise EffectApprovalError(
                     f"approval request cannot record a pre-effect failure from {record.state.value}",
                     code="effect_approval_state_conflict",
@@ -378,7 +459,11 @@ class EffectApprovalStore:
             record = self._records.get(str(approval_id))
             if record is None:
                 raise EffectApprovalError("approval request was not found")
-            if record.state is not ApprovalRecordState.EXECUTING:
+            if record.state not in {
+                ApprovalRecordState.SPAWNING,
+                ApprovalRecordState.EXECUTING,
+                ApprovalRecordState.DETACHED_EXECUTING,
+            }:
                 raise EffectApprovalError(
                     f"approval request cannot record an uncertain effect from {record.state.value}",
                     code="effect_approval_state_conflict",
@@ -386,6 +471,47 @@ class EffectApprovalStore:
             record.state = ApprovalRecordState.FAILED_AFTER_UNKNOWN_EFFECT
             record.finished_at = time.time()
             return record.state
+
+    def mark_detached_executing(self, approval_id: str) -> ApprovalRecordState:
+        with self._lock:
+            record = self._records.get(str(approval_id))
+            if record is None:
+                raise EffectApprovalError("approval request was not found")
+            if record.state is not ApprovalRecordState.EXECUTING:
+                raise EffectApprovalError(
+                    f"approval request cannot detach from {record.state.value}",
+                    code="effect_approval_state_conflict",
+                )
+            record.state = ApprovalRecordState.DETACHED_EXECUTING
+            return record.state
+
+    def finalize_detached(
+        self,
+        approval_id: str,
+        outcome: ApprovalRecordState | str,
+    ) -> ApprovalRecordState:
+        final = ApprovalRecordState(outcome)
+        if final not in {
+            ApprovalRecordState.DETACHED_COMPLETED,
+            ApprovalRecordState.DETACHED_FAILED,
+            ApprovalRecordState.DETACHED_TIMED_OUT,
+            ApprovalRecordState.DETACHED_CANCELLED,
+        }:
+            raise EffectApprovalError("invalid detached approval outcome")
+        with self._lock:
+            record = self._records.get(str(approval_id))
+            if record is None:
+                raise EffectApprovalError("approval request was not found")
+            if record.state is not ApprovalRecordState.DETACHED_EXECUTING:
+                if record.state is final:
+                    return final
+                raise EffectApprovalError(
+                    f"approval request cannot finalize detached work from {record.state.value}",
+                    code="effect_approval_state_conflict",
+                )
+            record.state = final
+            record.finished_at = time.time()
+            return final
 
     def state(self, approval_id: str) -> Optional[ApprovalRecordState]:
         with self._lock:

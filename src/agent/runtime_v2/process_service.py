@@ -14,6 +14,7 @@ from src.agent_tools.subprocess_tools import (
     DEFAULT_PYTHON_TIMEOUT,
     _run_direct_bash,
     _run_subprocess_streaming,
+    _terminate_and_reap,
     normalize_bash_timeout,
 )
 from src.constants import MAX_OUTPUT_CHARS
@@ -44,20 +45,24 @@ class ProcessService:
     """Owns target selection, roots, environment, limits, and termination."""
 
     @staticmethod
-    def _record_workspace_transition(
+    async def _record_workspace_transition(
         context: AgentExecutionContext,
         before_revision: str,
     ) -> tuple[str, bool]:
-        observed = WORKSPACE_SERVICE.revision(context.execution_root.path)
+        if not context.authority_grant.allows(Capability.PROCESS_WORKSPACE_WRITE):
+            # Both production process backends enforce a read-only workspace in
+            # this mode, so a second full-tree hash would add no validation.
+            return before_revision, False
+        observed = await WORKSPACE_SERVICE.revision_async(
+            context.execution_root.path,
+            force=True,
+        )
         if observed == before_revision:
             return observed, False
         after = WORKSPACE_SERVICE.note_external_mutation(
-            context.execution_root.path
+            context.execution_root.path,
+            observed_revision=observed,
         )
-        if not context.authority_grant.allows(Capability.PROCESS_WORKSPACE_WRITE):
-            raise ProcessServiceError(
-                "read-only process boundary detected an unauthorized workspace mutation"
-            )
         return after, True
 
     async def run_command(
@@ -68,6 +73,8 @@ class ProcessService:
         progress_cb: Optional[Callable[[dict[str, Any]], Awaitable[None]]] = None,
         invocation_id: Optional[str] = None,
         effect_started_cb: Optional[Callable[[], None]] = None,
+        spawn_started_cb: Optional[Callable[[], None]] = None,
+        spawn_failed_cb: Optional[Callable[[], None]] = None,
         expected_process_identity: Optional[str] = None,
     ) -> dict[str, Any]:
         context.cancellation_token.raise_if_cancelled()
@@ -122,6 +129,8 @@ class ProcessService:
                     Capability.PROCESS_WORKSPACE_WRITE
                 ),
                 effect_started_cb=process_started,
+                spawn_started_cb=spawn_started_cb,
+                spawn_failed_cb=spawn_failed_cb,
                 bash_executable_override=(
                     approved_snapshot.executable
                     if approved_snapshot
@@ -131,7 +140,7 @@ class ProcessService:
             )
         except SandboxUnavailable as exc:
             raise ProcessSandboxUnavailable(str(exc)) from exc
-        workspace_revision, workspace_mutated = self._record_workspace_transition(
+        workspace_revision, workspace_mutated = await self._record_workspace_transition(
             context,
             workspace_revision_before,
         )
@@ -209,6 +218,8 @@ class ProcessService:
         *,
         progress_cb: Optional[Callable[[dict[str, Any]], Awaitable[None]]] = None,
         effect_started_cb: Optional[Callable[[], None]] = None,
+        spawn_started_cb: Optional[Callable[[], None]] = None,
+        spawn_failed_cb: Optional[Callable[[], None]] = None,
         expected_process_identity: Optional[str] = None,
     ) -> dict[str, Any]:
         context.cancellation_token.raise_if_cancelled()
@@ -271,22 +282,45 @@ class ProcessService:
         elif os.name == "nt":
             process_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
         started = time.perf_counter()
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=environment,
-            cwd=context.execution_root.path,
-            **process_kwargs,
+        if spawn_started_cb is not None:
+            try:
+                spawn_started_cb()
+            except BaseException:
+                if spawn_failed_cb is not None:
+                    spawn_failed_cb()
+                raise
+        spawn_task = asyncio.create_task(
+            asyncio.create_subprocess_exec(
+                *argv,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=environment,
+                cwd=context.execution_root.path,
+                **process_kwargs,
+            )
         )
+        cancelled_during_spawn = False
+        while not spawn_task.done():
+            try:
+                await asyncio.shield(spawn_task)
+            except asyncio.CancelledError:
+                cancelled_during_spawn = True
+                continue
+        try:
+            proc = spawn_task.result()
+        except BaseException:
+            if spawn_failed_cb is not None:
+                spawn_failed_cb()
+            raise
+        if cancelled_during_spawn:
+            await _terminate_and_reap(proc)
+            raise asyncio.CancelledError
         if effect_started_cb is not None:
             try:
                 effect_started_cb()
             except BaseException:
-                if proc.returncode is None:
-                    proc.kill()
-                await proc.wait()
+                await _terminate_and_reap(proc)
                 raise
         stdout, stderr, return_code, timed_out, escalation = await _run_subprocess_streaming(
             proc,
@@ -294,7 +328,7 @@ class ProcessService:
             progress_cb=progress_cb,
             terminate_process_group=True,
         )
-        workspace_revision, workspace_mutated = self._record_workspace_transition(
+        workspace_revision, workspace_mutated = await self._record_workspace_transition(
             context,
             workspace_revision_before,
         )
@@ -371,6 +405,10 @@ class ProcessService:
         context: AgentExecutionContext,
         *,
         effect_started_cb: Optional[Callable[[], None]] = None,
+        spawn_started_cb: Optional[Callable[[], None]] = None,
+        spawn_failed_cb: Optional[Callable[[], None]] = None,
+        approval_id: Optional[str] = None,
+        approval_identity: Optional[str] = None,
     ) -> dict[str, Any]:
         from src import bg_jobs
 
@@ -383,6 +421,10 @@ class ProcessService:
             execution_mode=context.execution_mode.value,
             execution_context=context,
             effect_started_cb=effect_started_cb,
+            spawn_started_cb=spawn_started_cb,
+            spawn_failed_cb=spawn_failed_cb,
+            approval_id=approval_id,
+            approval_identity=approval_identity,
         )
 
 
