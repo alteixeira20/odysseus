@@ -6,6 +6,7 @@ on:
       - agentic-lab
     paths:
       - scripts/runtime_v3_patch_existing.py
+      - scripts/runtime_v3_pretest_fix.py
       - .github/workflows/runtime-v3-foundation.yml
       - src/agent/runtime_v3/**
       - tests/runtime_v3/**
@@ -29,6 +30,9 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.ref }}
           fetch-depth: 0
+
+      - name: Apply transaction-safe migration fix
+        run: python scripts/runtime_v3_pretest_fix.py
 
       - name: Apply deterministic integration patches
         run: python scripts/runtime_v3_patch_existing.py
