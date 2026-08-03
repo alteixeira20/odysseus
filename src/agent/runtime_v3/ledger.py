@@ -195,6 +195,20 @@ class DurableRunLedger:
             row = self._conn.execute("SELECT * FROM agent_runs WHERE run_id = ?", (run_id,)).fetchone()
         return self._record(row) if row else None
 
+    def latest_run_for_session(self, session_id: str) -> RunRecord | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM agent_runs WHERE session_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                (str(session_id),),
+            ).fetchone()
+        return self._record(row) if row else None
+
+    def session_run_relation(self, session_id: str, run_id: str) -> str:
+        latest = self.latest_run_for_session(session_id)
+        if latest is None:
+            return "unknown"
+        return "current" if latest.run_id == str(run_id) else "superseded"
+
     def transition(self, run_id: str, status: RunStatus, *, reason: str | None = None,
                    resumable: bool | None = None, expected_revision: int | None = None,
                    error: Mapping[str, Any] | None = None) -> RunRecord:
@@ -268,6 +282,22 @@ class DurableRunLedger:
                     if row["request_sha256"] != request_hash or row["tool_name"] != tool_name:
                         raise RuntimeError("idempotency key reused for a different effect")
                     status = EffectStatus(row["status"])
+                    stored_policy = RetryPolicy(row["retry_policy"])
+                    if (
+                        status is EffectStatus.FAILED
+                        and stored_policy is RetryPolicy.SAFE
+                        and retry_policy is RetryPolicy.SAFE
+                    ):
+                        db.execute(
+                            """UPDATE agent_effects SET status=?,result_json=NULL,error_json=NULL,
+                               started_at=?,finished_at=NULL,attempt=attempt+1,revision=revision+1
+                               WHERE effect_id=?""",
+                            (EffectStatus.STARTED.value, now, row["effect_id"]),
+                        )
+                        return EffectLease(
+                            row["effect_id"], True, EffectStatus.STARTED, None,
+                            "safe_retry_after_proven_failure",
+                        )
                     cached = json.loads(row["result_json"]) if row["result_json"] else None
                     return EffectLease(row["effect_id"], False, status, cached, "duplicate")
             effect_id = str(uuid.uuid4())
