@@ -7,6 +7,7 @@ on:
     paths:
       - scripts/runtime_v3_mcp_deployment_patch.py
       - scripts/runtime_v3_mcp_deployment_postpatch.py
+      - scripts/runtime_v3_mcp_setup_anchor_fix.py
       - .github/workflows/runtime-v3-mcp-deployment-builder.yml
       - tests/runtime_v3/test_mcp_deployment.py
 
@@ -39,6 +40,9 @@ jobs:
 
       - name: Pin package in project lockfile
         run: npm install --package-lock-only --ignore-scripts --save-exact @playwright/mcp@0.0.68
+
+      - name: Align deployment with current native setup
+        run: python scripts/runtime_v3_mcp_setup_anchor_fix.py
 
       - name: Apply deterministic MCP deployment integration
         run: python scripts/runtime_v3_mcp_deployment_patch.py
