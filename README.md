@@ -11,6 +11,7 @@
 <p align="center">
   <a href="#quick-start">Quick Start</a> ·
   <a href="docs/setup.md">Setup Guide</a> ·
+  <a href="docs/serena.md">Serena Setup</a> ·
   <a href="docs/ARCHITECTURE.md">Architecture</a> ·
   <a href="SECURITY.md">Security</a> ·
   <a href="CONTRIBUTING.md">Contributing</a> ·
