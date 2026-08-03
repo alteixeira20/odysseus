@@ -117,7 +117,19 @@ async def execute_with_durable_effects(
 
     handle: DurableEffectHandle
     try:
-        handle = begin_tool_effect(call, context, effects)
+        approval_scope = None
+        if approval_id:
+            import hashlib
+
+            approval_scope = "approval-" + hashlib.sha256(
+                str(approval_id).encode("utf-8")
+            ).hexdigest()[:24]
+        handle = begin_tool_effect(
+            call,
+            context,
+            effects,
+            idempotency_scope=approval_scope,
+        )
     except (OSError, RuntimeError, ValueError) as exc:
         return _bridge_error(
             call,

@@ -282,6 +282,22 @@ class DurableRunLedger:
                     if row["request_sha256"] != request_hash or row["tool_name"] != tool_name:
                         raise RuntimeError("idempotency key reused for a different effect")
                     status = EffectStatus(row["status"])
+                    stored_policy = RetryPolicy(row["retry_policy"])
+                    if (
+                        status is EffectStatus.FAILED
+                        and stored_policy is RetryPolicy.SAFE
+                        and retry_policy is RetryPolicy.SAFE
+                    ):
+                        db.execute(
+                            """UPDATE agent_effects SET status=?,result_json=NULL,error_json=NULL,
+                               started_at=?,finished_at=NULL,attempt=attempt+1,revision=revision+1
+                               WHERE effect_id=?""",
+                            (EffectStatus.STARTED.value, now, row["effect_id"]),
+                        )
+                        return EffectLease(
+                            row["effect_id"], True, EffectStatus.STARTED, None,
+                            "safe_retry_after_proven_failure",
+                        )
                     cached = json.loads(row["result_json"]) if row["result_json"] else None
                     return EffectLease(row["effect_id"], False, status, cached, "duplicate")
             effect_id = str(uuid.uuid4())

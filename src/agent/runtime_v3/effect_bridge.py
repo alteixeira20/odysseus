@@ -147,6 +147,7 @@ def begin_tool_effect(
     effects: Iterable[Effect],
     *,
     ledger: DurableRunLedger | None = None,
+    idempotency_scope: str | None = None,
 ) -> DurableEffectHandle:
     target = ledger or get_runtime_ledger()
     _ensure_run(target, context)
@@ -161,6 +162,7 @@ def begin_tool_effect(
         "authority_revision": call.authority_revision,
         "workspace_revision": call.workspace_revision,
         "tool_contract_revision": call.tool_contract_revision,
+        "idempotency_scope": idempotency_scope or "default",
     }
     lease = target.begin_effect(
         run_id=context.run_id,
@@ -168,7 +170,11 @@ def begin_tool_effect(
         arguments=recorded_arguments,
         effect_class=effect_class,
         retry_policy=retry_policy,
-        idempotency_key=f"{call.candidate_id}:{call.call_id}",
+        idempotency_key=(
+            f"{call.candidate_id}:{call.call_id}:{idempotency_scope}"
+            if idempotency_scope
+            else f"{call.candidate_id}:{call.call_id}"
+        ),
     )
     replay = None
     if not lease.should_execute and lease.status is EffectStatus.COMMITTED and lease.cached_result:
