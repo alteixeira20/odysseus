@@ -5,6 +5,7 @@ import unittest
 
 from src.agent.runtime_v3.workspace_journal import (
     SimulatedProcessCrash,
+    WorkspaceJournalError,
     WorkspaceRecoveryRequired,
     WorkspaceTransactionJournal,
 )
@@ -151,12 +152,13 @@ class WorkspaceJournalTests(unittest.TestCase):
             if phase == "after_payloads_ready":
                 first.write_text("external edit", encoding="utf-8")
 
-        with self.assertRaises(WorkspaceRecoveryRequired):
+        with self.assertRaises(WorkspaceJournalError):
             self.journal().commit(
                 [prepared("update", first, "new")],
                 fault_injector=modify,
             )
         self.assertEqual(first.read_text(), "external edit")
+        self.assertEqual(list((self.journal_root / "pending").glob("*.json")), [])
 
     def test_corrupt_journal_fails_closed(self):
         first = self.workspace / "first.txt"
