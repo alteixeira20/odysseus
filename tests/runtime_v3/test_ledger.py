@@ -44,6 +44,46 @@ class LedgerTests(unittest.TestCase):
         self.assertEqual(duplicate.status, EffectStatus.COMMITTED)
         self.assertEqual(duplicate.cached_result["message_id"], "42")
 
+    def test_proven_safe_read_failure_can_retry_same_identity(self):
+        first = self.ledger.begin_effect(
+            run_id="r1", tool_name="read_files", arguments={"path": "a.txt"},
+            effect_class=EffectClass.READ, retry_policy=RetryPolicy.SAFE,
+            idempotency_key="read-1",
+        )
+        self.ledger.fail_effect(first.effect_id, {"code": "transient_read_error"})
+        retry = self.ledger.begin_effect(
+            run_id="r1", tool_name="read_files", arguments={"path": "a.txt"},
+            effect_class=EffectClass.READ, retry_policy=RetryPolicy.SAFE,
+            idempotency_key="read-1",
+        )
+        self.assertTrue(retry.should_execute)
+        self.assertEqual(retry.effect_id, first.effect_id)
+        self.assertEqual(retry.reason, "safe_retry_after_proven_failure")
+        row = self.ledger._conn.execute(
+            "SELECT status,attempt,error_json FROM agent_effects WHERE effect_id=?",
+            (first.effect_id,),
+        ).fetchone()
+        self.assertEqual(row[0], EffectStatus.STARTED.value)
+        self.assertEqual(row[1], 2)
+        self.assertIsNone(row[2])
+
+    def test_non_safe_failure_remains_blocked(self):
+        first = self.ledger.begin_effect(
+            run_id="r1", tool_name="write", arguments={"path": "a.txt"},
+            effect_class=EffectClass.LOCAL_WRITE,
+            retry_policy=RetryPolicy.IDEMPOTENCY_KEY_REQUIRED,
+            idempotency_key="write-1",
+        )
+        self.ledger.fail_effect(first.effect_id, {"code": "failed"})
+        duplicate = self.ledger.begin_effect(
+            run_id="r1", tool_name="write", arguments={"path": "a.txt"},
+            effect_class=EffectClass.LOCAL_WRITE,
+            retry_policy=RetryPolicy.IDEMPOTENCY_KEY_REQUIRED,
+            idempotency_key="write-1",
+        )
+        self.assertFalse(duplicate.should_execute)
+        self.assertEqual(duplicate.status, EffectStatus.FAILED)
+
     def test_recovery_marks_started_effect_unknown(self):
         lease = self.ledger.begin_effect(
             run_id="r1", tool_name="external", arguments={"x": 1},
