@@ -1,0 +1,49 @@
+name: Runtime V3 MCP deployment cleanup
+
+on:
+  pull_request:
+    branches:
+      - agent/runtime-v3-workspace-journal
+    paths:
+      - .github/workflows/runtime-v3-mcp-cleanup.yml
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  verify-and-clean:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact PR head
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      - name: Verify product integration exists
+        run: |
+          set -euo pipefail
+          grep -q '"@playwright/mcp": "0.0.68"' package.json
+          grep -q 'mcp-server-playwright' src/builtin_mcp.py
+          grep -q 'npm ci --omit=dev --ignore-scripts' Dockerfile
+          grep -q 'install_node_runtime' setup.py
+          test ! -e node_modules || true
+
+      - name: Remove temporary branch machinery
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          git config user.name "odysseus-runtime-v3-bot"
+          git config user.email "111787685+alteixeira20@users.noreply.github.com"
+          git rm \
+            .github/workflows/runtime-v3-mcp-deployment-builder.yml \
+            .github/workflows/runtime-v3-mcp-cleanup.yml \
+            scripts/runtime_v3_mcp_deployment_patch.py \
+            scripts/runtime_v3_mcp_deployment_postpatch.py \
+            scripts/runtime_v3_mcp_setup_anchor_fix.py
+          git commit -m "chore(agent): remove temporary MCP deployment builders"
+          git push origin HEAD:"${HEAD_REF}"
