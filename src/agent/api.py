@@ -1,12 +1,13 @@
 """Stable entry points for the Agent runtime.
 
-The legacy loop remains a compatibility implementation, but Runtime V3 now
-owns durable lifecycle accounting around every typed request.
+The legacy loop remains a compatibility implementation, but Runtime V3 owns
+durable lifecycle accounting and effective budgets around every typed request.
 """
 
 from typing import AsyncGenerator, Dict, List, Optional, Set
 
 from .contracts import AgentRunRequest
+from .runtime_v3.config import load_runtime_v3_limits
 from .runtime_v3.orchestrator import stream_with_durable_runtime
 
 
@@ -16,6 +17,10 @@ def _legacy_stream(**arguments):
 
 
 def _legacy_arguments(request: AgentRunRequest) -> dict:
+    effective = load_runtime_v3_limits().normalize_request(
+        max_rounds=request.limits.max_rounds,
+        max_tool_calls=request.limits.max_tool_calls,
+    )
     return {
         "endpoint_url": request.endpoint_url,
         "model": request.model,
@@ -24,8 +29,8 @@ def _legacy_arguments(request: AgentRunRequest) -> dict:
         "temperature": request.model_options.temperature,
         "max_tokens": request.limits.max_tokens,
         "prompt_type": request.model_options.prompt_type,
-        "max_rounds": request.limits.max_rounds,
-        "max_tool_calls": request.limits.max_tool_calls,
+        "max_rounds": effective.max_rounds,
+        "max_tool_calls": effective.max_tool_calls,
         "context_length": request.limits.context_length,
         "active_document": request.contexts.active_document,
         "active_email": request.contexts.active_email,
