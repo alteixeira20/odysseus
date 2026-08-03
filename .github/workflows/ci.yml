@@ -103,6 +103,7 @@ jobs:
   python-tests:
     name: Python tests (pytest)
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     # Informational for now: the suite has known flaky / environment-dependent
     # failures (test isolation + embedding-model assertions). Tracked under the
     # ROADMAP "fresh install smoke tests" item; make this required once green.
@@ -144,5 +145,8 @@ jobs:
         if: steps.docs-check.outputs.docs_only != 'true'
       - run: mkdir -p data  # sqlite DB lives at ./data/app.db
         if: steps.docs-check.outputs.docs_only != 'true'
-      - run: python -m pytest -q
+      - name: Run bounded pytest suite
         if: steps.docs-check.outputs.docs_only != 'true'
+        run: |
+          timeout --signal=TERM --kill-after=30s 20m \
+            python -m pytest -q --timeout=90 --timeout-method=thread
