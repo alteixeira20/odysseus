@@ -110,6 +110,34 @@ class EffectBridgeTests(unittest.TestCase):
         self.assertEqual(replay.status, ToolResultStatus.SUCCESS)
         self.assertEqual(replay.data["summary"], "patched")
 
+    def test_separate_approval_scopes_do_not_poison_each_other(self):
+        invalid_attempt = begin_tool_effect(
+            self.call,
+            self.context,
+            self.effects,
+            ledger=self.ledger,
+            idempotency_scope="approval-invalid",
+        )
+        self.ledger.fail_effect(invalid_attempt.effect_id, {"code": "approval_invalid"})
+        valid_attempt = begin_tool_effect(
+            self.call,
+            self.context,
+            self.effects,
+            ledger=self.ledger,
+            idempotency_scope="approval-valid",
+        )
+        self.assertTrue(valid_attempt.should_execute)
+        self.assertNotEqual(valid_attempt.effect_id, invalid_attempt.effect_id)
+        repeated_invalid = begin_tool_effect(
+            self.call,
+            self.context,
+            self.effects,
+            ledger=self.ledger,
+            idempotency_scope="approval-invalid",
+        )
+        self.assertFalse(repeated_invalid.should_execute)
+        self.assertEqual(repeated_invalid.status, EffectStatus.FAILED)
+
     def test_ambiguous_external_failure_is_unknown_and_not_retried(self):
         external = (
             Effect(
