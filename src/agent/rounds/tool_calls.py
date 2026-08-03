@@ -226,7 +226,7 @@ def resolve_round_tool_calls(
     round_num: int,
     is_api_model: bool = False,
     allow_fenced_for_api: bool = False,
-    recover_unknown: bool = True,
+    recover_unknown: bool = False,
 ) -> ResolvedToolCalls:
     """Return aligned executable blocks and recoverable unknown native calls."""
 

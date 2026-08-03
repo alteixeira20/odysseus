@@ -67,7 +67,7 @@ async function _decideEffectApproval(event) {
 }
 import { createRuntimeEventReducer, runtimeStateToolStatus } from './runtimeEvents.js?v=20260801runtime2';
 
-  const RESEARCH_TIMEOUT_MS = 360000;
+  const RESEARCH_TIMEOUT_MS = 0; // durable agent/research runs have no destructive browser timer
   const DEFAULT_TIMEOUT_MS = 120000;
   const RESEARCH_SVG = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>';
 
@@ -1127,7 +1127,7 @@ import { createRuntimeEventReducer, runtimeStateToolStatus } from './runtimeEven
           const cutoff = stoppedContent;
           const msgInput = uiModule.el('message');
           if (msgInput) {
-            msgInput.value = 'Your previous response was interrupted. It ended with:\n\n' + cutoff.slice(-500) + '\n\nDo NOT repeat what you already said. Continue exactly from where you were cut off.';
+            msgInput.value = 'Start a recovery turn for the interrupted run. Do not assume prior tool effects were rolled back; continue only from confirmed durable state. Last visible output:\n\n' + cutoff.slice(-500);
             const sb = document.querySelector('.send-btn');
             if (sb) sb.click();
           }
@@ -1767,9 +1767,9 @@ import { createRuntimeEventReducer, runtimeStateToolStatus } from './runtimeEven
 	      const _tState = Storage.loadToggleState();
 	      const _isAgent = (_tState.mode || 'chat') === 'agent' || !!_tState.plan_mode || workspaceAgentIntent;
 
-      // Timeout: 6 min for research and agent mode, 3 min otherwise
+      // Ordinary chat keeps a client timeout; durable agent/research runs do not.
       const timeoutMs = el('research-toggle').checked || _isAgent ? RESEARCH_TIMEOUT_MS : DEFAULT_TIMEOUT_MS;
-      timeoutId = setTimeout(() => {
+      if (timeoutMs > 0) timeoutId = setTimeout(() => {
         if (!abortCtrl.signal.aborted) {
           timedOut = true;
           abortCtrl._reason = 'timeout';
@@ -4031,7 +4031,7 @@ import { createRuntimeEventReducer, runtimeStateToolStatus } from './runtimeEven
               const cutoff = accumulated;
               const msgInput = uiModule.el('message');
               if (msgInput) {
-                msgInput.value = 'Your previous response was interrupted. It ended with:\n\n' + cutoff.slice(-500) + '\n\nDo NOT repeat what you already said. Continue exactly from where you were cut off.';
+                msgInput.value = 'Start a recovery turn for the interrupted run. Do not assume prior tool effects were rolled back; continue only from confirmed durable state. Last visible output:\n\n' + cutoff.slice(-500);
                 const sb = document.querySelector('.send-btn');
                 if (sb) sb.click();
               }

@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from src.database import McpServer, SessionLocal
 
 from src.runtime_paths import get_app_root
+from src.agent.runtime_v3.mcp_guard import build_mcp_child_env, bounded_mcp_result, guarded_call
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,7 @@ def _format_mcp_connection_error(name: str, command: str = "", args: Optional[Li
         return (
             f"{raw_error}\n\n"
             "Browser MCP could not start. On fresh installs, cache the Playwright MCP package once before connecting:\n\n"
-            "npx -y @playwright/mcp@latest --version\n\n"
+            "npx --no-install @playwright/mcp@0.0.78 --version\n\n"
             "Then restart Odysseus and reconnect the Browser MCP server."
         )
 
@@ -190,7 +191,7 @@ class McpManager:
             server_params = StdioServerParameters(
                 command=command,
                 args=args,
-                env={**os.environ, **env} if env else None,
+                env=build_mcp_child_env(env),
             )
 
             stack = AsyncExitStack()
@@ -465,74 +466,25 @@ class McpManager:
             }
 
     async def call_tool(self, qualified_name: str, arguments: Dict) -> Dict:
-        """Call an MCP tool by its qualified name (mcp__{server_id}__{tool_name}).
-
-        Returns a result dict compatible with agent_tools format.
-        """
+        """Call one MCP tool exactly once. Transport ambiguity is never replayed."""
         parts = qualified_name.split("__", 2)
         if len(parts) != 3 or parts[0] != "mcp":
             return {"error": f"Invalid MCP tool name: {qualified_name}", "exit_code": 1}
-
-        server_id = parts[1]
-        tool_name = parts[2]
-
+        server_id, tool_name = parts[1], parts[2]
         session = self._sessions.get(server_id)
         if not session:
             return {"error": f"MCP server not connected: {server_id}", "exit_code": 1}
-
         try:
-            result = await self._do_call(session, tool_name, arguments)
-        except Exception as e:
-            # Auto-reconnect for builtin servers whose subprocess may have died
-            if self.is_builtin(server_id):
-                logger.warning(f"MCP call failed for {qualified_name}, attempting reconnect: {e}")
-                reconnected = await self._reconnect_builtin(server_id)
-                if reconnected:
-                    session = self._sessions.get(server_id)
-                    if session:
-                        try:
-                            result = await self._do_call(session, tool_name, arguments)
-                        except Exception as e2:
-                            logger.error(f"MCP tool call failed after reconnect: {qualified_name}: {e2}")
-                            return {"error": str(e2), "exit_code": 1}
-                    else:
-                        return {"error": f"Reconnected but no session for {server_id}", "exit_code": 1}
-                else:
-                    logger.error(f"MCP reconnect failed for {server_id}")
-                    return {"error": f"MCP server crashed and reconnect failed: {server_id}", "exit_code": 1}
-            else:
-                logger.error(f"MCP tool call failed: {qualified_name}: {e}")
-                return {"error": str(e), "exit_code": 1}
-
-        return result
-
-    async def _do_call(self, session, tool_name: str, arguments: Dict) -> Dict:
-        """Execute a single MCP tool call and return result dict."""
-        result = await session.call_tool(tool_name, arguments)
-        output_parts = []
-        images = []
-        for content in result.content:
-            if hasattr(content, 'text'):
-                output_parts.append(content.text)
-            elif getattr(content, 'type', '') == 'image' and hasattr(content, 'data'):
-                # Image content (e.g. Playwright screenshots)
-                mime = getattr(content, 'mimeType', 'image/png')
-                images.append({"data": content.data, "mimeType": mime})
-                output_parts.append(f"[Screenshot captured ({mime})]")
-            elif hasattr(content, 'data'):
-                output_parts.append(str(content.data))
-
-        output = "\n".join(output_parts)
-        is_error = getattr(result, 'isError', False)
-
-        result_dict = {
-            "stdout": output if not is_error else "",
-            "stderr": output if is_error else "",
-            "exit_code": 1 if is_error else 0,
-        }
-        if images:
-            result_dict["images"] = images
-        return result_dict
+            result = await guarded_call(lambda: session.call_tool(tool_name, arguments))
+            return bounded_mcp_result(result)
+        except asyncio.TimeoutError:
+            logger.error("MCP tool call timed out without safe retry: %s", qualified_name)
+            return {"error": "MCP call timed out; effect status may be unknown and was not retried", "exit_code": 1, "effect_unknown": True}
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error("MCP tool call failed without automatic retry: %s: %s", qualified_name, exc)
+            return {"error": str(exc), "exit_code": 1, "effect_unknown": True}
 
     async def _reconnect_builtin(self, server_id: str) -> bool:
         """Tear down and reconnect a crashed builtin MCP server."""
