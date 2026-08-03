@@ -10,6 +10,19 @@ def replace_once(path: str, old: str, new: str) -> None:
     target.write_text(text.replace(old, new, 1), encoding="utf-8")
 
 
+def replace_in_fallback(old: str, new: str) -> None:
+    target = Path("src/llm_core.py")
+    text = target.read_text(encoding="utf-8")
+    marker = "async def stream_llm_with_fallback("
+    if text.count(marker) != 1:
+        raise RuntimeError("stream_llm_with_fallback definition changed")
+    prefix, body = text.split(marker, 1)
+    count = body.count(old)
+    if count != 1:
+        raise RuntimeError(f"fallback body: expected one anchor, found {count}: {old[:160]!r}")
+    target.write_text(prefix + marker + body.replace(old, new, 1), encoding="utf-8")
+
+
 replace_once(
     "src/llm_core.py",
     "from src.model_context import get_context_length, DEFAULT_CONTEXT, is_local_endpoint\n",
@@ -20,8 +33,7 @@ replace_once(
     "    project_messages_for_candidate,\n"
     ")\n",
 )
-replace_once(
-    "src/llm_core.py",
+replace_in_fallback(
     '''    cands = _dedupe_candidates(candidates)
     if not cands:
 ''',
@@ -39,8 +51,7 @@ replace_once(
     if not cands:
 ''',
 )
-replace_once(
-    "src/llm_core.py",
+replace_in_fallback(
     '''        pending_metadata = []
         candidate_id = secrets.token_urlsafe(18)
         async for chunk in stream_llm(url, model, messages, headers=headers, **kwargs):
