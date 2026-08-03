@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Runtime</title>
+  <link rel="stylesheet" href="/static/css/agent-runtime.css">
+</head>
+<body>
+  <header class="runtime-header">
+    <div>
+      <p class="eyebrow">Odysseus Runtime V3</p>
+      <h1>Agent execution inspector</h1>
+      <p class="subtitle">Durable runs, sequenced events, effect certainty, cancellation, and recovery.</p>
+    </div>
+    <div class="header-actions">
+      <a class="button secondary" href="/">Back to chat</a>
+      <button class="button" id="refreshRuns" type="button">Refresh</button>
+    </div>
+  </header>
+
+  <main class="runtime-layout">
+    <aside class="panel run-panel" aria-label="Agent runs">
+      <div class="panel-heading">
+        <h2>Runs</h2>
+        <label>
+          <span>Status</span>
+          <select id="statusFilter">
+            <option value="">All</option>
+            <option value="running">Running</option>
+            <option value="interrupted">Interrupted</option>
+            <option value="incomplete">Incomplete</option>
+            <option value="failed">Failed</option>
+            <option value="completed">Completed</option>
+            <option value="cancelled">Cancelled</option>
+          </select>
+        </label>
+      </div>
+      <div id="runList" class="run-list" aria-live="polite"></div>
+    </aside>
+
+    <section class="panel detail-panel" aria-label="Selected run details">
+      <div id="emptyState" class="empty-state">
+        <h2>Select a run</h2>
+        <p>The inspector streams durable events and remains usable after a server restart.</p>
+      </div>
+      <div id="runDetail" hidden>
+        <div class="detail-heading">
+          <div>
+            <p class="eyebrow" id="runWorkload"></p>
+            <h2 id="runTitle"></h2>
+            <p id="runReason" class="subtitle"></p>
+          </div>
+          <div class="header-actions">
+            <span id="liveState" class="live-state">Disconnected</span>
+            <button class="button danger" id="cancelRun" type="button">Cancel run</button>
+          </div>
+        </div>
+
+        <dl id="runMetrics" class="metric-grid"></dl>
+
+        <section class="detail-section">
+          <div class="section-heading">
+            <h3>Effects</h3>
+            <span id="effectSummary" class="muted"></span>
+          </div>
+          <div id="effectList" class="effect-list"></div>
+        </section>
+
+        <section class="detail-section">
+          <div class="section-heading">
+            <h3>Event timeline</h3>
+            <button class="button secondary compact" id="reloadEvents" type="button">Replay</button>
+          </div>
+          <ol id="eventTimeline" class="event-timeline"></ol>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="reconcileDialog">
+    <form method="dialog" id="reconcileForm">
+      <h2>Reconcile unknown effect</h2>
+      <p id="reconcileTarget" class="muted"></p>
+      <label>
+        <span>Verified outcome</span>
+        <select id="reconcileOutcome" required>
+          <option value="committed">Committed</option>
+          <option value="failed">Failed</option>
+        </select>
+      </label>
+      <label>
+        <span>Evidence note</span>
+        <textarea id="reconcileNote" minlength="8" maxlength="4000" required placeholder="Explain how the outcome was independently verified."></textarea>
+      </label>
+      <div class="dialog-actions">
+        <button class="button secondary" value="cancel">Cancel</button>
+        <button class="button" id="confirmReconcile" value="default">Record reconciliation</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <script type="module" src="/static/js/agentRuntimeInspector.js"></script>
+</body>
+</html>
