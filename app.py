@@ -1020,6 +1020,18 @@ async def _startup_event():
     from src.agent_runs import enforce_single_runtime_worker
 
     enforce_single_runtime_worker()
+    try:
+        from src.agent.runtime_v3.workspace_journal import get_workspace_journal
+
+        recovered_transactions = await asyncio.to_thread(get_workspace_journal().recover)
+        if recovered_transactions:
+            logger.warning(
+                "Recovered %d interrupted workspace transaction(s) before serving traffic",
+                len(recovered_transactions),
+            )
+    except Exception:
+        logger.exception("Workspace transaction recovery failed; refusing startup")
+        raise
     webhook_manager.set_loop(asyncio.get_running_loop())
     # Wipe any leftover incognito sessions from previous process — they're
     # ephemeral by design and must not survive a restart.

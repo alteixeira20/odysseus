@@ -123,6 +123,28 @@ def _stage(path: str, data: bytes, mode: int, transaction_id: str, role: str) ->
         raise
 
 
+def _payload_path(path: str, transaction_id: str, role: str, index: int) -> str:
+    directory = os.path.dirname(path) or "."
+    basename = os.path.basename(path)
+    return os.path.join(directory, f".{basename}.ody-v3-{transaction_id}-{role}-{index}")
+
+
+def _write_payload(path: str, data: bytes, mode: int) -> None:
+    directory = os.path.dirname(path) or "."
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    descriptor = os.open(path, flags, mode)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(path, mode)
+        _fsync_directory(directory)
+    except BaseException:
+        _safe_unlink(path)
+        raise
+
+
 def _safe_unlink(path: str | None) -> None:
     if not path:
         return
@@ -247,9 +269,27 @@ class WorkspaceTransactionJournal:
             self._recover_locked()
             transaction_id = uuid.uuid4().hex
             manifest_path = self.pending_dir / f"{transaction_id}.json"
-            manifest = self._prepare_manifest(transaction_id, prepared)
+            manifest = self._plan_manifest(transaction_id, prepared)
             try:
+                # The manifest exists before any payload is created, so a kill
+                # during preparation leaves a fully discoverable transaction.
                 self._write_manifest(manifest_path, manifest)
+                if fault_injector:
+                    fault_injector("after_manifest", -1, manifest)
+                self._stage_payloads(manifest_path, manifest, fault_injector=fault_injector)
+                self._set_phase(manifest_path, manifest, "prepared")
+                if fault_injector:
+                    fault_injector("after_payloads_ready", -1, manifest)
+                try:
+                    self._verify_all_originals(manifest["operations"])
+                except BaseException:
+                    # No destination has changed yet. Preserve any external edit,
+                    # delete only our hidden payloads, and close the transaction.
+                    manifest["phase"] = "aborted_concurrent_modification"
+                    self._write_manifest(manifest_path, manifest)
+                    self._cleanup_payload_files(manifest)
+                    self._archive_and_remove(manifest_path, manifest)
+                    raise
                 self._set_phase(manifest_path, manifest, "committing")
                 for index, operation in enumerate(manifest["operations"]):
                     self._verify_original(operation)
@@ -273,6 +313,8 @@ class WorkspaceTransactionJournal:
                 # payload files remain for a fresh process to recover.
                 raise
             except BaseException:
+                if manifest.get("phase") == "aborted_concurrent_modification":
+                    raise
                 try:
                     self._rollback(manifest_path, manifest)
                 except BaseException as rollback_exc:
@@ -337,68 +379,92 @@ class WorkspaceTransactionJournal:
             )
         return receipts
 
-    def _prepare_manifest(self, transaction_id: str, prepared: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    def _plan_manifest(self, transaction_id: str, prepared: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         operations: list[dict[str, Any]] = []
         seen: set[str] = set()
-        created_payloads: list[str] = []
-        try:
-            for index, item in enumerate(prepared):
-                path = os.path.abspath(os.fspath(item["path"]))
-                if path in seen:
-                    raise ValueError(f"duplicate transaction destination: {path}")
-                seen.add(path)
-                kind = str(item["kind"])
-                if kind not in {"add", "update", "delete"}:
-                    raise ValueError(f"unsupported transaction operation: {kind}")
-                snapshot = item["snapshot"]
-                old_exists = bool(snapshot["exists"])
-                old_data = bytes(snapshot.get("data") or b"")
-                old_hash = _sha256_bytes(old_data) if old_exists else None
-                supplied_hash = snapshot.get("sha256")
-                if old_hash != supplied_hash:
-                    raise ValueError(f"snapshot digest mismatch for {path}")
-                mode = int(snapshot.get("mode") or 0o644)
-                new_exists = kind != "delete"
-                new_data = str(item.get("new") or "").encode("utf-8") if new_exists else b""
-                new_hash = _sha256_bytes(new_data) if new_exists else None
-                backup = None
-                staged = None
-                if old_exists:
-                    backup = _stage(path, old_data, mode, transaction_id, f"backup-{index}")
-                    created_payloads.append(backup)
-                if new_exists:
-                    staged = _stage(path, new_data, mode, transaction_id, f"new-{index}")
-                    created_payloads.append(staged)
-                operations.append(
-                    {
-                        "index": index,
-                        "kind": kind,
-                        "path": path,
-                        "directory": os.path.dirname(path) or ".",
-                        "mode": mode,
-                        "old_exists": old_exists,
-                        "old_sha256": old_hash,
-                        "new_exists": new_exists,
-                        "new_sha256": new_hash,
-                        "backup_path": backup,
-                        "staged_path": staged,
-                    }
-                )
-            manifest = {
-                "version": self.VERSION,
-                "transaction_id": transaction_id,
-                "phase": "prepared",
-                "created_at": time.time(),
-                "updated_at": time.time(),
-                "applied_count": 0,
-                "operations": operations,
-            }
-            manifest["manifest_sha256"] = self._manifest_digest(manifest)
-            return manifest
-        except BaseException:
-            for payload in created_payloads:
-                _safe_unlink(payload)
-            raise
+        for index, item in enumerate(prepared):
+            path = os.path.abspath(os.fspath(item["path"]))
+            if path in seen:
+                raise ValueError(f"duplicate transaction destination: {path}")
+            seen.add(path)
+            kind = str(item["kind"])
+            if kind not in {"add", "update", "delete"}:
+                raise ValueError(f"unsupported transaction operation: {kind}")
+            snapshot = item["snapshot"]
+            old_exists = bool(snapshot["exists"])
+            old_data = bytes(snapshot.get("data") or b"")
+            old_hash = _sha256_bytes(old_data) if old_exists else None
+            supplied_hash = snapshot.get("sha256")
+            if old_hash != supplied_hash:
+                raise ValueError(f"snapshot digest mismatch for {path}")
+            mode = int(snapshot.get("mode") or 0o644)
+            new_exists = kind != "delete"
+            new_data = str(item.get("new") or "").encode("utf-8") if new_exists else b""
+            new_hash = _sha256_bytes(new_data) if new_exists else None
+            operations.append(
+                {
+                    "index": index,
+                    "kind": kind,
+                    "path": path,
+                    "directory": os.path.dirname(path) or ".",
+                    "mode": mode,
+                    "old_exists": old_exists,
+                    "old_sha256": old_hash,
+                    "new_exists": new_exists,
+                    "new_sha256": new_hash,
+                    "backup_path": (
+                        _payload_path(path, transaction_id, "backup", index)
+                        if old_exists else None
+                    ),
+                    "staged_path": (
+                        _payload_path(path, transaction_id, "new", index)
+                        if new_exists else None
+                    ),
+                    # Payload bytes exist only in memory until the preparing
+                    # manifest has been durably written.
+                    "_old_data": old_data,
+                    "_new_data": new_data,
+                }
+            )
+        manifest = {
+            "version": self.VERSION,
+            "transaction_id": transaction_id,
+            "phase": "preparing",
+            "created_at": time.time(),
+            "updated_at": time.time(),
+            "applied_count": 0,
+            "operations": operations,
+        }
+        return manifest
+
+    def _serializable_manifest(self, manifest: Mapping[str, Any]) -> dict[str, Any]:
+        cloned = dict(manifest)
+        cloned["operations"] = [
+            {key: value for key, value in operation.items() if not key.startswith("_")}
+            for operation in manifest["operations"]
+        ]
+        return cloned
+
+    def _stage_payloads(
+        self,
+        manifest_path: Path,
+        manifest: dict[str, Any],
+        *,
+        fault_injector=None,
+    ) -> None:
+        for index, operation in enumerate(manifest["operations"]):
+            backup = operation.get("backup_path")
+            staged = operation.get("staged_path")
+            if backup:
+                _write_payload(backup, operation["_old_data"], int(operation["mode"]))
+            if staged:
+                _write_payload(staged, operation["_new_data"], int(operation["mode"]))
+            operation.pop("_old_data", None)
+            operation.pop("_new_data", None)
+            manifest["prepared_count"] = index + 1
+            self._write_manifest(manifest_path, manifest)
+            if fault_injector:
+                fault_injector("after_payload", index, operation)
 
     def _manifest_digest(self, manifest: Mapping[str, Any]) -> str:
         body = {key: value for key, value in manifest.items() if key != "manifest_sha256"}
@@ -406,8 +472,10 @@ class WorkspaceTransactionJournal:
 
     def _write_manifest(self, path: Path, manifest: dict[str, Any]) -> None:
         manifest["updated_at"] = time.time()
-        manifest["manifest_sha256"] = self._manifest_digest(manifest)
-        _atomic_json(path, manifest)
+        serializable = self._serializable_manifest(manifest)
+        serializable["manifest_sha256"] = self._manifest_digest(serializable)
+        manifest["manifest_sha256"] = serializable["manifest_sha256"]
+        _atomic_json(path, serializable)
 
     def _load_manifest(self, path: Path) -> dict[str, Any]:
         try:
@@ -457,6 +525,10 @@ class WorkspaceTransactionJournal:
         manifest["phase"] = phase
         self._write_manifest(path, manifest)
 
+    def _verify_all_originals(self, operations: Sequence[Mapping[str, Any]]) -> None:
+        for operation in operations:
+            self._verify_original(operation)
+
     def _verify_original(self, operation: Mapping[str, Any]) -> None:
         exists, digest = _path_state(operation["path"])
         if exists != bool(operation["old_exists"]) or digest != operation["old_sha256"]:
@@ -478,6 +550,12 @@ class WorkspaceTransactionJournal:
 
     def _restore_old(self, operation: Mapping[str, Any]) -> None:
         path = operation["path"]
+        current_exists, current_hash = _path_state(path)
+        if (
+            current_exists == bool(operation["old_exists"])
+            and current_hash == operation["old_sha256"]
+        ):
+            return
         if operation["old_exists"]:
             backup = operation.get("backup_path")
             if not backup or not os.path.isfile(backup):
@@ -509,6 +587,14 @@ class WorkspaceTransactionJournal:
             raise WorkspaceRecoveryRequired(f"rollback verification failed for {path}")
 
     def _rollback(self, manifest_path: Path, manifest: dict[str, Any]) -> None:
+        # Never overwrite a third-party edit. Automatic rollback is safe only
+        # when every path is in exactly the recorded old or recorded new state.
+        for operation in manifest["operations"]:
+            state = self._operation_state(operation)
+            if state == "other":
+                raise WorkspaceRecoveryRequired(
+                    f"destination changed outside the transaction: {operation['path']}"
+                )
         self._set_phase(manifest_path, manifest, "rolling_back")
         for reverse_index, operation in enumerate(reversed(manifest["operations"]), start=1):
             self._restore_old(operation)
@@ -517,6 +603,14 @@ class WorkspaceTransactionJournal:
         self._set_phase(manifest_path, manifest, "rolled_back")
         self._cleanup_payload_files(manifest)
         self._archive_and_remove(manifest_path, manifest)
+
+    def _operation_state(self, operation: Mapping[str, Any]) -> str:
+        exists, digest = _path_state(operation["path"])
+        if exists == bool(operation["old_exists"]) and digest == operation["old_sha256"]:
+            return "old"
+        if exists == bool(operation["new_exists"]) and digest == operation["new_sha256"]:
+            return "new"
+        return "other"
 
     def _all_match_new(self, operations: Sequence[Mapping[str, Any]]) -> bool:
         for operation in operations:
@@ -577,5 +671,4 @@ def get_workspace_journal() -> WorkspaceTransactionJournal:
         with _JOURNAL_LOCK:
             if _JOURNAL is None:
                 _JOURNAL = WorkspaceTransactionJournal()
-                _JOURNAL.recover()
     return _JOURNAL
