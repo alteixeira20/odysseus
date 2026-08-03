@@ -15,6 +15,7 @@ on:
       - package-lock.json
       - tests/runtime_v3/**
       - scripts/postmerge_runtime_v3_fix.py
+      - scripts/postmerge_playwright_bin_fix.py
       - .github/workflows/postmerge-runtime-v3-audit.yml
 
 permissions:
@@ -40,6 +41,9 @@ jobs:
       - name: Pin browser MCP in package lock
         run: npm install --package-lock-only --ignore-scripts --save-exact @playwright/mcp@0.0.68
 
+      - name: Align generated integration with package-declared binary
+        run: python scripts/postmerge_playwright_bin_fix.py
+
       - name: Apply deterministic post-merge repairs
         run: python scripts/postmerge_runtime_v3_fix.py
 
@@ -47,16 +51,16 @@ jobs:
         run: |
           set -euo pipefail
           npm ci --omit=dev --ignore-scripts
-          test -x node_modules/.bin/mcp-server-playwright
+          test -x node_modules/.bin/playwright-mcp
           node - <<'NODE'
           const pkg = require('./node_modules/@playwright/mcp/package.json');
           if (pkg.version !== '0.0.68') throw new Error(`unexpected version ${pkg.version}`);
           const bins = typeof pkg.bin === 'string' ? { default: pkg.bin } : pkg.bin;
-          if (!bins || !Object.prototype.hasOwnProperty.call(bins, 'mcp-server-playwright')) {
+          if (!bins || !Object.prototype.hasOwnProperty.call(bins, 'playwright-mcp')) {
             throw new Error(`unexpected bin mapping: ${JSON.stringify(pkg.bin)}`);
           }
           NODE
-          timeout 15s node_modules/.bin/mcp-server-playwright --help >/tmp/mcp-help.txt
+          timeout 15s node_modules/.bin/playwright-mcp --help >/tmp/mcp-help.txt
           grep -qi playwright /tmp/mcp-help.txt
           npm audit --omit=dev --audit-level=high
 
@@ -100,6 +104,7 @@ jobs:
             .github/workflows/runtime-v3-mcp-cleanup.yml \
             .github/workflows/runtime-v3-mcp-deployment-builder.yml \
             scripts/postmerge_runtime_v3_fix.py \
+            scripts/postmerge_playwright_bin_fix.py \
             scripts/runtime_v3_mcp_deployment_patch.py \
             scripts/runtime_v3_mcp_deployment_postpatch.py \
             scripts/runtime_v3_mcp_setup_anchor_fix.py
