@@ -2,12 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import ipaddress
 import json
 import os
 from typing import Any, Callable, Iterable, Mapping, Sequence
 from urllib.parse import urlparse, urlunparse
-
-from src.model_context import estimate_tokens, get_context_length, is_local_endpoint
 
 from .context import ContextBudgetExceeded, ProjectedContext, project_context
 
@@ -27,8 +26,6 @@ class TrustDomain:
     endpoint_key: str
 
     def public_dict(self) -> dict[str, str]:
-        # Never expose paths, query strings, headers, or credentials in routing
-        # diagnostics. Host is intentionally hashed into a stable category key.
         import hashlib
 
         return {
@@ -73,6 +70,13 @@ _PROVIDER_HOSTS = {
     "generativelanguage.googleapis.com": "google",
     "api.moonshot.ai": "moonshot",
 }
+_LOCAL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1", "host.docker.internal"}
+_PRIVATE_NETWORKS = (
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("100.64.0.0/10"),
+)
 
 
 def _truthy(name: str, default: bool = False) -> bool:
@@ -91,9 +95,21 @@ def load_fallback_policy() -> FallbackPolicy:
     except ValueError:
         policy = FallbackPolicy.SAME_ENDPOINT
     if policy is FallbackPolicy.EXPLICIT_CROSS_PROVIDER:
-        # The permissive policy requires the dedicated, conspicuous opt-in.
         return FallbackPolicy.SAME_ENDPOINT
     return policy
+
+
+def _is_local_url(url: str) -> bool:
+    try:
+        host = (urlparse(str(url or "")).hostname or "").lower()
+        if host in _LOCAL_HOSTS:
+            return True
+        ip = ipaddress.ip_address(host)
+        return any(ip in network for network in _PRIVATE_NETWORKS)
+    except ValueError:
+        return False
+    except Exception:
+        return False
 
 
 def _normalize_endpoint_key(url: str) -> str:
@@ -123,7 +139,7 @@ def _provider_family(url: str) -> str:
         return "anthropic"
     if "ollama" in host or parsed.port == 11434 or path.endswith("/api/chat"):
         return "ollama"
-    if is_local_endpoint(url):
+    if _is_local_url(url):
         return "local_openai_compatible"
     return host or "unknown_remote"
 
@@ -132,7 +148,7 @@ def trust_domain(url: str) -> TrustDomain:
     parsed = urlparse(str(url or ""))
     host = (parsed.hostname or "").lower()
     return TrustDomain(
-        locality="local" if is_local_endpoint(url) else "remote",
+        locality="local" if _is_local_url(url) else "remote",
         provider_family=_provider_family(url),
         host=host,
         endpoint_key=_normalize_endpoint_key(url),
@@ -198,6 +214,18 @@ def _tool_schema_tokens(tools: Sequence[Mapping[str, Any]] | None) -> int:
     return int(len(raw) * 0.3) + (8 * len(tools))
 
 
+def _default_context_length(endpoint_url: str, model: str) -> int:
+    from src.model_context import get_context_length
+
+    return get_context_length(endpoint_url, model)
+
+
+def _default_estimate(messages: list[dict]) -> int:
+    from src.model_context import estimate_tokens
+
+    return estimate_tokens(messages)
+
+
 def project_messages_for_candidate(
     messages: Sequence[Mapping[str, Any]],
     *,
@@ -206,9 +234,11 @@ def project_messages_for_candidate(
     max_output_tokens: int = 0,
     tools: Sequence[Mapping[str, Any]] | None = None,
     minimum_input_tokens: int = 512,
-    context_length_fn: Callable[[str, str], int] = get_context_length,
-    estimate_tokens_fn: Callable[[list[dict]], int] = estimate_tokens,
+    context_length_fn: Callable[[str, str], int] | None = None,
+    estimate_tokens_fn: Callable[[list[dict]], int] | None = None,
 ) -> CandidateProjection:
+    context_length_fn = context_length_fn or _default_context_length
+    estimate_tokens_fn = estimate_tokens_fn or _default_estimate
     context_window = max(1024, int(context_length_fn(endpoint_url, model)))
     requested_output = int(max_output_tokens or 0)
     if requested_output <= 0:
