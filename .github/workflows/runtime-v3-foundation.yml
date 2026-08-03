@@ -7,6 +7,7 @@ on:
     paths:
       - scripts/runtime_v3_patch_existing.py
       - scripts/runtime_v3_pretest_fix.py
+      - scripts/runtime_v3_postpatch_fix.py
       - .github/workflows/runtime-v3-foundation.yml
       - src/agent/runtime_v3/**
       - tests/runtime_v3/**
@@ -36,6 +37,9 @@ jobs:
 
       - name: Apply deterministic integration patches
         run: python scripts/runtime_v3_patch_existing.py
+
+      - name: Repair generated recovery expressions
+        run: python scripts/runtime_v3_postpatch_fix.py
 
       - name: Compile changed Python modules
         run: |
