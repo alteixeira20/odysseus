@@ -29,7 +29,7 @@ _BUILTIN_SERVERS = {
 _BUILTIN_NODE_SERVERS = {
     "builtin_browser": {
         "name": "Built-in: Browser",
-        "binary": "mcp-server-playwright",
+        "binary": "playwright-mcp",
         "args": ["--headless", "--caps", "vision"],
     }
 }
