@@ -136,7 +136,9 @@ class EffectBridgeTests(unittest.TestCase):
             idempotency_scope="approval-invalid",
         )
         self.assertFalse(repeated_invalid.should_execute)
-        self.assertEqual(repeated_invalid.status, EffectStatus.FAILED)
+        blocked = duplicate_effect_result(self.call, repeated_invalid)
+        self.assertEqual(blocked.status, ToolResultStatus.INCOMPLETE)
+        self.assertTrue(blocked.data["reconciliation_required"])
 
     def test_ambiguous_external_failure_is_unknown_and_not_retried(self):
         external = (
