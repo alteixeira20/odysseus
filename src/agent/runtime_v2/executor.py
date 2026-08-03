@@ -48,7 +48,7 @@ def _tool_error(
     )
 
 
-async def execute_normalized_tool_call(
+async def _execute_normalized_tool_call_impl(
     call: NormalizedToolCall,
     execution_context: AgentExecutionContext,
     *,
@@ -518,3 +518,22 @@ async def execute_normalized_tool_call(
             attempted_effects=effects,
             unknown_effects=effects if effect_started else (),
         )
+
+
+async def execute_normalized_tool_call(
+    call: NormalizedToolCall,
+    execution_context: AgentExecutionContext,
+    *,
+    progress_cb=None,
+    approval_id: Optional[str] = None,
+) -> ToolResult:
+    """Execute one canonical call behind a durable idempotency/effect lease."""
+    from src.agent.runtime_v3.executor_bridge import execute_with_durable_effects
+
+    return await execute_with_durable_effects(
+        call,
+        execution_context,
+        implementation=_execute_normalized_tool_call_impl,
+        progress_cb=progress_cb,
+        approval_id=approval_id,
+    )

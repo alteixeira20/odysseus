@@ -195,6 +195,20 @@ class DurableRunLedger:
             row = self._conn.execute("SELECT * FROM agent_runs WHERE run_id = ?", (run_id,)).fetchone()
         return self._record(row) if row else None
 
+    def latest_run_for_session(self, session_id: str) -> RunRecord | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM agent_runs WHERE session_id=? ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                (str(session_id),),
+            ).fetchone()
+        return self._record(row) if row else None
+
+    def session_run_relation(self, session_id: str, run_id: str) -> str:
+        latest = self.latest_run_for_session(session_id)
+        if latest is None:
+            return "unknown"
+        return "current" if latest.run_id == str(run_id) else "superseded"
+
     def transition(self, run_id: str, status: RunStatus, *, reason: str | None = None,
                    resumable: bool | None = None, expected_revision: int | None = None,
                    error: Mapping[str, Any] | None = None) -> RunRecord:

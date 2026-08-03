@@ -86,6 +86,7 @@ class _Run:
         "subscribers",
         "task",
         "terminal",
+        "terminal_callback",
         "execution_context",
         "state_machine",
     )
@@ -95,6 +96,7 @@ class _Run:
         mode: RunMode,
         owner: Optional[str],
         execution_context: Optional[AgentExecutionContext],
+        terminal_callback=None,
     ) -> None:
         self.base_seq = 0
         self.buffer: list[str] = []
@@ -109,6 +111,7 @@ class _Run:
         self.mode = mode
         self.owner = owner
         self.terminal: Optional[RunTerminal] = None
+        self.terminal_callback = terminal_callback
         self.execution_context = execution_context
         self.state_machine = RunStateMachine(
             execution_context.run_id if execution_context else f"legacy:{id(self)}"
@@ -515,6 +518,18 @@ def _commit_terminal(
     *,
     runtime_wire: Optional[str] = None,
 ) -> None:
+    callback = run.terminal_callback
+    run.terminal_callback = None
+    if callback is not None:
+        try:
+            callback(terminal)
+        except Exception:
+            logger.exception("run terminal callback failed")
+            terminal = _make_terminal(
+                RunDisposition.ERROR,
+                reason="terminal_callback_failed",
+                resumable=True,
+            )
     run.terminal = terminal
     run.status = _terminal_status(terminal.disposition)
     runtime_state = _runtime_state_for_disposition(terminal.disposition)
@@ -793,6 +808,7 @@ def start(
     execution_context: Optional[AgentExecutionContext] = None,
     prepared_turn: Optional[PreparedTurn] = None,
     commit_callback=None,
+    terminal_callback=None,
 ) -> _Run:
     """Start a run with explicit ownership semantics.
 
@@ -840,7 +856,7 @@ def start(
         previous_task: Optional[asyncio.Task] = None
         if previous and previous.task and not previous.task.done():
             previous_task = previous.task
-        run = _Run(mode, owner, execution_context)
+        run = _Run(mode, owner, execution_context, terminal_callback)
         _RUNS[session_id] = run
         run.task = asyncio.create_task(_drain(session_id, agen, previous_task))
         if previous:
@@ -885,6 +901,36 @@ def start(
 
     run.task.add_done_callback(_ensure_terminal)
     return run
+
+
+def start_if_idle(
+    session_id: str,
+    agen: AsyncGenerator[str, None],
+    *,
+    mode: RunMode = RunMode.BACKGROUND,
+    owner: Optional[str] = None,
+    execution_context: Optional[AgentExecutionContext] = None,
+    commit_callback=None,
+    terminal_callback=None,
+) -> Optional[_Run]:
+    """Atomically start background work only while the session is idle.
+
+    Unlike a separate ``is_active`` check followed by ``start``, this cannot
+    replace a foreground run that began between those operations.
+    """
+    with _RUNS_LOCK:
+        current = _RUNS.get(str(session_id))
+        if current is not None and current.status == "running":
+            return None
+        return start(
+            str(session_id),
+            agen,
+            mode=mode,
+            owner=owner,
+            execution_context=execution_context,
+            commit_callback=commit_callback,
+            terminal_callback=terminal_callback,
+        )
 
 
 def begin_turn(*, session_id: str, owner: Optional[str]) -> TurnLease:
@@ -1035,6 +1081,7 @@ __all__ = [
     "is_active",
     "list_runs",
     "start",
+    "start_if_idle",
     "stop",
     "subscribe",
 ]

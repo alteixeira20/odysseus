@@ -119,7 +119,9 @@ async def _persist_recovery_notice(sm, sess, rec: dict, reason: str) -> bool:
     )
 
     async def notice_source():
-        yield 'data: {"type":"run_state","state":"completed","terminal":true,"reason":"background_notice"}\n\n'
+        # Let the run manager construct the semantic terminal. A hand-authored
+        # Runtime V2 event would lack run identity and sequence fields.
+        yield 'data: {"delta":""}\n\n'
         yield "data: [DONE]\n\n"
 
     from src import agent_runs
