@@ -13,6 +13,11 @@ from contextlib import asynccontextmanager
 from fastapi import HTTPException
 from typing import Optional, Dict, List, Tuple
 from src.model_context import get_context_length, DEFAULT_CONTEXT, is_local_endpoint
+from src.agent.runtime_v3.context import ContextBudgetExceeded
+from src.agent.runtime_v3.routing import (
+    filter_fallback_candidates,
+    project_messages_for_candidate,
+)
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
@@ -3149,7 +3154,17 @@ async def stream_llm_with_fallback(
 
     Yields the same SSE chunk protocol as stream_llm.
     """
-    cands = _dedupe_candidates(candidates)
+    fallback_plan = filter_fallback_candidates(_dedupe_candidates(candidates))
+    cands = list(fallback_plan.accepted)
+    for rejected in fallback_plan.rejected:
+        logger.warning(
+            "[fallback-policy] rejected candidate index=%s model=%s reason=%s policy=%s trust=%s",
+            rejected.index,
+            rejected.model,
+            rejected.reason,
+            fallback_plan.policy.value,
+            dict(rejected.trust_domain),
+        )
     if not cands:
         yield f'event: error\ndata: {json.dumps({"error": "No model endpoint configured", "status": 503})}\n\n'
         return
@@ -3162,7 +3177,50 @@ async def stream_llm_with_fallback(
         retried = False
         pending_metadata = []
         candidate_id = secrets.token_urlsafe(18)
-        async for chunk in stream_llm(url, model, messages, headers=headers, **kwargs):
+        try:
+            projection = project_messages_for_candidate(
+                messages,
+                endpoint_url=url,
+                model=model,
+                max_output_tokens=int(kwargs.get("max_tokens") or 0),
+                tools=kwargs.get("tools"),
+            )
+            candidate_messages = list(projection.messages)
+            logger.info(
+                "[fallback-context] candidate=%s index=%s context=%s input_budget=%s estimated=%s dropped=%s",
+                model,
+                i,
+                projection.context_window,
+                projection.input_budget,
+                projection.estimated_tokens,
+                projection.dropped_messages,
+            )
+        except ContextBudgetExceeded as exc:
+            context_error = (
+                "event: error\n"
+                + "data: "
+                + json.dumps(
+                    {
+                        "error": "Candidate context cannot preserve critical instructions",
+                        "status": 413,
+                        "error_kind": "context_budget",
+                        "model": model,
+                    }
+                )
+                + "\n\n"
+            )
+            logger.warning(
+                "[fallback-context] rejected candidate index=%s model=%s: %s",
+                i,
+                model,
+                exc,
+            )
+            if not is_last:
+                last_error = context_error
+                continue
+            yield context_error
+            return
+        async for chunk in stream_llm(url, model, candidate_messages, headers=headers, **kwargs):
             if chunk.startswith("event: error"):
                 if not emitted and not is_last:
                     # Pre-content failure with fallbacks left — swallow and
