@@ -24,7 +24,7 @@ permissions:
 
 concurrency:
   group: postmerge-runtime-v3-${{ github.event.pull_request.number }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   repair-and-verify:
@@ -122,6 +122,7 @@ jobs:
             src/agent/runtime_v3/operations.py \
             src/builtin_mcp.py \
             tests/runtime_v3/test_mcp_deployment.py \
+            tests/runtime_v3/test_mcp_local_binary.py \
             tests/runtime_v3/test_postmerge_audit.py
           if git diff --cached --quiet; then
             echo "No verified changes to commit"
