@@ -6,6 +6,7 @@ on:
       - agent/runtime-v3-operations
     paths:
       - scripts/runtime_v3_workspace_journal_patch.py
+      - scripts/runtime_v3_workspace_patch_anchor_fix.py
       - scripts/runtime_v3_workspace_journal_postpatch.py
       - .github/workflows/runtime-v3-workspace-journal-builder.yml
       - src/agent/runtime_v3/workspace_journal.py
@@ -30,6 +31,9 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.ref }}
           fetch-depth: 0
+
+      - name: Align codemod with current filesystem helper boundary
+        run: python scripts/runtime_v3_workspace_patch_anchor_fix.py
 
       - name: Apply workspace journal integration
         run: python scripts/runtime_v3_workspace_journal_patch.py
