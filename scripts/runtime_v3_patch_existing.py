@@ -48,6 +48,11 @@ regex_once(
     '''    async def call_tool(self, qualified_name: str, arguments: Dict) -> Dict:\n        """Call one MCP tool exactly once. Transport ambiguity is never replayed."""\n        parts = qualified_name.split("__", 2)\n        if len(parts) != 3 or parts[0] != "mcp":\n            return {"error": f"Invalid MCP tool name: {qualified_name}", "exit_code": 1}\n        server_id, tool_name = parts[1], parts[2]\n        session = self._sessions.get(server_id)\n        if not session:\n            return {"error": f"MCP server not connected: {server_id}", "exit_code": 1}\n        try:\n            result = await guarded_call(lambda: session.call_tool(tool_name, arguments))\n            return bounded_mcp_result(result)\n        except asyncio.TimeoutError:\n            logger.error("MCP tool call timed out without safe retry: %s", qualified_name)\n            return {"error": "MCP call timed out; effect status may be unknown and was not retried", "exit_code": 1, "effect_unknown": True}\n        except asyncio.CancelledError:\n            raise\n        except Exception as exc:\n            logger.error("MCP tool call failed without automatic retry: %s: %s", qualified_name, exc)\n            return {"error": str(exc), "exit_code": 1, "effect_unknown": True}\n\n    async def _reconnect_builtin''',
     re.S,
 )
+replace_once(
+    "src/mcp_manager.py",
+    'npx -y @playwright/mcp@latest --version',
+    'npx --no-install @playwright/mcp@0.0.78 --version',
+)
 
 replace_once(
     "src/builtin_mcp.py",
@@ -63,11 +68,6 @@ replace_once(
     "src/builtin_mcp.py",
     'os.environ.get("ODYSSEUS_BROWSER_NO_SANDBOX", "1").lower()',
     'os.environ.get("ODYSSEUS_BROWSER_NO_SANDBOX", "0").lower()',
-)
-replace_once(
-    "src/builtin_mcp.py",
-    'npx -y @playwright/mcp@latest --version',
-    'npx --no-install @playwright/mcp@0.0.78 --version',
 )
 replace_once(
     "src/builtin_mcp.py",
