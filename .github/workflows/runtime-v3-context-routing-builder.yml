@@ -1,0 +1,60 @@
+name: Runtime V3 context and routing builder
+
+on:
+  pull_request:
+    branches:
+      - agent/runtime-v3-effects-recovery
+    paths:
+      - scripts/runtime_v3_context_routing_patch.py
+      - .github/workflows/runtime-v3-context-routing-builder.yml
+      - src/agent/runtime_v3/routing.py
+      - tests/runtime_v3/**
+
+permissions:
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: runtime-v3-context-routing-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  integrate-and-test:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out exact PR head
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      - name: Apply context and routing integration
+        run: python scripts/runtime_v3_context_routing_patch.py
+
+      - name: Compile changed modules
+        run: |
+          python -m compileall -q \
+            src/agent/runtime_v3 \
+            src/llm_core.py \
+            tests/runtime_v3
+
+      - name: Run Runtime V3 tests
+        run: python -m unittest discover -s tests/runtime_v3 -v
+
+      - name: Validate diff
+        run: git diff --check
+
+      - name: Commit verified integration
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          if git diff --quiet; then
+            exit 0
+          fi
+          git config user.name "odysseus-runtime-v3-bot"
+          git config user.email "111787685+alteixeira20@users.noreply.github.com"
+          git add .env.example src/llm_core.py
+          git commit -m "feat(agent): integrate trust-bound fallback routing"
+          git push origin HEAD:"${HEAD_REF}"
