@@ -51,21 +51,32 @@ def _spawn_bg(coro) -> asyncio.Task:
 
 
 def _find_local_node_binary(name: str, base_dir: str | None = None) -> str | None:
-    """Resolve a package binary only from this checkout's node_modules.
+    """Resolve a package binary from this checkout's ``node_modules/.bin``.
 
-    Global PATH, npm caches, and globally installed packages are intentionally
-    ignored. This makes the package-lock file the executable trust boundary.
+    npm uses symlinks on POSIX, so the shim itself must live in ``.bin`` while
+    its resolved target may live elsewhere under this checkout's
+    ``node_modules``. Targets escaping ``node_modules`` are rejected.
     """
     root = os.path.realpath(base_dir or get_app_root())
-    bin_dir = os.path.realpath(os.path.join(root, "node_modules", ".bin"))
+    node_modules = os.path.realpath(os.path.join(root, "node_modules"))
+    bin_dir = os.path.join(node_modules, ".bin")
     suffix = ".cmd" if IS_WINDOWS else ""
-    candidate = os.path.realpath(os.path.join(bin_dir, name + suffix))
+    shim = os.path.abspath(os.path.join(bin_dir, name + suffix))
     try:
-        if os.path.commonpath((bin_dir, candidate)) != bin_dir:
+        if os.path.commonpath((bin_dir, shim)) != bin_dir:
             return None
     except ValueError:
         return None
-    return candidate if os.path.isfile(candidate) else None
+    if not os.path.isfile(shim):
+        return None
+    target = os.path.realpath(shim)
+    try:
+        if os.path.commonpath((node_modules, target)) != node_modules:
+            logger.warning("Rejected Node binary escaping node_modules: %s", shim)
+            return None
+    except ValueError:
+        return None
+    return shim
 
 
 def _find_browser_executable() -> str:
