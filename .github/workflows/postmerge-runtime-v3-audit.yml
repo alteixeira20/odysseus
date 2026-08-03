@@ -20,6 +20,7 @@ on:
       - scripts/postmerge_runtime_v3_fix.py
       - scripts/postmerge_playwright_bin_fix.py
       - scripts/postmerge_mcp_error_fix.py
+      - scripts/postmerge_replay_event_cap_fix.py
       - .github/workflows/postmerge-runtime-v3-audit.yml
 
 permissions:
@@ -50,6 +51,9 @@ jobs:
 
       - name: Apply deterministic post-merge repairs
         run: python scripts/postmerge_runtime_v3_fix.py
+
+      - name: Enforce single-event replay byte cap
+        run: python scripts/postmerge_replay_event_cap_fix.py
 
       - name: Repair Browser MCP failure guidance
         run: python scripts/postmerge_mcp_error_fix.py
@@ -116,6 +120,7 @@ jobs:
             scripts/postmerge_runtime_v3_fix.py \
             scripts/postmerge_playwright_bin_fix.py \
             scripts/postmerge_mcp_error_fix.py \
+            scripts/postmerge_replay_event_cap_fix.py \
             scripts/runtime_v3_mcp_deployment_patch.py \
             scripts/runtime_v3_mcp_deployment_postpatch.py \
             scripts/runtime_v3_mcp_setup_anchor_fix.py
