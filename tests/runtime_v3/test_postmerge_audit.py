@@ -96,6 +96,23 @@ class ReplayRetentionTests(unittest.TestCase):
         self.assertEqual(replay[0]["seq"], 13)
         self.assertGreater(window["retained_bytes"], 0)
 
+    def test_single_event_cannot_exceed_total_replay_byte_budget(self):
+        with patch.dict(
+            os.environ,
+            {
+                "ODYSSEUS_AGENT_MAX_REPLAY_BYTES": str(1024 * 1024),
+            },
+            clear=False,
+        ):
+            with self.assertRaisesRegex(ValueError, "total replay byte budget"):
+                self.ledger.append_event(
+                    "run-retention",
+                    "oversized",
+                    {"text": "x" * (1024 * 1024 + 1024)},
+                    max_bytes=2 * 1024 * 1024,
+                )
+        self.assertEqual(self.ledger.event_window("run-retention")["last_event_seq"], 0)
+
 
 class DeploymentIntegrationTests(unittest.TestCase):
     def test_no_temporary_mcp_runtime_install_path_remains(self):
