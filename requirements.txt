@@ -14,8 +14,6 @@ numpy
 # Vector store + local embeddings for RAG, semantic memory, and tool
 # selection. Used on core agent paths, so installed by default — the app
 # still degrades to keyword fallback if they're ever missing.
-# chromadb-client is the lightweight HTTP client (talks to a standalone
-# ChromaDB service); fastembed runs local ONNX embeddings.
 chromadb-client
 fastembed
 youtube-transcript-api
@@ -44,6 +42,9 @@ qrcode[pil]
 croniter
 pytest
 pytest-asyncio
+# Abort individual hanging tests and print their stacks. The suite previously
+# had no per-test bound, leaving CI jobs alive indefinitely.
+pytest-timeout==2.4.0
 # starlette.testclient prefers httpx2 since Starlette 1.2.0 and warns on every
 # TestClient import when only classic httpx is present. Runtime code keeps
 # using `httpx` above; this is test-client only.
