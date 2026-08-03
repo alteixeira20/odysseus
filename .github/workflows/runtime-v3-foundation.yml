@@ -1,29 +1,33 @@
 name: Runtime V3 foundation builder
 
 on:
-  push:
+  pull_request:
     branches:
-      - agent/runtime-v3-foundation
+      - agentic-lab
     paths:
       - scripts/runtime_v3_patch_existing.py
       - .github/workflows/runtime-v3-foundation.yml
+      - src/agent/runtime_v3/**
+      - tests/runtime_v3/**
 
 permissions:
   contents: write
+  pull-requests: read
 
 concurrency:
-  group: runtime-v3-foundation
+  group: runtime-v3-foundation-${{ github.event.pull_request.number }}
   cancel-in-progress: false
 
 jobs:
   integrate-and-test:
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Check out exact branch
+      - name: Check out exact PR head
         uses: actions/checkout@v4
         with:
-          ref: agent/runtime-v3-foundation
+          ref: ${{ github.event.pull_request.head.ref }}
           fetch-depth: 0
 
       - name: Apply deterministic integration patches
@@ -42,10 +46,15 @@ jobs:
       - name: Run Runtime V3 fault-oriented tests
         run: python -m unittest discover -s tests/runtime_v3 -v
 
+      - name: Validate JavaScript syntax
+        run: node --check static/js/chat.js
+
       - name: Validate diff
         run: git diff --check
 
       - name: Commit verified integration
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
           if git diff --quiet; then
             echo "No generated changes"
@@ -63,4 +72,4 @@ jobs:
             src/builtin_mcp.py \
             static/js/chat.js
           git commit -m "feat(agent): integrate Runtime V3 safety boundaries"
-          git push origin HEAD:agent/runtime-v3-foundation
+          git push origin HEAD:"${HEAD_REF}"
