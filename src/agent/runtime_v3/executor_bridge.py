@@ -12,8 +12,6 @@ from src.agent.runtime_v2.contracts import (
     ToolResult,
     ToolResultStatus,
 )
-from src.agent.runtime_v2.effect_policy import EFFECT_POLICY
-from src.agent.tools.bootstrap import TOOL_REGISTRY
 
 from .effect_bridge import (
     DurableEffectHandle,
@@ -34,11 +32,16 @@ def _preflight_effects(
 ) -> tuple[Effect, ...] | None:
     """Resolve effects without crossing an execution boundary.
 
+    Registry and policy imports stay local so the durable wrapper remains
+    import-light and testable without initializing the full application stack.
     Returning ``None`` means the authoritative implementation must handle a
     denial or approval request and therefore cannot execute a handler.
     Unexpected preflight failures are surfaced by the wrapper instead of
     bypassing durability.
     """
+    from src.agent.runtime_v2.effect_policy import EFFECT_POLICY
+    from src.agent.tools.bootstrap import TOOL_REGISTRY
+
     definition = TOOL_REGISTRY.resolve(call.canonical_name, context)
     if definition is None or not definition.runtime_v2:
         return None
