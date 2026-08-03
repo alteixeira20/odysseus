@@ -14,6 +14,8 @@ on:
       - Dockerfile
       - package.json
       - package-lock.json
+      - requirements.txt
+      - .github/workflows/ci.yml
       - tests/runtime_v3/**
       - scripts/postmerge_runtime_v3_fix.py
       - scripts/postmerge_playwright_bin_fix.py
@@ -87,8 +89,10 @@ jobs:
       - name: Run Runtime V3 regression suite
         run: python -m unittest discover -s tests/runtime_v3 -v
 
-      - name: Run full Python test suite
-        run: timeout 25m python -m pytest -q
+      - name: Run bounded full Python test suite
+        run: |
+          timeout --signal=TERM --kill-after=30s 20m \
+            python -m pytest -q --timeout=90 --timeout-method=thread
 
       - name: Validate browser-side JavaScript
         run: |
@@ -117,10 +121,12 @@ jobs:
             scripts/runtime_v3_mcp_setup_anchor_fix.py
           git add \
             .env.example \
+            .github/workflows/ci.yml \
             Dockerfile \
             docs/setup.md \
             package.json \
             package-lock.json \
+            requirements.txt \
             routes/agent_runtime_routes.py \
             setup.py \
             src/agent_runs.py \
