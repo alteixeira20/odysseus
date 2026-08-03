@@ -43,8 +43,9 @@ class RuntimeOperations:
 
     def __init__(self, ledger: DurableRunLedger | None = None) -> None:
         self.ledger = ledger or get_runtime_ledger()
-        with self.ledger._tx() as db:
-            db.executescript(
+        # sqlite3.executescript() manages its own transaction boundary.
+        with self.ledger._lock:
+            self.ledger._conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS agent_commands (
                     command_id TEXT PRIMARY KEY,

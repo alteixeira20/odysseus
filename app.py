@@ -172,6 +172,7 @@ from starlette.responses import JSONResponse as _JSONResponse
 REQUEST_HARD_TIMEOUT = float(os.getenv("REQUEST_HARD_TIMEOUT", "45"))
 _TIMEOUT_EXEMPT_PREFIXES = (
     "/api/chat",            # streaming
+    "/api/agent-runs",      # durable SSE replay and cancellation
     "/api/shell/stream",    # SSE
     "/api/research",        # multi-minute jobs
     "/api/model/download",  # tmux setup may run pip installs
@@ -683,6 +684,10 @@ app.include_router(setup_chat_routes(
     skills_manager=skills_manager,
 ))
 
+# Durable Agent Runtime V3 operations
+from routes.agent_runtime_routes import setup_agent_runtime_routes
+app.include_router(setup_agent_runtime_routes())
+
 # Research (background deep-research tasks)
 from routes.research.research_routes import setup_research_routes
 app.include_router(setup_research_routes(research_handler, session_manager=session_manager))
@@ -907,6 +912,10 @@ async def serve_gallery(request: Request):
 @app.get("/tasks")
 async def serve_tasks(request: Request):
     return await serve_index(request)
+
+@app.get("/agent-runtime")
+async def serve_agent_runtime(request: Request):
+    return serve_html_with_nonce(request, abs_join(BASE_DIR, "static/agent-runtime.html"))
 
 @app.get("/library")
 async def serve_library(request: Request):
