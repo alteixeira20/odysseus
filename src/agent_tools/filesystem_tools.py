@@ -10,6 +10,11 @@ import tempfile
 from typing import Optional, Dict, Any, Tuple, List
 
 from src.constants import MAX_READ_CHARS, MAX_DIFF_LINES, MAX_OUTPUT_CHARS
+from src.agent.runtime_v3.workspace_journal import (
+    WorkspaceJournalError,
+    WorkspaceRecoveryRequired,
+    get_workspace_journal,
+)
 
 _CODENAV_SKIP_DIRS = frozenset({
     ".git", ".hg", ".svn", "node_modules", "venv", ".venv", "__pycache__",
@@ -112,72 +117,13 @@ def _atomic_write_text(path: str, text: str, snapshot: Dict[str, Any]) -> None:
                 pass
 
 
-def _commit_file_transaction(prepared: List[Dict[str, Any]]) -> None:
-    """Commit a staged multi-file transaction with best-effort rollback.
+def _commit_file_transaction(prepared: List[Dict[str, Any]]):
+    """Commit a crash-recoverable multi-file transaction.
 
-    Each individual replacement is atomic. The collection is not globally
-    atomic: process death or power loss between replacements can expose a
-    partial state because there is no durable journal/recovery pass.
+    Visibility is sequential while the process is alive, but a crash or restart
+    deterministically converges to all-old or all-new before traffic is served.
     """
-
-    staged: Dict[str, str] = {}
-    backups: Dict[str, str] = {}
-    committed: List[Dict[str, Any]] = []
-    directories = {os.path.dirname(item["path"]) or "." for item in prepared}
-    try:
-        for item in prepared:
-            path = item["path"]
-            snapshot = item["snapshot"]
-            if item["kind"] != "delete":
-                staged[path] = _stage_bytes(path, item["new"].encode("utf-8"), snapshot["mode"])
-            if snapshot["exists"]:
-                backups[path] = _stage_bytes(path, snapshot["data"], snapshot["mode"])
-
-        # Reject stale patch plans before making the first visible change.
-        for item in prepared:
-            _verify_snapshot(item["path"], item["snapshot"])
-
-        for item in prepared:
-            path = item["path"]
-            # Close the remaining race window for every later operation. If it
-            # changed after an earlier commit, the earlier commits roll back.
-            _verify_snapshot(path, item["snapshot"])
-            if item["kind"] == "delete":
-                os.unlink(path)
-            else:
-                _replace_staged(staged[path], path)
-                staged[path] = ""
-            committed.append(item)
-
-        for directory in directories:
-            _fsync_directory(directory)
-    except BaseException:
-        rollback_error: Optional[BaseException] = None
-        for item in reversed(committed):
-            path = item["path"]
-            try:
-                if item["snapshot"]["exists"]:
-                    _replace_staged(backups[path], path)
-                    backups[path] = ""
-                elif os.path.lexists(path):
-                    os.unlink(path)
-            except BaseException as exc:  # preserve the original failure below
-                rollback_error = rollback_error or exc
-        for directory in directories:
-            try:
-                _fsync_directory(directory)
-            except OSError:
-                pass
-        if rollback_error is not None:
-            raise RuntimeError(f"patch failed and rollback was incomplete: {rollback_error}")
-        raise
-    finally:
-        for temporary in (*staged.values(), *backups.values()):
-            if temporary:
-                try:
-                    os.unlink(temporary)
-                except OSError:
-                    pass
+    return get_workspace_journal().commit(prepared)
 
 
 def _pagination_args(args: Dict[str, Any]) -> Tuple[int, int]:
@@ -580,12 +526,19 @@ class ApplyPatchTool:
                 })
 
             diffs = []
-            _commit_file_transaction(prepared)
+            transaction_receipt = _commit_file_transaction(prepared)
             for item in prepared:
                 diff = _unified_diff(item["old"], item["new"], item["path"])
                 if diff:
                     diffs.append(diff)
-        except (ValueError, UnicodeDecodeError, PermissionError, OSError) as e:
+        except (
+            ValueError,
+            UnicodeDecodeError,
+            PermissionError,
+            OSError,
+            WorkspaceJournalError,
+            WorkspaceRecoveryRequired,
+        ) as e:
             return {"error": f"apply_patch: {e}", "exit_code": 1}
 
         added = sum(int(d.get("added") or 0) for d in diffs)
@@ -597,8 +550,12 @@ class ApplyPatchTool:
         result = {
             "output": f"Applied patch ({len(prepared)} file{'s' if len(prepared) != 1 else ''}, +{added}/-{removed})",
             "exit_code": 0,
-            "transaction": "staged_with_best_effort_rollback",
+            "transaction": transaction_receipt.as_dict(),
+            # Multi-path visibility cannot be atomic on a normal filesystem,
+            # but process death is recoverable to one complete state.
             "globally_atomic": False,
+            "crash_atomic": True,
+            "recovery_semantics": "all_old_or_all_new",
         }
         if diffs:
             result["diff"] = {
