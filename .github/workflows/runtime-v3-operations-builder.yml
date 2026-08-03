@@ -1,0 +1,68 @@
+name: Runtime V3 operations builder
+
+on:
+  pull_request:
+    branches:
+      - agent/runtime-v3-context-routing
+    paths:
+      - scripts/runtime_v3_operations_patch.py
+      - .github/workflows/runtime-v3-operations-builder.yml
+      - src/agent/runtime_v3/operations.py
+      - routes/agent_runtime_routes.py
+      - static/agent-runtime.html
+      - static/js/agentRuntimeInspector.js
+      - static/css/agent-runtime.css
+      - tests/runtime_v3/**
+
+permissions:
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: runtime-v3-operations-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  integrate-and-test:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out exact PR head
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+
+      - name: Apply operations integration
+        run: python scripts/runtime_v3_operations_patch.py
+
+      - name: Compile changed modules
+        run: |
+          python -m compileall -q \
+            src/agent/runtime_v3 \
+            routes/agent_runtime_routes.py \
+            app.py \
+            tests/runtime_v3
+
+      - name: Run Runtime V3 tests
+        run: python -m unittest discover -s tests/runtime_v3 -v
+
+      - name: Validate inspector JavaScript
+        run: node --check static/js/agentRuntimeInspector.js
+
+      - name: Validate diff
+        run: git diff --check
+
+      - name: Commit verified integration
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          if git diff --quiet; then
+            exit 0
+          fi
+          git config user.name "odysseus-runtime-v3-bot"
+          git config user.email "111787685+alteixeira20@users.noreply.github.com"
+          git add app.py src/agent/runtime_v3/operations.py
+          git commit -m "feat(agent): integrate durable runtime operations"
+          git push origin HEAD:"${HEAD_REF}"
