@@ -1,0 +1,8 @@
+# Audited synthetic test fixtures committed in 312b9548. These exact findings
+# exercise secret redaction and credential lifecycle tests; no real credential
+# material is present. Keep this list fingerprint-specific so all new findings
+# and all line/path/rule changes remain blocking.
+312b95489b39024b4fda430a4652b499e31ac004:tests/test_runtime_v2_dependability.py:aws-access-token:228
+312b95489b39024b4fda430a4652b499e31ac004:tests/test_runtime_v2_dependability.py:aws-access-token:232
+312b95489b39024b4fda430a4652b499e31ac004:tests/test_runtime_v2_dependability.py:aws-access-token:747
+312b95489b39024b4fda430a4652b499e31ac004:tests/test_runtime_v2_dependability.py:aws-access-token:756
