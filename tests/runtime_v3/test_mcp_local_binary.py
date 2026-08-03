@@ -42,6 +42,12 @@ class LocalNodeBinaryTests(unittest.TestCase):
                 _find_local_node_binary("playwright-mcp", str(root))
             )
 
+    def test_connection_error_guidance_never_invokes_npx(self):
+        source = Path("src/mcp_manager.py").read_text(encoding="utf-8")
+        self.assertNotIn("npx --no-install @playwright/mcp", source)
+        self.assertIn("node_modules/.bin/playwright-mcp", source)
+        self.assertIn("Application startup will not download", source)
+
 
 if __name__ == "__main__":
     unittest.main()
