@@ -1,0 +1,66 @@
+name: Runtime V3 foundation builder
+
+on:
+  push:
+    branches:
+      - agent/runtime-v3-foundation
+    paths:
+      - scripts/runtime_v3_patch_existing.py
+      - .github/workflows/runtime-v3-foundation.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: runtime-v3-foundation
+  cancel-in-progress: false
+
+jobs:
+  integrate-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out exact branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/runtime-v3-foundation
+          fetch-depth: 0
+
+      - name: Apply deterministic integration patches
+        run: python scripts/runtime_v3_patch_existing.py
+
+      - name: Compile changed Python modules
+        run: |
+          python -m compileall -q \
+            src/agent/runtime_v3 \
+            src/agent/api.py \
+            src/agent/rounds/tool_calls.py \
+            src/mcp_manager.py \
+            src/builtin_mcp.py \
+            tests/runtime_v3
+
+      - name: Run Runtime V3 fault-oriented tests
+        run: python -m unittest discover -s tests/runtime_v3 -v
+
+      - name: Validate diff
+        run: git diff --check
+
+      - name: Commit verified integration
+        run: |
+          if git diff --quiet; then
+            echo "No generated changes"
+            exit 0
+          fi
+          git config user.name "odysseus-runtime-v3-bot"
+          git config user.email "111787685+alteixeira20@users.noreply.github.com"
+          git add \
+            .env.example \
+            requirements.txt \
+            src/agent/runtime_v3/ledger.py \
+            src/agent/rounds/tool_calls.py \
+            src/agent_loop.py \
+            src/mcp_manager.py \
+            src/builtin_mcp.py \
+            static/js/chat.js
+          git commit -m "feat(agent): integrate Runtime V3 safety boundaries"
+          git push origin HEAD:agent/runtime-v3-foundation
