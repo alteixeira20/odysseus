@@ -93,8 +93,10 @@ class DurableRunLedger:
                 self._conn.execute("COMMIT")
 
     def _migrate(self) -> None:
-        with self._tx() as db:
-            db.executescript("""
+        # sqlite3.executescript() controls its own transaction boundary. Running
+        # it inside _tx() can leave the outer COMMIT with no active transaction.
+        with self._lock:
+            self._conn.executescript("""
                 CREATE TABLE IF NOT EXISTS agent_runs (
                     run_id TEXT PRIMARY KEY,
                     session_id TEXT,
@@ -373,5 +375,5 @@ def get_runtime_ledger() -> DurableRunLedger:
         with _LEDGER_LOCK:
             if _LEDGER is None:
                 _LEDGER = DurableRunLedger()
-                _LEDGER.recover_interrupted(stale_after_seconds=0)
+                _LEDGER.recover_interrupted(stale_after_seconds=300)
     return _LEDGER

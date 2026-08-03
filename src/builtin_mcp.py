@@ -81,13 +81,13 @@ _BUILTIN_NPX_SERVERS = {
     "builtin_browser": {
         "name": "Built-in: Browser",
         "command": "npx",
-        "args": ["-y", "@playwright/mcp@latest", "--headless", "--caps", "vision"],
+        "args": ["@playwright/mcp@0.0.78", "--headless", "--caps", "vision"],
     }
 }
 
 # Global flag to disable MCP if there are compatibility issues
 MCP_DISABLED = os.environ.get("ODYSSEUS_DISABLE_MCP", "").lower() in ("1", "true", "yes")
-BROWSER_MCP_REQUIRE_CACHE = os.environ.get("ODYSSEUS_BROWSER_MCP_REQUIRE_CACHE", "").lower() in ("1", "true", "yes")
+BROWSER_MCP_REQUIRE_CACHE = os.environ.get("ODYSSEUS_BROWSER_MCP_REQUIRE_CACHE", "1").lower() in ("1", "true", "yes")
 
 
 # Strong references to the fire-and-forget startup tasks scheduled below.
@@ -139,7 +139,7 @@ def _browser_mcp_args(args: list[str]) -> list[str]:
     if os.environ.get("ODYSSEUS_BROWSER_ISOLATED", "1").lower() not in ("0", "false", "no"):
         if "--isolated" not in out and "--user-data-dir" not in out:
             out.append("--isolated")
-    if os.environ.get("ODYSSEUS_BROWSER_NO_SANDBOX", "1").lower() not in ("0", "false", "no"):
+    if os.environ.get("ODYSSEUS_BROWSER_NO_SANDBOX", "0").lower() not in ("0", "false", "no"):
         if "--no-sandbox" not in out and "--sandbox" not in out:
             out.append("--no-sandbox")
     return out
@@ -204,8 +204,8 @@ async def register_builtin_servers(mcp_manager):
         await asyncio.sleep(3)  # let Python servers finish first
         for server_id, cfg in _BUILTIN_NPX_SERVERS.items():
             # Browser automation is a shipped built-in, so the default path
-            # lets `npx -y` install @playwright/mcp on first start. Locked-down
-            # installs can opt back into the old no-network startup behavior
+            # requires a pre-cached, exactly pinned @playwright/mcp package. Locked-down
+            # installs remain no-network at runtime
             # with ODYSSEUS_BROWSER_MCP_REQUIRE_CACHE=1.
             args = _browser_mcp_args(cfg["args"]) if server_id == "builtin_browser" else list(cfg["args"])
             pkg_spec = _npx_package_from_args(args)

@@ -2877,37 +2877,6 @@ async def stream_agent_loop(
                     yield f'data: {json.dumps({"delta": _fb})}\n\n'
                     full_response += _fb
 
-        # ── Fallback: auto-create document if model dumped large code in chat ──
-        # If no create_document tool was used, check for big code blocks in text
-        has_doc_tool = any(
-            b.tool_type in ("create_document", "update_document")
-            for b in tool_blocks
-        ) or any(
-            tc.get("name") in ("create_document", "update_document")
-            for tc in native_tool_calls
-        )
-        if not has_doc_tool and session_id and "create_document" not in (disabled_tools or set()):
-            _code_block_re = re.compile(r'```(\w*)\n([\s\S]*?)```')
-            for m in _code_block_re.finditer(round_response):
-                lang_tag = m.group(1).lower()
-                code_body = m.group(2).strip()
-                # Skip small blocks and known tool tags
-                if code_body.count('\n') < 30:
-                    continue
-                if lang_tag in TOOL_TAGS:
-                    continue  # already handled as a tool execution
-                # Auto-create a document from this code block
-                lang_map = {"py": "python", "js": "javascript", "ts": "typescript", "": "text"}
-                doc_lang = lang_map.get(lang_tag, lang_tag or "text")
-                doc_title = f"Code ({doc_lang})"
-                tb = ToolBlock("create_document", f"{doc_title}\n{doc_lang}\n{code_body}")
-                tool_blocks.append(tb)
-                # Stream the document open event
-                yield f'data: {json.dumps({"type": "doc_stream_open", "title": doc_title, "language": doc_lang})}\n\n'
-                yield f'data: {json.dumps({"type": "doc_stream_delta", "content": code_body})}\n\n'
-                logger.info(f"Auto-created document from {lang_tag} code block ({code_body.count(chr(10))+1} lines)")
-                break  # only auto-create one document per round
-
         # Save cleaned round text for history persistence
         # Keep <think> blocks so they render in the thinking section on reload
         # Mirror the same fenced-pattern gate used to resolve tool_blocks above:
