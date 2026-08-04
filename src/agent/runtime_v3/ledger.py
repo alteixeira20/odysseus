@@ -11,6 +11,7 @@ import time
 import uuid
 from typing import Any, Iterator, Mapping
 
+from .config import load_runtime_v3_limits
 from .contracts import EffectClass, EffectLease, EffectStatus, RetryPolicy, RunRecord, RunStatus
 
 
@@ -115,7 +116,9 @@ class DurableRunLedger:
                     updated_at REAL NOT NULL,
                     heartbeat_at REAL NOT NULL,
                     revision INTEGER NOT NULL DEFAULT 0,
+                    base_event_seq INTEGER NOT NULL DEFAULT 1,
                     last_event_seq INTEGER NOT NULL DEFAULT 0,
+                    event_bytes INTEGER NOT NULL DEFAULT 0,
                     error_json TEXT
                 );
                 CREATE INDEX IF NOT EXISTS idx_agent_runs_session ON agent_runs(session_id, created_at DESC);
@@ -165,6 +168,24 @@ class DurableRunLedger:
                     created_at REAL NOT NULL
                 );
             """)
+            columns = {
+                str(row["name"])
+                for row in self._conn.execute("PRAGMA table_info(agent_runs)").fetchall()
+            }
+            if "base_event_seq" not in columns:
+                self._conn.execute(
+                    "ALTER TABLE agent_runs ADD COLUMN base_event_seq INTEGER NOT NULL DEFAULT 1"
+                )
+            if "event_bytes" not in columns:
+                self._conn.execute(
+                    "ALTER TABLE agent_runs ADD COLUMN event_bytes INTEGER NOT NULL DEFAULT 0"
+                )
+                self._conn.execute(
+                    """UPDATE agent_runs SET event_bytes=COALESCE((
+                           SELECT SUM(length(CAST(payload_json AS BLOB)))
+                           FROM agent_events WHERE agent_events.run_id=agent_runs.run_id
+                       ),0)"""
+                )
 
     def create_run(self, *, run_id: str, session_id: str | None, owner: str | None,
                    workload: str, request: Mapping[str, Any], limits: Mapping[str, Any],
@@ -242,21 +263,63 @@ class DurableRunLedger:
         encoded = payload_json.encode("utf-8")
         if len(encoded) > max_bytes:
             raise ValueError(f"event payload exceeds {max_bytes} bytes")
+        limits = load_runtime_v3_limits()
+        if len(encoded) > limits.max_replay_bytes:
+            raise ValueError(
+                f"event payload exceeds total replay byte budget {limits.max_replay_bytes}"
+            )
         now = time.time()
         with self._tx() as db:
-            row = db.execute("SELECT last_event_seq FROM agent_runs WHERE run_id=?", (run_id,)).fetchone()
+            row = db.execute(
+                "SELECT base_event_seq,last_event_seq,event_bytes FROM agent_runs WHERE run_id=?",
+                (run_id,),
+            ).fetchone()
             if row is None:
                 raise KeyError(run_id)
-            seq = int(row[0]) + 1
+            base_seq = max(1, int(row["base_event_seq"] or 1))
+            seq = int(row["last_event_seq"]) + 1
+            retained_bytes = int(row["event_bytes"] or 0) + len(encoded)
             db.execute(
                 "INSERT INTO agent_events(run_id, seq, event_type, payload_json, payload_sha256, created_at) VALUES(?,?,?,?,?,?)",
                 (run_id, seq, event_type, payload_json, hashlib.sha256(encoded).hexdigest(), now),
             )
+            while (
+                seq - base_seq + 1 > limits.max_replay_events
+                or retained_bytes > limits.max_replay_bytes
+            ):
+                oldest = db.execute(
+                    """SELECT seq,length(CAST(payload_json AS BLOB)) AS payload_bytes
+                       FROM agent_events WHERE run_id=? ORDER BY seq LIMIT 1""",
+                    (run_id,),
+                ).fetchone()
+                if oldest is None or int(oldest["seq"]) >= seq:
+                    break
+                db.execute(
+                    "DELETE FROM agent_events WHERE run_id=? AND seq=?",
+                    (run_id, int(oldest["seq"])),
+                )
+                retained_bytes = max(0, retained_bytes - int(oldest["payload_bytes"] or 0))
+                base_seq = int(oldest["seq"]) + 1
             db.execute(
-                "UPDATE agent_runs SET last_event_seq=?, heartbeat_at=?, updated_at=?, revision=revision+1 WHERE run_id=?",
-                (seq, now, now, run_id),
+                """UPDATE agent_runs SET base_event_seq=?,last_event_seq=?,event_bytes=?,
+                          heartbeat_at=?,updated_at=?,revision=revision+1 WHERE run_id=?""",
+                (base_seq, seq, retained_bytes, now, now, run_id),
             )
             return seq
+
+    def event_window(self, run_id: str) -> dict[str, int]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT base_event_seq,last_event_seq,event_bytes FROM agent_runs WHERE run_id=?",
+                (run_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(run_id)
+        return {
+            "available_from_seq": max(1, int(row["base_event_seq"] or 1)),
+            "last_event_seq": int(row["last_event_seq"] or 0),
+            "retained_bytes": int(row["event_bytes"] or 0),
+        }
 
     def replay(self, run_id: str, *, after_seq: int = 0, limit: int = 8192) -> list[dict[str, Any]]:
         with self._lock:

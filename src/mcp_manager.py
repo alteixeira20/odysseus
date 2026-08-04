@@ -25,12 +25,13 @@ def _format_mcp_connection_error(name: str, command: str = "", args: Optional[Li
     command_line = " ".join([command or "", *args]).strip()
     lower_command = command_line.lower()
 
-    if "@playwright/mcp" in lower_command:
+    if "playwright-mcp" in lower_command:
         return (
             f"{raw_error}\n\n"
-            "Browser MCP could not start. On fresh installs, cache the Playwright MCP package once before connecting:\n\n"
-            "npx --no-install @playwright/mcp@0.0.78 --version\n\n"
-            "Then restart Odysseus and reconnect the Browser MCP server."
+            "The lockfile-installed Browser MCP runtime could not start. "
+            "Run `npm ci --omit=dev --ignore-scripts` in the Odysseus application root, "
+            "verify `node_modules/.bin/playwright-mcp` exists, and restart Odysseus. "
+            "Application startup will not download or resolve MCP executable code."
         )
 
     return raw_error

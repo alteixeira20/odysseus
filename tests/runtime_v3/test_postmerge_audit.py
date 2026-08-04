@@ -117,7 +117,7 @@ class ReplayRetentionTests(unittest.TestCase):
 class DeploymentIntegrationTests(unittest.TestCase):
     def test_no_temporary_mcp_runtime_install_path_remains(self):
         source = Path("src/builtin_mcp.py").read_text(encoding="utf-8")
-        self.assertIn("mcp-server-playwright", source)
+        self.assertIn("playwright-mcp", source)
         self.assertIn("_find_local_node_binary", source)
         self.assertNotIn("_find_npx", source)
         self.assertNotIn("npx -y", source)
@@ -133,9 +133,9 @@ class DeploymentIntegrationTests(unittest.TestCase):
         dockerfile = Path("Dockerfile").read_text(encoding="utf-8")
         setup = Path("setup.py").read_text(encoding="utf-8")
         self.assertIn("npm ci --omit=dev --ignore-scripts", dockerfile)
-        self.assertIn("node_modules/.bin/mcp-server-playwright", dockerfile)
+        self.assertIn("node_modules/.bin/playwright-mcp", dockerfile)
         self.assertIn("install_node_runtime", setup)
-        self.assertIn("mcp-server-playwright", setup)
+        self.assertIn("playwright-mcp", setup)
 
 
 if __name__ == "__main__":

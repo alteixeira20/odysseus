@@ -178,6 +178,10 @@ class RuntimeOperations:
         )
         return summary
 
+    def event_window(self, run_id: str, *, owner: str | None) -> dict[str, int]:
+        self._owned_row(run_id, owner)
+        return self.ledger.event_window(str(run_id))
+
     def events(
         self,
         run_id: str,
@@ -221,9 +225,23 @@ class RuntimeOperations:
 
         from src import agent_runs
 
-        stopped = bool(row["session_id"] and agent_runs.stop(str(row["session_id"])))
+        stopped = bool(
+            row["session_id"]
+            and agent_runs.stop(
+                str(row["session_id"]),
+                expected_run_id=str(run_id),
+            )
+        )
+        relation = (
+            self.ledger.session_run_relation(str(row["session_id"]), str(run_id))
+            if row["session_id"]
+            else "unknown"
+        )
         final_status = "dispatched" if stopped else "completed"
-        result = {"active_task_cancelled": stopped}
+        result = {
+            "active_task_cancelled": stopped,
+            "session_relation": relation,
+        }
         if not stopped:
             refreshed = self.ledger.get_run(str(run_id))
             if refreshed and not refreshed.status.terminal:

@@ -936,15 +936,16 @@ def start_if_idle(
 def begin_turn(*, session_id: str, owner: Optional[str]) -> TurnLease:
     """Supersede unfinished work as soon as a newer user message is accepted."""
 
-    previous = _RUNS.get(str(session_id))
-    if previous and previous.task and not previous.task.done():
-        if previous.execution_context is not None:
-            previous.execution_context.cancellation_token.cancel()
-        previous.task.cancel()
-    return RUN_OWNERSHIP.claim_turn(
-        owner_id=str(owner or ""),
-        conversation_id=str(session_id),
-    )
+    with _RUNS_LOCK:
+        previous = _RUNS.get(str(session_id))
+        if previous and previous.task and not previous.task.done():
+            if previous.execution_context is not None:
+                previous.execution_context.cancellation_token.cancel()
+            previous.task.cancel()
+        return RUN_OWNERSHIP.claim_turn(
+            owner_id=str(owner or ""),
+            conversation_id=str(session_id),
+        )
 
 
 def prepare_turn(*, session_id: str, owner: Optional[str]) -> PreparedTurn:
@@ -1056,16 +1057,29 @@ async def subscribe(session_id: str) -> AsyncGenerator[str, None]:
             _schedule_evict(session_id)
 
 
-def stop(session_id: str) -> bool:
-    """Explicitly cancel an in-flight run."""
+def stop(session_id: str, *, expected_run_id: Optional[str] = None) -> bool:
+    """Cancel an in-flight run only when its durable identity matches.
 
-    run = _RUNS.get(session_id)
-    if run and run.task and not run.task.done():
+    ``expected_run_id`` prevents an operator request for an older durable run
+    from cancelling a newer run that reused the same conversation/session.
+    Existing callers that omit it retain the legacy session-scoped behavior.
+    """
+    with _RUNS_LOCK:
+        run = _RUNS.get(str(session_id))
+        if not run or not run.task or run.task.done():
+            return False
+        if expected_run_id is not None:
+            actual_run_id = (
+                run.execution_context.run_id
+                if run.execution_context is not None
+                else None
+            )
+            if actual_run_id != str(expected_run_id):
+                return False
         if run.execution_context is not None:
             run.execution_context.cancellation_token.cancel()
         run.task.cancel()
         return True
-    return False
 
 
 __all__ = [
