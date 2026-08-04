@@ -1,0 +1,39 @@
+name: Agent loop source snapshot
+
+on:
+  push:
+    branches:
+      - agent/loop-orchestrator-refactor
+    paths:
+      - .github/workflows/agent-loop-source-snapshot.yml
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact refactor head
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Build source archive
+        run: |
+          set -euo pipefail
+          tar \
+            --exclude=.git \
+            --exclude=node_modules \
+            --exclude='**/__pycache__' \
+            --exclude='*.pyc' \
+            -czf "$RUNNER_TEMP/odysseus-source.tgz" .
+
+      - name: Upload source archive
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: odysseus-source-${{ github.sha }}
+          path: ${{ runner.temp }}/odysseus-source.tgz
+          retention-days: 1
+          if-no-files-found: error
