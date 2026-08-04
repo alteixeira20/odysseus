@@ -123,6 +123,17 @@ class DeploymentIntegrationTests(unittest.TestCase):
         self.assertNotIn("npx -y", source)
         self.assertNotIn("_npx_cache", source)
 
+    def test_temporary_builder_files_are_removed(self):
+        temporary_paths = (
+            ".github/workflows/runtime-v3-mcp-cleanup.yml",
+            ".github/workflows/runtime-v3-mcp-deployment-builder.yml",
+            "scripts/runtime_v3_mcp_deployment_patch.py",
+            "scripts/runtime_v3_mcp_deployment_postpatch.py",
+            "scripts/runtime_v3_mcp_setup_anchor_fix.py",
+        )
+        for path in temporary_paths:
+            self.assertFalse(Path(path).exists(), path)
+
     def test_runtime_routes_report_replay_gaps(self):
         source = Path("routes/agent_runtime_routes.py").read_text(encoding="utf-8")
         self.assertIn('event: replay_gap', source)
