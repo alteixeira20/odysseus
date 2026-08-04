@@ -107,24 +107,13 @@ jobs:
       - name: Validate generated diff
         run: git diff --check
 
-      - name: Commit verified product repair and remove temporary machinery
+      - name: Commit verified product repair
         env:
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
           set -euo pipefail
           git config user.name "odysseus-runtime-v3-bot"
           git config user.email "111787685+alteixeira20@users.noreply.github.com"
-          git rm --ignore-unmatch \
-            .github/workflows/postmerge-runtime-v3-audit.yml \
-            .github/workflows/runtime-v3-mcp-cleanup.yml \
-            .github/workflows/runtime-v3-mcp-deployment-builder.yml \
-            scripts/postmerge_runtime_v3_fix.py \
-            scripts/postmerge_playwright_bin_fix.py \
-            scripts/postmerge_mcp_error_fix.py \
-            scripts/postmerge_replay_event_cap_fix.py \
-            scripts/runtime_v3_mcp_deployment_patch.py \
-            scripts/runtime_v3_mcp_deployment_postpatch.py \
-            scripts/runtime_v3_mcp_setup_anchor_fix.py
           git add \
             .env.example \
             .github/workflows/ci.yml \
@@ -145,8 +134,8 @@ jobs:
             tests/runtime_v3/test_mcp_local_binary.py \
             tests/runtime_v3/test_postmerge_audit.py
           if git diff --cached --quiet; then
-            echo "No verified changes to commit"
-            exit 1
+            echo "No verified product changes to commit"
+            exit 0
           fi
           git commit -m "fix(agent): repair merged Runtime V3 deployment and retention"
           git push origin HEAD:"${HEAD_REF}"
