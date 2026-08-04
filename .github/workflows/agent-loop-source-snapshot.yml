@@ -6,6 +6,11 @@ on:
       - agent/loop-orchestrator-refactor
     paths:
       - .github/workflows/agent-loop-source-snapshot.yml
+  pull_request:
+    branches:
+      - agentic-lab
+    paths:
+      - .github/workflows/agent-loop-source-snapshot.yml
 
 permissions:
   contents: read
