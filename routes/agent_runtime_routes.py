@@ -82,7 +82,9 @@ def setup_agent_runtime_routes() -> APIRouter:
         limit: int = Query(default=8192, ge=1, le=100000),
     ) -> dict[str, Any]:
         try:
-            events = get_runtime_operations().events(
+            operations = get_runtime_operations()
+            window = operations.event_window(run_id, owner=_owner(request))
+            events = operations.events(
                 run_id,
                 owner=_owner(request),
                 after_seq=after_seq,
@@ -93,7 +95,14 @@ def setup_agent_runtime_routes() -> APIRouter:
         return {
             "run_id": run_id,
             "events": events,
-            "next_seq": events[-1]["seq"] if events else after_seq,
+            "next_seq": events[-1]["seq"] if events else max(
+                after_seq,
+                window["available_from_seq"] - 1,
+            ),
+            "available_from_seq": window["available_from_seq"],
+            "last_event_seq": window["last_event_seq"],
+            "retained_bytes": window["retained_bytes"],
+            "truncated": after_seq < window["available_from_seq"] - 1,
         }
 
     @router.get("/{run_id}/stream")
@@ -110,7 +119,19 @@ def setup_agent_runtime_routes() -> APIRouter:
             raise _translate_error(exc) from exc
 
         async def generate():
+            window = operations.event_window(run_id, owner=owner)
             cursor = after_seq
+            if cursor < window["available_from_seq"] - 1:
+                yield "event: replay_gap\n"
+                yield "data: " + json.dumps(
+                    {
+                        "requested_after_seq": cursor,
+                        "available_from_seq": window["available_from_seq"],
+                        "last_event_seq": window["last_event_seq"],
+                    },
+                    separators=(",", ":"),
+                ) + "\n\n"
+                cursor = window["available_from_seq"] - 1
             heartbeat = 0
             while True:
                 if await request.is_disconnected():

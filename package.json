@@ -5,5 +5,8 @@
   },
   "devDependencies": {
     "@antithesishq/bombadil": "^0.6.1"
+  },
+  "dependencies": {
+    "@playwright/mcp": "0.0.68"
   }
 }

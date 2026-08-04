@@ -7,6 +7,7 @@ initial admin user. Safe to re-run (skips what already exists).
 
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -236,6 +237,69 @@ def check_arch():
     sys.exit(1)
 
 
+def install_node_runtime():
+    """Install exact production Node dependencies only when absent or stale."""
+    if os.environ.get("ODYSSEUS_SKIP_NODE_RUNTIME_INSTALL", "").lower() in {
+        "1",
+        "true",
+        "yes",
+    }:
+        print("  [skip] Node runtime install disabled")
+        return False
+
+    import json
+
+    package_path = os.path.join(BASE_DIR, "package.json")
+    lock_path = os.path.join(BASE_DIR, "package-lock.json")
+    if not os.path.isfile(package_path) or not os.path.isfile(lock_path):
+        print("  [warn] package.json/package-lock.json missing; browser MCP disabled")
+        return False
+    with open(package_path, encoding="utf-8") as handle:
+        package = json.load(handle)
+    required = str(package.get("dependencies", {}).get("@playwright/mcp", "")).strip()
+    if not re.fullmatch(r"\d+\.\d+\.\d+", required):
+        print("  [warn] @playwright/mcp is not pinned to an exact version")
+        return False
+
+    installed_manifest = os.path.join(
+        BASE_DIR,
+        "node_modules",
+        "@playwright",
+        "mcp",
+        "package.json",
+    )
+    binary = os.path.join(
+        BASE_DIR,
+        "node_modules",
+        ".bin",
+        "playwright-mcp.cmd" if os.name == "nt" else "playwright-mcp",
+    )
+    try:
+        with open(installed_manifest, encoding="utf-8") as handle:
+            installed = str(json.load(handle).get("version", ""))
+    except (OSError, ValueError):
+        installed = ""
+    if installed == required and os.path.isfile(binary):
+        print(f"  [ok] Browser MCP runtime {required} already installed")
+        return True
+
+    npm = shutil.which("npm")
+    if not npm:
+        print("  [warn] npm unavailable; install Node.js 20+ for browser MCP")
+        return False
+    print(f"  Installing browser MCP runtime {required} from package-lock.json...")
+    subprocess.run(
+        [npm, "ci", "--omit=dev", "--ignore-scripts"],
+        cwd=BASE_DIR,
+        check=True,
+        timeout=900,
+    )
+    if not os.path.isfile(binary):
+        raise RuntimeError("npm ci completed but playwright-mcp is missing")
+    print(f"  [ok] Browser MCP runtime {required} installed")
+    return True
+
+
 def main():
     print("\n=== Odysseus Setup ===\n")
 
@@ -255,20 +319,26 @@ def main():
     print("1. Creating directories...")
     create_dirs()
 
-    print("\n2. Environment file...")
+    print("\n2. Browser MCP runtime...")
+    try:
+        install_node_runtime()
+    except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
+        print(f"  [warn] Browser MCP runtime install failed: {exc}")
+
+    print("\n3. Environment file...")
     create_env()
 
-    print("\n3. Checking dependencies...")
+    print("\n4. Checking dependencies...")
     check_deps()
 
-    print("\n4. Initializing database...")
+    print("\n5. Initializing database...")
     try:
         init_database()
     except Exception as e:
         print(f"  [warn] Database init failed: {e}")
         print("         This is OK if dependencies aren't installed yet.")
 
-    print("\n5. Creating initial admin...")
+    print("\n6. Creating initial admin...")
 
     admin_status = "failed"
 
