@@ -1,0 +1,95 @@
+name: Apply and verify agent loop refactor
+
+on:
+  pull_request:
+    branches:
+      - agentic-lab
+    paths:
+      - scripts/agent_loop_refactor.patch.gz.b64
+      - .github/workflows/agent-loop-refactor-apply.yml
+
+permissions:
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: agent-loop-refactor-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  apply-and-verify:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out exact refactor head
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Decode and verify immutable patch
+        run: |
+          set -euo pipefail
+          base64 --decode scripts/agent_loop_refactor.patch.gz.b64 | gzip --decompress > "$RUNNER_TEMP/agent-loop-refactor.patch"
+          echo "7fd659612f5ad257a8685032b9916610dd985907dec8b6339086ff7761663ebe  $RUNNER_TEMP/agent-loop-refactor.patch" | sha256sum --check --strict
+          git apply --check "$RUNNER_TEMP/agent-loop-refactor.patch"
+          git apply "$RUNNER_TEMP/agent-loop-refactor.patch"
+          git diff --check
+
+      - name: Install locked Python dependencies
+        run: |
+          python -m pip install --disable-pip-version-check -r requirements.txt
+          python -m pip install --disable-pip-version-check pytest-timeout
+
+      - name: Compile repository Python
+        run: python -m compileall -q app.py core routes src services scripts tests
+
+      - name: Run mandatory orchestration and Runtime V3 gate
+        run: |
+          python -m pytest -q \
+            tests/runtime_v3 \
+            tests/test_agent_loop.py \
+            tests/test_agent_architecture.py \
+            tests/test_agent_reliability_repair.py \
+            tests/test_agent_run_control.py \
+            tests/test_agent_direct_response.py \
+            tests/test_agent_provider_round.py \
+            tests/test_agent_request_analysis.py \
+            tests/test_agent_tool_selection.py \
+            tests/test_agent_escalation.py \
+            tests/test_agent_verifier_component.py \
+            tests/test_agent_prompt_contexts.py \
+            tests/test_agent_tool_domains.py \
+            tests/test_agent_conversation.py \
+            tests/test_agent_email_context.py \
+            tests/test_chat_route_tool_policy.py \
+            tests/test_mcp_annotation_precedence.py \
+            tests/test_plan_mode.py
+
+      - name: Run bounded repository-wide diagnostic
+        continue-on-error: true
+        run: |
+          timeout --signal=TERM --kill-after=30s 20m \
+            python -m pytest -vv --tb=short --timeout=90 --timeout-method=thread
+
+      - name: Commit verified product refactor
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config user.name "odysseus-agent-refactor-bot"
+          git config user.email "111787685+alteixeira20@users.noreply.github.com"
+          git add -A
+          git reset -- \
+            .github/workflows/agent-loop-refactor-apply.yml \
+            scripts/agent_loop_refactor.patch.gz.b64
+          if git diff --cached --quiet; then
+            echo "No verified product changes to commit"
+            exit 0
+          fi
+          git commit -m "refactor(agent): modularize orchestration and harden run control"
+          auth_header="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)"
+          git -c http.https://github.com/.extraheader="$auth_header" push origin HEAD:"${HEAD_REF}"
