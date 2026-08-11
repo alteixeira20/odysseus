@@ -6,6 +6,7 @@ import unittest
 from src.agent.contracts import AgentRunRequest
 from src.agent.runtime_v3.ledger import DurableRunLedger
 from src.agent.runtime_v3.request_identity import (
+    endpoint_path_fingerprint,
     redacted_endpoint,
     safe_request_snapshot,
     semantic_request_digest,
@@ -30,7 +31,7 @@ class RequestIdentityTests(unittest.TestCase):
         document=None,
     ) -> AgentRunRequest:
         return AgentRunRequest.from_legacy_arguments(
-            endpoint_url="https://user:password@example.com/v1/chat/completions?api_key=query-secret#frag",
+            endpoint_url="https://user:password@example.com/private-token/v1/chat/completions?api_key=query-secret#frag",
             model="model-a",
             messages=[{"role": "user", "content": content}],
             headers={"Authorization": f"Bearer {api_key}", "X-Tenant": "tenant-a"},
@@ -75,12 +76,15 @@ class RequestIdentityTests(unittest.TestCase):
             "doc secret",
             "password",
             "query-secret",
+            "private-token",
         ):
             self.assertNotIn(secret, encoded)
         self.assertEqual(snapshot["message_count"], 1)
         self.assertEqual(snapshot["uploaded_file_count"], 1)
         self.assertTrue(snapshot["semantic_request_sha256"])
         self.assertTrue(snapshot["workspace_sha256"])
+        self.assertTrue(snapshot["endpoint_path_sha256"])
+        self.assertEqual(snapshot["endpoint_origin"], "https://example.com")
         self.assertTrue(snapshot["active_document"])
         self.assertTrue(snapshot["active_email"])
 
@@ -89,13 +93,14 @@ class RequestIdentityTests(unittest.TestCase):
         second = self._request("same prompt", document=_NonCopyableDocument("version two"))
         self.assertNotEqual(semantic_request_digest(first), semantic_request_digest(second))
 
-    def test_endpoint_drops_userinfo_query_and_fragment(self):
+    def test_endpoint_persists_origin_only_and_fingerprints_path(self):
+        url = "https://user:password@example.com:8443/private-token/v1/chat?token=secret#frag"
+        self.assertEqual(redacted_endpoint(url), "https://example.com:8443")
         self.assertEqual(
-            redacted_endpoint(
-                "https://user:password@example.com:8443/v1/chat?token=secret#frag"
-            ),
-            "https://example.com:8443/v1/chat",
+            endpoint_path_fingerprint(url),
+            endpoint_path_fingerprint("https://example.com/private-token/v1/chat"),
         )
+        self.assertNotIn("private-token", endpoint_path_fingerprint(url))
 
     def test_ledger_rejects_same_run_id_for_semantically_different_request(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -149,10 +154,7 @@ class RequestIdentityTests(unittest.TestCase):
                     ("privacy-run",),
                 ).fetchone()
                 self.assertEqual(row["selected_endpoint"], endpoint)
-                self.assertEqual(
-                    row["selected_endpoint"],
-                    "https://example.com/v1/chat/completions",
-                )
+                self.assertEqual(row["selected_endpoint"], "https://example.com")
                 persisted = f"{row['request_json']} {row['selected_endpoint']}"
                 for secret in (
                     "prompt secret",
@@ -164,6 +166,7 @@ class RequestIdentityTests(unittest.TestCase):
                     "secret-one",
                     "password",
                     "query-secret",
+                    "private-token",
                 ):
                     self.assertNotIn(secret, persisted)
             finally:
