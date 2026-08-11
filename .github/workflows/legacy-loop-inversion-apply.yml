@@ -1,29 +1,32 @@
 name: Materialize legacy loop inversion
 
 on:
-  push:
+  pull_request:
     branches:
-      - agent/legacy-loop-inversion-dev
+      - agentic-lab
     paths:
+      - src/agent/runner.py
       - scripts/apply_legacy_loop_inversion.py
       - .github/workflows/legacy-loop-inversion-apply.yml
 
 permissions:
   contents: write
+  pull-requests: read
 
 concurrency:
-  group: legacy-loop-inversion-apply
+  group: legacy-loop-inversion-apply-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
   apply:
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Check out development branch
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: agent/legacy-loop-inversion-dev
+          ref: ${{ github.event.pull_request.head.ref }}
           fetch-depth: 0
           persist-credentials: true
 
@@ -35,6 +38,8 @@ jobs:
           git diff --check
 
       - name: Materialize ordinary source commit
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
           set -euo pipefail
           git config user.name "odysseus-agent-migration-bot"
@@ -45,4 +50,4 @@ jobs:
             exit 0
           fi
           git commit -m "refactor(agent): invert legacy loop behind AgentRunner"
-          git push origin HEAD:agent/legacy-loop-inversion-dev
+          git push origin HEAD:"${HEAD_REF}"
