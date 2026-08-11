@@ -124,7 +124,7 @@ jobs:
           set -uo pipefail
           set +e
           timeout --signal=TERM --kill-after=30s 20m \
-            python -m pytest -q --tb=short --maxfail=20 \
+            python -m pytest -q --tb=line --maxfail=20 \
               --timeout=90 --timeout-method=thread \
               tests/runtime_v3 \
               tests/test_agent_*.py \
@@ -144,7 +144,7 @@ jobs:
               > /tmp/agent-runtime-pytest.log 2>&1
           status=$?
           set -e
-          tail -n 250 /tmp/agent-runtime-pytest.log
+          tail -n 100 /tmp/agent-runtime-pytest.log
           exit "$status"
 
       - name: Validate diff whitespace
@@ -161,7 +161,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Node
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.2.0
         with:
           node-version: "20"
 
