@@ -191,7 +191,7 @@ async def test_concurrent_agent_runs_keep_provider_tool_scopes_isolated(
     async def consume(session_id, workspace, shell_enabled):
         return [
             event
-            async for event in agent_loop.stream_agent_loop(
+            async for event in agent_loop._legacy_stream_agent_kernel(
                 "https://api.openai.com/v1",
                 "gpt-4o",
                 [{"role": "user", "content": "Respond with done."}],
@@ -353,7 +353,7 @@ async def _capture_agent_contract(
     monkeypatch.setattr(agent_loop, "stream_llm_with_fallback", provider)
     events = [
         event
-        async for event in agent_loop.stream_agent_loop(
+        async for event in agent_loop._legacy_stream_agent_kernel(
             "https://api.openai.com/v1",
             "gpt-4o",
             [{"role": "user", "content": message}],
@@ -580,7 +580,7 @@ async def test_failed_fenced_tool_can_be_corrected_next_round(monkeypatch, tmp_p
     monkeypatch.setattr(agent_loop, "stream_llm_with_fallback", provider)
     events = [
         event
-        async for event in agent_loop.stream_agent_loop(
+        async for event in agent_loop._legacy_stream_agent_kernel(
             "http://provider.invalid",
             "plain-model",
             [{"role": "user", "content": "read the file and finish"}],

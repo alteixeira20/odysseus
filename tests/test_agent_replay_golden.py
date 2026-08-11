@@ -166,7 +166,7 @@ async def test_replay_matches_golden_event_sequence(
 
     chunks = [
         chunk
-        async for chunk in agent_loop.stream_agent_loop(
+        async for chunk in agent_loop._legacy_stream_agent_kernel(
             replay["endpoint_url"],
             replay["model"],
             replay["messages"],
