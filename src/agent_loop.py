@@ -3019,7 +3019,6 @@ async def stream_agent_loop(
             if (
                 _settings.verifier_enabled
                 and _effectful_used
-                and not _force_answer
                 and _claimed_done
             ):
                 if _verifier_rounds >= _VERIFIER_MAX_ROUNDS:
@@ -3061,6 +3060,15 @@ async def stream_agent_loop(
                     _verifier_rounds += 1
                     _verification_repair_required = True
                     _vfail = list(_verification.findings)
+                    if _force_answer:
+                        _run_disposition = RunDisposition.INCOMPLETE
+                        _run_disposition_reason = "verification_failed_at_force_answer"
+                        logger.warning(
+                            "[agent] verifier rejected force-answer completion on round %s: %s",
+                            round_num,
+                            _vfail,
+                        )
+                        break
                     logger.info(
                         "[agent] verifier flagged %s issue(s) on round %s: %s",
                         len(_vfail),
