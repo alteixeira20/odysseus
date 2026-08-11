@@ -2,10 +2,9 @@
 
 Runtime V3 is a durability service, not a second orchestrator. The service
 journals the existing wire stream for replay compatibility, but semantic
-terminal state is consumed from typed :class:`src.agent.events.AgentEvent`
-objects whenever the canonical Agent event encoder produced the wire event.
-Parsing terminal state out of SSE remains only as a compatibility fallback for
-legacy producers that bypass the typed event boundary.
+terminal state is consumed from typed Agent/Runtime V2 events whenever the
+canonical encoders produced the wire event. Parsing terminal state out of SSE
+remains only as a compatibility fallback for literal legacy producers.
 """
 
 from __future__ import annotations
@@ -19,6 +18,7 @@ import uuid
 from typing import Any, AsyncGenerator, Callable, Deque
 
 from src.agent.events import AgentEvent, observe_agent_events
+from src.agent.runtime_v2.events import RuntimeEvent, observe_runtime_events
 
 from .config import load_runtime_v3_limits
 from .contracts import RunStatus
@@ -61,19 +61,31 @@ def _terminal_from_payload(payload: Any) -> TerminalState | None:
         "awaiting_approval": RunStatus.INCOMPLETE,
         "blocked": RunStatus.INCOMPLETE,
     }.get(state, RunStatus.INCOMPLETE)
-    return mapped, str(payload.get("reason") or state), bool(payload.get("resumable"))
+    return (
+        mapped,
+        str(payload.get("reason") or state),
+        bool(payload.get("resumable")),
+    )
 
 
 def terminal_from_agent_event(event: AgentEvent) -> TerminalState | None:
-    """Resolve terminal semantics from the typed pre-serialization event."""
+    """Resolve terminal semantics from the typed Agent event."""
 
     if event.kind != "run_state":
         return None
     return _terminal_from_payload(dict(event.payload))
 
 
+def terminal_from_runtime_event(event: RuntimeEvent) -> TerminalState | None:
+    """Resolve terminal semantics from the typed Runtime V2 event."""
+
+    if event.type != "run_state":
+        return None
+    return _terminal_from_payload({"type": event.type, **dict(event.payload)})
+
+
 def terminal_from_legacy_wire(wire: str) -> TerminalState | None:
-    """Compatibility parser for producers that do not emit ``AgentEvent``."""
+    """Compatibility parser for literal producers that bypass typed encoders."""
 
     if not isinstance(wire, str) or not wire.startswith("data: "):
         return None
@@ -81,17 +93,22 @@ def terminal_from_legacy_wire(wire: str) -> TerminalState | None:
         payload = json.loads(wire[6:].strip())
     except Exception:
         return None
+    if isinstance(payload, dict) and payload.get("version") == 2:
+        nested = payload.get("payload")
+        if isinstance(nested, dict):
+            return _terminal_from_payload(
+                {"type": payload.get("type"), **nested}
+            )
     return _terminal_from_payload(payload)
 
 
 class DurableRunLifecycle:
     """Journal and terminalize one canonical Agent run.
 
-    A terminal ``AgentEvent`` is observed while it is encoded. The service
+    Typed terminal events are observed while they are encoded. The service
     delays the durable transition until the exact encoded string is yielded by
-    the backend, preserving the historical ordering where the replay event is
-    appended before the run row becomes terminal. String parsing is consulted
-    only if no typed terminal corresponds to that yielded wire object.
+    the backend, preserving replay-before-terminal ordering. String parsing is
+    consulted only if no typed terminal corresponds to that yielded wire object.
     """
 
     def __init__(
@@ -108,10 +125,19 @@ class DurableRunLifecycle:
     def ledger(self) -> DurableRunLedger:
         return self._ledger or get_runtime_ledger()
 
-    def observe_typed_event(self, event: AgentEvent, wire: str) -> None:
-        terminal = terminal_from_agent_event(event)
+    def _remember_terminal(
+        self,
+        wire: str,
+        terminal: TerminalState | None,
+    ) -> None:
         if terminal is not None:
             self._typed_terminals.append((wire, terminal))
+
+    def observe_typed_event(self, event: AgentEvent, wire: str) -> None:
+        self._remember_terminal(wire, terminal_from_agent_event(event))
+
+    def observe_runtime_event(self, event: RuntimeEvent, wire: str) -> None:
+        self._remember_terminal(wire, terminal_from_runtime_event(event))
 
     def _typed_terminal_for_wire(self, wire: str) -> TerminalState | None:
         """Return a terminal only for the exact string object that was encoded."""
@@ -147,7 +173,10 @@ class DurableRunLifecycle:
             max_rounds=request.limits.max_rounds,
             max_tool_calls=request.limits.max_tool_calls,
         )
-        run_id = getattr(request.execution_context, "run_id", None) or f"run-{uuid.uuid4()}"
+        run_id = (
+            getattr(request.execution_context, "run_id", None)
+            or f"run-{uuid.uuid4()}"
+        )
         ledger.create_run(
             run_id=run_id,
             session_id=request.session_id,
@@ -172,7 +201,9 @@ class DurableRunLifecycle:
         try:
             stream = backend_factory()
             while True:
-                remaining = limits.wall_clock_seconds - (time.monotonic() - started)
+                remaining = limits.wall_clock_seconds - (
+                    time.monotonic() - started
+                )
                 if remaining <= 0:
                     ledger.transition(
                         run_id,
@@ -182,14 +213,15 @@ class DurableRunLifecycle:
                     )
                     raise TimeoutError("agent wall-clock budget exhausted")
                 try:
-                    # Keep the task-local observer installed only while the
-                    # backend advances. It is reset before the wire is yielded
-                    # to transport/UI code, preventing cross-layer observation.
+                    # Observe both modern typed event families only while the
+                    # backend advances. Both contexts are reset before yielding
+                    # the wire to transport/UI code.
                     with observe_agent_events(self.observe_typed_event):
-                        wire = await asyncio.wait_for(
-                            stream.__anext__(),
-                            timeout=min(limits.idle_seconds, remaining),
-                        )
+                        with observe_runtime_events(self.observe_runtime_event):
+                            wire = await asyncio.wait_for(
+                                stream.__anext__(),
+                                timeout=min(limits.idle_seconds, remaining),
+                            )
                 except StopAsyncIteration:
                     break
                 except asyncio.TimeoutError as exc:
@@ -250,7 +282,10 @@ class DurableRunLifecycle:
                     RunStatus.FAILED,
                     reason=type(exc).__name__,
                     resumable=True,
-                    error={"type": type(exc).__name__, "message": str(exc)[:2000]},
+                    error={
+                        "type": type(exc).__name__,
+                        "message": str(exc)[:2000],
+                    },
                 )
             raise
         finally:
@@ -269,5 +304,6 @@ __all__ = [
     "TerminalState",
     "event_type_from_wire",
     "terminal_from_agent_event",
+    "terminal_from_runtime_event",
     "terminal_from_legacy_wire",
 ]
