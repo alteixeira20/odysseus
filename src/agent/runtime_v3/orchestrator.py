@@ -10,20 +10,7 @@ from typing import Any, AsyncGenerator, Callable
 from .config import load_runtime_v3_limits
 from .contracts import RunStatus
 from .ledger import get_runtime_ledger
-
-
-def _safe_request_snapshot(request) -> dict[str, Any]:
-    return {
-        "session_id": request.session_id,
-        "owner": request.owner,
-        "model": request.model,
-        "endpoint": request.endpoint_url,
-        "workload": request.workload,
-        "plan_mode": bool(request.plan_mode),
-        "message_count": len(request.messages),
-        "header_names": sorted((request.model_options.headers or {}).keys()),
-        "workspace": request.contexts.workspace,
-    }
+from .request_identity import redacted_endpoint, safe_request_snapshot
 
 
 def _event_type(wire: str) -> str:
@@ -59,7 +46,13 @@ def _terminal_from_wire(wire: str) -> tuple[RunStatus, str, bool] | None:
 
 
 async def stream_with_durable_runtime(request, legacy_factory: Callable[[], Any]) -> AsyncGenerator[str, None]:
-    """Wrap the compatibility runtime with durable run/event lifecycle state."""
+    """Wrap the compatibility runtime with durable run/event lifecycle state.
+
+    Durable request identity binds the complete semantic request via SHA-256
+    while the persisted run snapshot contains only bounded diagnostics. Prompt,
+    upload, plan, header-value, endpoint-credential and workspace-path plaintext
+    is not copied into the Runtime V3 request record.
+    """
     ledger = get_runtime_ledger()
     limits = load_runtime_v3_limits().normalize_request(
         max_rounds=request.limits.max_rounds,
@@ -71,10 +64,10 @@ async def stream_with_durable_runtime(request, legacy_factory: Callable[[], Any]
         session_id=request.session_id,
         owner=request.owner,
         workload=request.workload,
-        request=_safe_request_snapshot(request),
+        request=safe_request_snapshot(request),
         limits=asdict(limits),
         model=request.model,
-        endpoint=request.endpoint_url,
+        endpoint=redacted_endpoint(request.endpoint_url),
     )
     ledger.transition(run_id, RunStatus.RUNNING, reason="started")
     ledger.append_event(
