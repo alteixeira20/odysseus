@@ -1,0 +1,44 @@
+name: Materialize legacy kernel test reclassification
+
+on:
+  pull_request:
+    branches:
+      - agentic-lab
+    paths:
+      - scripts/apply_legacy_kernel_test_reclassification.py
+      - .github/workflows/legacy-kernel-test-reclassification.yml
+
+permissions:
+  contents: write
+  pull-requests: read
+
+jobs:
+  apply:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out development branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Apply asserted test reclassification
+        run: |
+          set -euo pipefail
+          python scripts/apply_legacy_kernel_test_reclassification.py
+          python -m compileall -q tests/test_agent_replay_golden.py tests/test_agent_runtime_contract.py
+          git diff --check
+
+      - name: Materialize ordinary test commit
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          git config user.name "odysseus-agent-migration-bot"
+          git config user.email "111787685+alteixeira20@users.noreply.github.com"
+          git add tests/test_agent_replay_golden.py tests/test_agent_runtime_contract.py
+          git commit -m "test(agent): target internal kernel characterizations after inversion"
+          git push origin HEAD:"${HEAD_REF}"
