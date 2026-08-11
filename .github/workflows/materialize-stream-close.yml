@@ -1,0 +1,36 @@
+name: Materialize stream-close ownership
+
+on:
+  pull_request:
+    branches:
+      - agent/lab-broad-ci-hardening
+
+permissions:
+  contents: write
+
+jobs:
+  materialize:
+    if: github.head_ref == 'agent/lab-stream-close-dev'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: '3.11'
+      - name: Materialize ordinary source changes
+        run: python scripts/_materialize_stream_close_ownership.py
+      - name: Commit ordinary source changes
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/agent/api.py src/agent/runner.py src/agent_loop.py
+          if git diff --cached --quiet; then
+            echo 'No source changes to commit.'
+            exit 0
+          fi
+          git commit -m 'fix(agent): propagate stream close ownership'
+          git push origin HEAD:${{ github.head_ref }}
