@@ -97,12 +97,16 @@ jobs:
           done
 
   python-tests:
-    name: Python tests (pytest)
+    name: Python tests (pytest shard ${{ matrix.shard }})
     runs-on: ubuntu-latest
-    timeout-minutes: 25
-    # Diagnostic until the historical failures and timeout are repaired. The
-    # job is bounded and prints every test identity, so hangs are actionable.
+    timeout-minutes: 15
+    # Diagnostic until every deterministic shard is clean. Once the historical
+    # broad-suite failures are repaired this becomes authoritative.
     continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
@@ -162,45 +166,15 @@ jobs:
         if: steps.docs-check.outputs.docs_only != 'true'
       - run: mkdir -p data
         if: steps.docs-check.outputs.docs_only != 'true'
-      - name: Run bounded diagnostic pytest suite
+
+      - name: Run deterministic pytest shard
         if: steps.docs-check.outputs.docs_only != 'true'
         run: |
-          python - <<'PY'
-          import os
-          import signal
-          import subprocess
-          import sys
-
-          command = [
-              sys.executable,
-              "-m",
-              "pytest",
-              "-vv",
-              "--tb=short",
-              "--timeout=90",
-              "--timeout-method=thread",
-          ]
-          process = subprocess.Popen(command, start_new_session=True)
-          try:
-              returncode = process.wait(timeout=20 * 60)
-          except subprocess.TimeoutExpired:
-              print(
-                  "Broad pytest exceeded 20 minutes; terminating the entire process group.",
-                  flush=True,
-              )
-              try:
-                  os.killpg(process.pid, signal.SIGTERM)
-              except ProcessLookupError:
-                  pass
-              try:
-                  process.wait(timeout=15)
-              except subprocess.TimeoutExpired:
-                  try:
-                      os.killpg(process.pid, signal.SIGKILL)
-                  except ProcessLookupError:
-                      pass
-                  process.wait()
-              raise SystemExit(124)
-
-          raise SystemExit(returncode)
-          PY
+          python scripts/ci_pytest_shard.py \
+            --index "${{ matrix.shard }}" \
+            --count 4 \
+            --wall-timeout-seconds 720 \
+            -vv \
+            --tb=short \
+            --timeout=90 \
+            --timeout-method=thread
