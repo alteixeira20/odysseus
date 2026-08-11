@@ -10,21 +10,8 @@ from typing import Any, AsyncGenerator, Callable
 from .config import load_runtime_v3_limits
 from .contracts import RunStatus
 from .ledger import get_runtime_ledger
+from .request_identity import redacted_endpoint, safe_request_snapshot
 from .stream_journal import DurableStreamJournal
-
-
-def _safe_request_snapshot(request) -> dict[str, Any]:
-    return {
-        "session_id": request.session_id,
-        "owner": request.owner,
-        "model": request.model,
-        "endpoint": request.endpoint_url,
-        "workload": request.workload,
-        "plan_mode": bool(request.plan_mode),
-        "message_count": len(request.messages),
-        "header_names": sorted((request.model_options.headers or {}).keys()),
-        "workspace": request.contexts.workspace,
-    }
 
 
 def _event_type(wire: str) -> str:
@@ -64,7 +51,9 @@ async def stream_with_durable_runtime(request, legacy_factory: Callable[[], Any]
 
     High-frequency transient SSE signals are coalesced only in the durable
     ledger. The live wire contract is unchanged, while lifecycle/effect/error
-    events remain immediate durable boundaries.
+    events remain immediate durable boundaries. Durable request identity binds
+    the complete semantic request via a SHA-256 digest without copying prompt or
+    credential plaintext into the runtime database.
     """
     ledger = get_runtime_ledger()
     limits = load_runtime_v3_limits().normalize_request(
@@ -77,10 +66,10 @@ async def stream_with_durable_runtime(request, legacy_factory: Callable[[], Any]
         session_id=request.session_id,
         owner=request.owner,
         workload=request.workload,
-        request=_safe_request_snapshot(request),
+        request=safe_request_snapshot(request),
         limits=asdict(limits),
         model=request.model,
-        endpoint=request.endpoint_url,
+        endpoint=redacted_endpoint(request.endpoint_url),
     )
     ledger.transition(run_id, RunStatus.RUNNING, reason="started")
     ledger.append_event(
