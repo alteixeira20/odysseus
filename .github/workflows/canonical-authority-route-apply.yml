@@ -1,0 +1,48 @@
+name: Apply canonical authority route migration
+
+on:
+  push:
+    branches:
+      - agent/canonical-authority
+    paths:
+      - scripts/apply_canonical_authority_route.py
+      - .github/workflows/canonical-authority-route-apply.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: canonical-authority-route-apply
+  cancel-in-progress: true
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out migration branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: agent/canonical-authority
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Apply asserted plaintext migration
+        run: |
+          set -euo pipefail
+          python scripts/apply_canonical_authority_route.py
+          python -m compileall -q src/agent routes/chat_routes.py
+          git diff --check
+
+      - name: Materialize ordinary source commit
+        run: |
+          set -euo pipefail
+          git config user.name "odysseus-agent-migration-bot"
+          git config user.email "111787685+alteixeira20@users.noreply.github.com"
+          git add routes/chat_routes.py
+          if git diff --cached --quiet; then
+            echo "No route changes to commit"
+            exit 0
+          fi
+          git commit -m "refactor(agent): route HTTP authority through AgentRunner"
+          git push origin HEAD:agent/canonical-authority
