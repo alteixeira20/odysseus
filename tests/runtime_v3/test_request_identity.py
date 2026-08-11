@@ -133,6 +133,7 @@ class RequestIdentityTests(unittest.TestCase):
             ledger = DurableRunLedger(Path(tmp) / "ledger.sqlite3")
             try:
                 request = self._request("prompt secret", document=_NonCopyableDocument("doc secret"))
+                endpoint = redacted_endpoint(request.endpoint_url)
                 ledger.create_run(
                     run_id="privacy-run",
                     session_id="session-1",
@@ -141,13 +142,18 @@ class RequestIdentityTests(unittest.TestCase):
                     request=safe_request_snapshot(request),
                     limits={},
                     model="model-a",
-                    endpoint=redacted_endpoint(request.endpoint_url),
+                    endpoint=endpoint,
                 )
                 row = ledger._conn.execute(
-                    "SELECT request_json, endpoint FROM agent_runs WHERE run_id=?",
+                    "SELECT request_json, selected_endpoint FROM agent_runs WHERE run_id=?",
                     ("privacy-run",),
                 ).fetchone()
-                persisted = f"{row['request_json']} {row['endpoint']}"
+                self.assertEqual(row["selected_endpoint"], endpoint)
+                self.assertEqual(
+                    row["selected_endpoint"],
+                    "https://example.com/v1/chat/completions",
+                )
+                persisted = f"{row['request_json']} {row['selected_endpoint']}"
                 for secret in (
                     "prompt secret",
                     "upload secret",
