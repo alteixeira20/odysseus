@@ -76,17 +76,73 @@ def _bridge_error(
     effects: Iterable[Effect] = (),
     unknown: bool = False,
     data: dict[str, Any] | None = None,
+    status: ToolResultStatus = ToolResultStatus.INCOMPLETE,
 ) -> ToolResult:
     effect_tuple = tuple(effects)
     return ToolResult(
         call_id=call.call_id,
         canonical_name=call.canonical_name,
-        status=ToolResultStatus.INCOMPLETE,
+        status=status,
         data=data or {},
         error=ToolError(code, message),
         attempted_effects=effect_tuple,
         unknown_effects=effect_tuple if unknown else (),
         backend="runtime_v3_executor_bridge",
+    )
+
+
+def _invalidate_approval_after_preflight_failure(approval_id: str | None) -> None:
+    if not approval_id:
+        return
+    try:
+        from src.agent.runtime_v2.approvals import EFFECT_APPROVALS
+
+        EFFECT_APPROVALS.invalidate(approval_id)
+    except Exception:
+        # The call remains denied regardless; approval invalidation is an
+        # additional fail-closed cleanup rather than a reason to execute.
+        pass
+
+
+def _approval_terminal_denial(
+    call: NormalizedToolCall,
+    approval_id: str | None,
+) -> ToolResult | None:
+    """Reject reuse of terminal one-use approvals without re-entering effects."""
+    if not approval_id:
+        return None
+    try:
+        from src.agent.runtime_v2.approvals import (
+            ApprovalRecordState,
+            EFFECT_APPROVALS,
+        )
+
+        state = EFFECT_APPROVALS.state(approval_id)
+    except Exception:
+        return None
+    terminal = {
+        ApprovalRecordState.DENIED,
+        ApprovalRecordState.DETACHED_COMPLETED,
+        ApprovalRecordState.DETACHED_FAILED,
+        ApprovalRecordState.DETACHED_TIMED_OUT,
+        ApprovalRecordState.DETACHED_CANCELLED,
+        ApprovalRecordState.COMPLETED,
+        ApprovalRecordState.COMMITTED,
+        ApprovalRecordState.FAILED_AFTER_UNKNOWN_EFFECT,
+        ApprovalRecordState.EXPIRED,
+        ApprovalRecordState.INVALIDATED,
+    }
+    if state not in terminal:
+        return None
+    return _bridge_error(
+        call,
+        code="effect_approval_not_reusable",
+        message=(
+            "The exact approval is terminal or consumed and cannot authorize "
+            f"another execution (state={state.value})."
+        ),
+        status=ToolResultStatus.DENIED,
+        data={"approval_state": state.value, "one_use": True},
     )
 
 
@@ -101,10 +157,16 @@ async def execute_with_durable_effects(
     try:
         effects = _preflight_effects(call, context, approval_id=approval_id)
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        _invalidate_approval_after_preflight_failure(approval_id)
         return _bridge_error(
             call,
             code="durable_effect_preflight_failed",
             message=f"Tool execution was blocked because durable effect preflight failed: {exc}",
+            status=(
+                ToolResultStatus.DENIED
+                if approval_id
+                else ToolResultStatus.INCOMPLETE
+            ),
         )
 
     if effects is None:
@@ -139,13 +201,14 @@ async def execute_with_durable_effects(
         )
 
     if not handle.should_execute:
+        approval_denial = _approval_terminal_denial(call, approval_id)
+        if approval_denial is not None:
+            return approval_denial
         if approval_id and handle.replay_result is not None:
-            # Durable replay is not authorization. A committed cached result may
-            # satisfy idempotency for an unapproved read, but an exact approval
-            # is deliberately one-use. Re-enter only the Runtime V2 policy
-            # implementation so it can reject the consumed grant before any
-            # handler/effect boundary; never return the cached success as if the
-            # approval still carried authority.
+            # A non-terminal approval state plus a cached committed result is an
+            # inconsistent cross-layer state. Do not treat cache replay as
+            # authority; let V2 revalidate the exact approval before anything
+            # can cross the handler boundary.
             return await implementation(
                 call,
                 context,
