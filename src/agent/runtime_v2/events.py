@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 import json
 import secrets
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from types import MappingProxyType
-from typing import Any, Mapping, Optional
+from typing import Any, Callable, Iterator, Mapping, Optional
 
 
 @dataclass(frozen=True)
@@ -39,6 +41,30 @@ class RuntimeEvent:
             "caused_by": self.caused_by,
             "payload": dict(self.payload),
         }
+
+
+RuntimeEventObserver = Callable[[RuntimeEvent, str], None]
+_RUNTIME_EVENT_OBSERVERS: ContextVar[tuple[RuntimeEventObserver, ...]] = ContextVar(
+    "runtime_v2_event_observers",
+    default=(),
+)
+
+
+@contextmanager
+def observe_runtime_events(observer: RuntimeEventObserver) -> Iterator[None]:
+    """Observe Runtime V2 events encoded in the current task context."""
+
+    current = _RUNTIME_EVENT_OBSERVERS.get()
+    token = _RUNTIME_EVENT_OBSERVERS.set((*current, observer))
+    try:
+        yield
+    finally:
+        _RUNTIME_EVENT_OBSERVERS.reset(token)
+
+
+def _notify_runtime_event_observers(event: RuntimeEvent, wire: str) -> None:
+    for observer in _RUNTIME_EVENT_OBSERVERS.get():
+        observer(event, wire)
 
 
 class RuntimeEventFactory:
@@ -97,7 +123,9 @@ class RuntimeEventFactory:
 
 
 def encode_runtime_sse(event: RuntimeEvent) -> str:
-    return f"data: {json.dumps(event.as_dict(), separators=(',', ':'))}\n\n"
+    wire = f"data: {json.dumps(event.as_dict(), separators=(',', ':'))}\n\n"
+    _notify_runtime_event_observers(event, wire)
+    return wire
 
 
 def runtime_event_from_payload(payload: Mapping[str, Any]) -> Optional[RuntimeEvent]:
@@ -151,3 +179,13 @@ def runtime_event_from_payload(payload: Mapping[str, Any]) -> Optional[RuntimeEv
         ),
         payload=MappingProxyType(dict(nested)),
     )
+
+
+__all__ = [
+    "RuntimeEvent",
+    "RuntimeEventFactory",
+    "RuntimeEventObserver",
+    "encode_runtime_sse",
+    "observe_runtime_events",
+    "runtime_event_from_payload",
+]
