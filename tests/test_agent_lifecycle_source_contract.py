@@ -43,8 +43,23 @@ def test_terminal_state_source_is_typed_first_with_explicit_legacy_fallback():
     source = lifecycle.read_text(encoding="utf-8")
 
     assert "observe_agent_events(self.observe_typed_event)" in source
+    assert "observe_runtime_events(self.observe_runtime_event)" in source
     assert "terminal_from_agent_event" in source
+    assert "terminal_from_runtime_event" in source
     assert "terminal_from_legacy_wire" in source
     assert "typed = self._typed_terminal_for_wire(wire)" in source
     assert "if typed is not None:" in source
     assert "return self._legacy_terminal_parser(wire)" in source
+
+
+def test_both_typed_sse_encoders_expose_task_local_observation():
+    root = Path(__file__).resolve().parents[1]
+    agent_events = (root / "src" / "agent" / "events.py").read_text(encoding="utf-8")
+    runtime_events = (
+        root / "src" / "agent" / "runtime_v2" / "events.py"
+    ).read_text(encoding="utf-8")
+
+    assert "observe_agent_events" in agent_events
+    assert "_notify_observers(event, wire)" in agent_events
+    assert "observe_runtime_events" in runtime_events
+    assert "_notify_runtime_event_observers(event, wire)" in runtime_events
