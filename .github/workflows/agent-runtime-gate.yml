@@ -100,7 +100,8 @@ jobs:
         run: |
           set -euo pipefail
           timeout --signal=TERM --kill-after=30s 20m \
-            python -m pytest -q --tb=short --timeout=90 --timeout-method=thread \
+            python -m pytest -vv --tb=short --maxfail=20 \
+              --timeout=90 --timeout-method=thread \
               tests/runtime_v3 \
               tests/test_agent_*.py \
               tests/test_runtime_v2_*.py \
