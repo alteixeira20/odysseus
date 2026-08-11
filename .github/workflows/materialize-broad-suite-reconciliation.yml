@@ -1,0 +1,37 @@
+name: Materialize broad-suite reconciliation
+
+on:
+  pull_request:
+    branches:
+      - agent/lab-broad-ci-hardening
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.head_ref == 'agent/lab-broad-ci-reconcile-dev'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out development branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/lab-broad-ci-reconcile-dev
+          fetch-depth: 0
+      - name: Apply asserted reconciliation
+        run: python scripts/materialize_broad_suite_reconciliation.py
+      - name: Validate transformed Python
+        run: |
+          python -m compileall -q src/agent/runtime_v3/executor_bridge.py tests/test_builtin_mcp_npx_cache.py tests/test_builtin_mcp_bg_tasks.py tests/test_mcp_manager.py tests/test_llm_core_fallback.py tests/test_scheduler_prompt_cache_time.py tests/test_teacher_eval_tier2.py tests/runtime_v3/test_executor_bridge.py
+          git diff --check
+      - name: Materialize ordinary source commit
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src/agent/runtime_v3/executor_bridge.py tests/test_builtin_mcp_npx_cache.py tests/test_builtin_mcp_bg_tasks.py tests/test_mcp_manager.py tests/test_llm_core_fallback.py tests/test_scheduler_prompt_cache_time.py tests/test_teacher_eval_tier2.py tests/runtime_v3/test_executor_bridge.py
+          if git diff --cached --quiet; then
+            echo 'No materialized changes.'
+            exit 0
+          fi
+          git commit -m 'test(agent): reconcile broad suite with canonical runtime'
+          git push origin HEAD:agent/lab-broad-ci-reconcile-dev
