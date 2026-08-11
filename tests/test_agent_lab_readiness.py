@@ -81,3 +81,14 @@ def test_dry_run_does_not_execute_subprocess(monkeypatch, capsys):
     readiness._run(["python", "-m", "pytest", "example"], dry_run=True)
     assert called is False
     assert "$ python -m pytest example" in capsys.readouterr().out
+
+
+def test_dry_run_needs_no_node_or_linux_sandbox_binary(monkeypatch, capsys):
+    monkeypatch.setattr(readiness.shutil, "which", lambda name: None)
+    monkeypatch.setattr(readiness.sys, "platform", "linux")
+
+    readiness._validate_environment(include_js=True, dry_run=True)
+    readiness._probe_linux_sandbox(dry_run=True)
+
+    output = capsys.readouterr().out
+    assert "bwrap --unshare-all" in output
