@@ -139,6 +139,19 @@ async def execute_with_durable_effects(
         )
 
     if not handle.should_execute:
+        if approval_id and handle.replay_result is not None:
+            # Durable replay is not authorization. A committed cached result may
+            # satisfy idempotency for an unapproved read, but an exact approval
+            # is deliberately one-use. Re-enter only the Runtime V2 policy
+            # implementation so it can reject the consumed grant before any
+            # handler/effect boundary; never return the cached success as if the
+            # approval still carried authority.
+            return await implementation(
+                call,
+                context,
+                progress_cb=progress_cb,
+                approval_id=approval_id,
+            )
         return duplicate_effect_result(call, handle)
 
     try:
