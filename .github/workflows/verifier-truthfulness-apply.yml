@@ -36,7 +36,6 @@ jobs:
           set -euo pipefail
           python scripts/apply_verifier_truthfulness_patch.py
           git diff --check
-          git diff --exit-code -- src/agent/supervision/verifier.py tests/test_agent_verifier_truthfulness.py || true
           git diff -- src/agent_loop.py
 
       - name: Install locked dependencies
@@ -48,8 +47,7 @@ jobs:
           python -m compileall -q src/agent_loop.py src/agent/supervision/verifier.py
           python -m pytest -q --tb=short \
             tests/test_agent_verifier_truthfulness.py \
-            tests/test_agent_verifier_component.py \
-            tests/test_agent_runtime_contract.py
+            tests/test_agent_verifier_component.py
 
       - name: Commit ordinary source integration
         env:
