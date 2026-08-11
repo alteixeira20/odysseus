@@ -9,6 +9,8 @@ without changing which modules pytest discovers.
 from __future__ import annotations
 
 import argparse
+import os
+import signal
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -67,8 +69,47 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
     parser = argparse.ArgumentParser()
     parser.add_argument("--index", type=int, required=True)
     parser.add_argument("--count", type=int, required=True)
+    parser.add_argument("--wall-timeout-seconds", type=int, default=0)
     parser.add_argument("--list", action="store_true")
     return parser.parse_known_args()
+
+
+def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+
+    try:
+        process.wait(timeout=15)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    process.wait()
+
+
+def run_pytest(command: list[str], wall_timeout_seconds: int) -> int:
+    process = subprocess.Popen(command, cwd=ROOT, start_new_session=True)
+    try:
+        if wall_timeout_seconds > 0:
+            return process.wait(timeout=wall_timeout_seconds)
+        return process.wait()
+    except subprocess.TimeoutExpired:
+        print(
+            f"pytest shard exceeded {wall_timeout_seconds}s; "
+            "terminating its entire process group",
+            flush=True,
+        )
+        _terminate_process_group(process)
+        return 124
+    except BaseException:
+        _terminate_process_group(process)
+        raise
 
 
 def main() -> int:
@@ -77,6 +118,8 @@ def main() -> int:
         raise SystemExit(
             f"shard index {args.index} is outside [0, {args.count - 1}]"
         )
+    if args.wall_timeout_seconds < 0:
+        raise SystemExit("wall timeout must be zero or positive")
 
     paths = discover_test_modules()
     if not paths:
@@ -108,7 +151,7 @@ def main() -> int:
         *pytest_args,
         *relative_paths,
     ]
-    return subprocess.run(command, cwd=ROOT, check=False).returncode
+    return run_pytest(command, args.wall_timeout_seconds)
 
 
 if __name__ == "__main__":
