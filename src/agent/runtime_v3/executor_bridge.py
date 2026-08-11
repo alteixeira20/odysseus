@@ -36,6 +36,7 @@ def _preflight_effects(
 ) -> tuple[Effect, ...] | None:
     """Resolve effects without crossing an execution boundary."""
     from src.agent.runtime_v2.effect_policy import EFFECT_POLICY
+    from src.agent.runtime_v2.workspace_service import WorkspacePathError
     from src.agent.tools.bootstrap import TOOL_REGISTRY
 
     definition = TOOL_REGISTRY.resolve(call.canonical_name, context)
@@ -53,7 +54,7 @@ def _preflight_effects(
             return None
     try:
         effects = tuple(definition.resolve_effects(arguments, context))
-    except ValueError as exc:
+    except (ValueError, WorkspacePathError) as exc:
         raise EffectResolutionError(str(exc)) from exc
     outcome = EFFECT_POLICY.evaluate(
         context,
