@@ -28,7 +28,12 @@ class AgentBackend(Protocol):
 
 
 class AgentLoopCompatibilityBackend:
-    """Temporary and sole adapter around ``src.agent_loop``."""
+    """Temporary adapter to the internal execution kernel.
+
+    Public callers never enter this backend directly. ``src.agent_loop`` keeps
+    a frozen compatibility façade, while the canonical runner reaches the
+    explicitly internal kernel to avoid recursion back through itself.
+    """
 
     @staticmethod
     def arguments(request: AgentRunRequest) -> dict[str, Any]:
@@ -91,9 +96,9 @@ class AgentLoopCompatibilityBackend:
         }
 
     def stream(self, request: AgentRunRequest):
-        from src.agent_loop import stream_agent_loop as legacy_stream_agent_loop
+        from src.agent_loop import _legacy_stream_agent_kernel
 
-        return legacy_stream_agent_loop(**self.arguments(request))
+        return _legacy_stream_agent_kernel(**self.arguments(request))
 
 
 @dataclass(frozen=True)
