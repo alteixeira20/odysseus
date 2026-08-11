@@ -8,6 +8,7 @@ import pytest
 
 from src.agent_tools import filesystem_tools
 from src.agent_tools.filesystem_tools import ApplyPatchTool, GlobTool, WriteFileTool
+from src.agent.runtime_v3.workspace_journal import WorkspaceTransactionJournal
 
 
 @pytest.mark.asyncio
@@ -27,16 +28,23 @@ async def test_multi_file_patch_failure_restores_every_original(tmp_path, monkey
 +second-new
 *** End Patch"""
 
-    real_replace = filesystem_tools._replace_staged
+    real_apply_new = WorkspaceTransactionJournal._apply_new
     injected = {"done": False}
 
-    def fail_second_commit(staged, destination):
-        if destination == str(second) and not injected["done"]:
+    def fail_second_visible_commit(self, operation):
+        if operation["path"] == str(second) and not injected["done"]:
             injected["done"] = True
             raise OSError("injected second-file commit failure")
-        real_replace(staged, destination)
+        return real_apply_new(self, operation)
 
-    monkeypatch.setattr(filesystem_tools, "_replace_staged", fail_second_commit)
+    # Runtime V3 owns multi-file visibility and rollback. Fault-inject the
+    # journal's real visible commit boundary instead of the retired legacy
+    # filesystem_tools._replace_staged seam.
+    monkeypatch.setattr(
+        WorkspaceTransactionJournal,
+        "_apply_new",
+        fail_second_visible_commit,
+    )
     result = await ApplyPatchTool().execute(json.dumps({"patch_text": patch}), {})
 
     assert result["exit_code"] == 1
