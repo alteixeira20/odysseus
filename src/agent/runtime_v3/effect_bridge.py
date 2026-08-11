@@ -152,6 +152,13 @@ def begin_tool_effect(
     target = ledger or get_runtime_ledger()
     _ensure_run(target, context)
     effect_class, retry_policy = _classify_effects(effects)
+    # An approval-scoped call has a stronger retry oracle than a generic
+    # process/write call: Runtime V2 records whether execution crossed the
+    # effect boundary. A FAILED durable result is therefore retryable only for
+    # this exact approval scope; once V2 reports any observed/unknown effect we
+    # persist UNKNOWN instead and the ledger refuses replay.
+    if idempotency_scope:
+        retry_policy = RetryPolicy.SAFE
     recorded_arguments = {
         "call_id": call.call_id,
         "candidate_id": call.candidate_id,
@@ -246,14 +253,20 @@ def finish_tool_effect(handle: DurableEffectHandle, result: ToolResult) -> None:
     if not handle.should_execute:
         return
     payload = _durable_result_payload(handle, result)
+    uncertain_status = result.status in {
+        ToolResultStatus.TIMED_OUT,
+        ToolResultStatus.CANCELLED,
+        ToolResultStatus.ERROR,
+        ToolResultStatus.INCOMPLETE,
+    }
+    # Runtime V2's observed_effects boundary is authoritative for whether a
+    # failed call may have crossed into an effect. A pre-effect failure has no
+    # observed or unknown effects and can be durably FAILED; an effectful
+    # failure remains UNKNOWN and can never be retried automatically.
     unknown = bool(result.unknown_effects) or (
         handle.effect_class is not EffectClass.READ
-        and result.status in {
-            ToolResultStatus.TIMED_OUT,
-            ToolResultStatus.CANCELLED,
-            ToolResultStatus.ERROR,
-            ToolResultStatus.INCOMPLETE,
-        }
+        and uncertain_status
+        and bool(result.observed_effects)
     )
     if unknown:
         handle.ledger.mark_effect_unknown(
@@ -276,6 +289,7 @@ def finish_tool_effect(handle: DurableEffectHandle, result: ToolResult) -> None:
             "canonical_name": result.canonical_name,
             "status": terminal_status.value,
             "tool_status": result.status.value,
+            "observed_effect_count": len(result.observed_effects),
             "unknown_effect_count": len(result.unknown_effects),
             "committed_effect_count": len(result.committed_effects),
         },
