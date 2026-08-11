@@ -1,5 +1,7 @@
 """Independent completion verification for effectful agent work."""
 
+from dataclasses import dataclass
+from enum import Enum
 import logging
 
 from src.agent.providers.adapters.default import strip_think_blocks
@@ -7,15 +9,54 @@ from src.agent.providers.adapters.default import strip_think_blocks
 
 logger = logging.getLogger(__name__)
 
+# Compatibility names plus the canonical Runtime V2/V3 names that can create
+# externally observable or workspace effects. Argument-aware effect resolution
+# remains authoritative for execution; this set only decides whether an
+# opt-in semantic completion check is warranted after a successful tool round.
 EFFECTFUL_TOOLS = {
     "create_document",
     "update_document",
     "edit_document",
+    "patch_workspace",
+    "run_sandbox_command",
+    "run_host_command",
+    "run_python",
     "bash",
     "python",
     "write_file",
+    "edit_file",
+    "replace_file",
+    "append_file",
+    "send_email",
+    "reply_to_email",
 }
 MAX_VERIFIER_ROUNDS = 2
+
+
+class VerificationStatus(str, Enum):
+    PASS = "pass"
+    FAIL = "fail"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class VerificationResult:
+    status: VerificationStatus
+    findings: tuple[str, ...] = ()
+    diagnostic: str = ""
+
+    @classmethod
+    def passed(cls) -> "VerificationResult":
+        return cls(VerificationStatus.PASS)
+
+    @classmethod
+    def failed(cls, findings: list[str] | tuple[str, ...]) -> "VerificationResult":
+        cleaned = tuple(str(item).strip() for item in findings if str(item).strip())
+        return cls(VerificationStatus.FAIL, findings=cleaned)
+
+    @classmethod
+    def unknown(cls, diagnostic: str) -> "VerificationResult":
+        return cls(VerificationStatus.UNKNOWN, diagnostic=str(diagnostic or "")[:500])
 
 
 def build_actions_snapshot(tool_events: list, limit: int = 8000) -> str:
@@ -26,19 +67,39 @@ def build_actions_snapshot(tool_events: list, limit: int = 8000) -> str:
         output = (event.get("output") or "").strip()
         exit_code = event.get("exit_code")
         head = f"[{tool}] {command}" if command else f"[{tool}]"
-        exit_text = (
-            f" (exit {exit_code})"
-            if exit_code not in (None, 0)
-            else ""
-        )
-        body = (
-            output[:1200] + " …"
-            if len(output) > 1200
-            else output or "(no output)"
-        )
+        exit_text = f" (exit {exit_code})" if exit_code not in (None, 0) else ""
+        body = output[:1200] + " …" if len(output) > 1200 else output or "(no output)"
         parts.append(f"{head}{exit_text}\n-> {body}")
     snapshot = "\n\n".join(parts)
     return snapshot[:limit] if len(snapshot) > limit else snapshot
+
+
+def parse_verification_response(raw: str) -> VerificationResult:
+    """Parse the verifier protocol without interpreting absence as success."""
+
+    cleaned = strip_think_blocks(raw or "")
+    verification_lines = [
+        line.strip()
+        for line in cleaned.splitlines()
+        if line.strip().startswith("VERIFICATION:")
+    ]
+    if not verification_lines:
+        return VerificationResult.unknown("missing_verification_marker")
+
+    line = verification_lines[-1]
+    if line == "VERIFICATION: SUCCESS":
+        return VerificationResult.passed()
+    prefix = "VERIFICATION: FAIL:"
+    if line.startswith(prefix):
+        reasons = [
+            reason.strip()
+            for reason in line[len(prefix):].strip().split(";")
+            if reason.strip()
+        ]
+        if reasons:
+            return VerificationResult.failed(reasons)
+        return VerificationResult.unknown("empty_failure_reason")
+    return VerificationResult.unknown("malformed_verification_marker")
 
 
 async def run_verifier_subagent(
@@ -48,7 +109,7 @@ async def run_verifier_subagent(
     endpoint_url: str,
     model: str,
     headers: dict,
-) -> list[str]:
+) -> VerificationResult:
     from src.llm_core import llm_call_async
 
     prompt = (
@@ -81,23 +142,5 @@ async def run_verifier_subagent(
         )
     except Exception as exc:
         logger.warning("[agent] verifier subagent failed: %s", exc)
-        return []
-    raw = strip_think_blocks(raw or "")
-    last_verification = None
-    for line in raw.splitlines():
-        if "VERIFICATION:" in line:
-            last_verification = line.strip()
-    if (
-        not last_verification
-        or "VERIFICATION: FAIL:" not in last_verification
-    ):
-        return []
-    reasons = last_verification.split(
-        "VERIFICATION: FAIL:",
-        1,
-    )[1].strip()
-    return [
-        reason.strip()
-        for reason in reasons.split(";")
-        if reason.strip()
-    ]
+        return VerificationResult.unknown(f"verifier_call_failed:{type(exc).__name__}")
+    return parse_verification_response(raw or "")
