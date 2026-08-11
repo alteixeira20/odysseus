@@ -18,10 +18,15 @@ on:
       - "src/mcp_manager.py"
       - "routes/chat_routes.py"
       - "routes/agent_runtime_routes.py"
+      - "static/js/agentRuntimeInspector.js"
+      - "static/js/agentToolLifecycle.js"
+      - "static/js/agentToolRequest.js"
+      - "static/js/runtimeEvents.js"
       - "tests/runtime_v3/**"
       - "tests/test_agent_*.py"
       - "tests/test_runtime_v2_*.py"
       - "tests/agent*.test.mjs"
+      - "tests/runtimeEvents.test.mjs"
       - ".github/workflows/agent-runtime-gate.yml"
   push:
     branches:
@@ -40,10 +45,15 @@ on:
       - "src/mcp_manager.py"
       - "routes/chat_routes.py"
       - "routes/agent_runtime_routes.py"
+      - "static/js/agentRuntimeInspector.js"
+      - "static/js/agentToolLifecycle.js"
+      - "static/js/agentToolRequest.js"
+      - "static/js/runtimeEvents.js"
       - "tests/runtime_v3/**"
       - "tests/test_agent_*.py"
       - "tests/test_runtime_v2_*.py"
       - "tests/agent*.test.mjs"
+      - "tests/runtimeEvents.test.mjs"
       - ".github/workflows/agent-runtime-gate.yml"
 
 permissions:
@@ -62,6 +72,7 @@ jobs:
       - name: Check out exact revision
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          fetch-depth: 2
           persist-credentials: false
 
       - name: Set up Python
