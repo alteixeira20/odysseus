@@ -20,7 +20,10 @@ from src.agent.runtime_v2.contracts import (
     ToolResultStatus,
 )
 from src.agent.runtime_v3 import ledger as ledger_module
-from src.agent.runtime_v3.executor_bridge import execute_with_durable_effects
+from src.agent.runtime_v3.executor_bridge import (
+    EffectResolutionError,
+    execute_with_durable_effects,
+)
 from src.agent.runtime_v3.ledger import DurableRunLedger
 from src.execution_policy import ExecutionMode
 
@@ -245,6 +248,27 @@ class ExecutorBridgeTests(unittest.IsolatedAsyncioTestCase):
             (self.context.run_id,),
         ).fetchone()
         self.assertEqual(row[0], "unknown")
+
+    async def test_effect_resolution_failure_preserves_specific_error(self):
+        calls = 0
+
+        async def implementation(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            raise AssertionError("handler must not execute")
+
+        with patch(
+            "src.agent.runtime_v3.executor_bridge._preflight_effects",
+            side_effect=EffectResolutionError("outside the execution root"),
+        ):
+            result = await execute_with_durable_effects(
+                self.call, self.context, implementation=implementation
+            )
+
+        self.assertEqual(calls, 0)
+        self.assertEqual(result.status, ToolResultStatus.INCOMPLETE)
+        self.assertEqual(result.error.code, "effect_resolution_error")
+        self.assertIn("outside the execution root", result.error.message)
 
     async def test_approved_preflight_failure_denies_before_handler(self):
         calls = 0

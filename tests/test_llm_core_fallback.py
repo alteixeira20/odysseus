@@ -24,7 +24,7 @@ def _run_fallback(monkeypatch, per_model):
     async def run():
         out = []
         async for c in llm_core.stream_llm_with_fallback(
-            [("u1", "primary", {}), ("u2", "backup", {})], [{"role": "user", "content": "hi"}]
+            [("https://provider.test/v1", "primary", {}), ("https://provider.test/v1", "backup", {})], [{"role": "user", "content": "hi"}]
         ):
             out.append(c)
         return out
@@ -225,13 +225,13 @@ def test_duplicate_route_is_attempted_only_once(monkeypatch):
 
     async def run():
         out = []
-        cands = [("u1", "m1", {}), ("u1", "m1", {}), ("u2", "m2", {})]
+        cands = [("u1", "m1", {}), ("u1", "m1", {}), ("u1", "m2", {})]
         async for c in llm_core.stream_llm_with_fallback(cands, [{"role": "user", "content": "hi"}]):
             out.append(c)
         return out
 
     asyncio.run(run())
-    assert calls == [("u1", "m1"), ("u2", "m2")], f"duplicate route re-attempted: {calls}"
+    assert calls == [("u1", "m1"), ("u1", "m2")], f"duplicate route re-attempted: {calls}"
 
 
 def test_summarize_stream_error():
