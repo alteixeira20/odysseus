@@ -1,0 +1,73 @@
+name: Kernel authority baseline diagnostics
+
+on:
+  pull_request:
+    branches: [agentic-lab]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  diagnose:
+    if: github.head_ref == 'agent/kernel-authority-baseline-diagnostics'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact diagnostic branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: agent/kernel-authority-baseline-diagnostics
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Reproduce first broad CI failure on baseline
+        id: reproduce
+        shell: bash
+        run: |
+          set -euo pipefail
+          pip install -r requirements.txt
+          mkdir -p data diagnostics
+
+          set +e
+          timeout --signal=TERM --kill-after=30s 8m \
+            python -m pytest -vv --tb=short --maxfail=1 --timeout=90 --timeout-method=thread \
+            > diagnostics/baseline-full.log 2>&1
+          status=$?
+          set -e
+
+          {
+            echo "# Broad CI baseline fail-fast diagnostic"
+            echo
+            echo "source_head_sha: 177734e7d58749a4d34b9ee127af168f1d2de213"
+            echo "diagnostic_head_sha: $(git rev-parse HEAD)"
+            echo "exit_status: $status"
+            echo
+            echo "## Failure/error lines"
+            grep -E '^(FAILED|ERROR) |^=+ (FAILURES|ERRORS|short test summary info|warnings summary|[0-9]+ (failed|passed|error|errors))' diagnostics/baseline-full.log || true
+            echo
+            echo "## Final 300 log lines"
+            tail -n 300 diagnostics/baseline-full.log
+          } > diagnostics/baseline-failure-summary.txt
+
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+
+      - name: Commit compact diagnostic only
+        run: |
+          set -euo pipefail
+          rm -f diagnostics/baseline-full.log
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add diagnostics/baseline-failure-summary.txt
+          git commit -m 'chore(agent): record broad CI baseline summary'
+          git push origin HEAD:agent/kernel-authority-baseline-diagnostics
+
+      - name: Preserve reproduced CI status
+        run: |
+          test "${{ steps.reproduce.outputs.status }}" -eq 0
