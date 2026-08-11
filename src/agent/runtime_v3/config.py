@@ -33,6 +33,8 @@ class RuntimeV3Limits:
     max_event_bytes: int = 1_048_576
     max_replay_events: int = 8192
     max_replay_bytes: int = 64 * 1024 * 1024
+    stream_batch_events: int = 32
+    stream_batch_bytes: int = 128 * 1024
     max_mcp_output_bytes: int = 1_048_576
     mcp_call_timeout_seconds: float = 120.0
 
@@ -50,6 +52,8 @@ class RuntimeV3Limits:
             max_event_bytes=self.max_event_bytes,
             max_replay_events=self.max_replay_events,
             max_replay_bytes=self.max_replay_bytes,
+            stream_batch_events=self.stream_batch_events,
+            stream_batch_bytes=self.stream_batch_bytes,
             max_mcp_output_bytes=self.max_mcp_output_bytes,
             mcp_call_timeout_seconds=self.mcp_call_timeout_seconds,
         )
@@ -69,6 +73,12 @@ def load_runtime_v3_limits() -> RuntimeV3Limits:
             64 * 1024 * 1024,
             1_048_576,
             2 * 1024 * 1024 * 1024,
+        ),
+        stream_batch_events=_bounded_int(
+            "ODYSSEUS_AGENT_STREAM_BATCH_EVENTS", 32, 1, 512
+        ),
+        stream_batch_bytes=_bounded_int(
+            "ODYSSEUS_AGENT_STREAM_BATCH_BYTES", 128 * 1024, 4096, 1_048_576
         ),
         max_mcp_output_bytes=_bounded_int("ODYSSEUS_MCP_MAX_OUTPUT_BYTES", 1_048_576, 4096, 16_777_216),
         mcp_call_timeout_seconds=_bounded_float("ODYSSEUS_MCP_CALL_TIMEOUT_SECONDS", 120.0, 1.0, 3600.0),
