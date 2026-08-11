@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Run the Agent Lab correctness contract locally.
 
-Default mode is a high-signal quick regression suite. ``--full`` mirrors the
-blocking Python/JavaScript selection used by the Agent Runtime Gate so local and
-CI evidence cannot drift silently.
+Default mode is a high-signal quick regression suite. ``--full`` is the single
+source of truth for the blocking Python Agent Runtime Gate target selection.
 """
 
 from __future__ import annotations
@@ -17,6 +16,7 @@ from typing import Iterable, Sequence
 
 
 ROOT = Path(__file__).resolve().parents[1]
+PYTEST_WALL_TIMEOUT_SECONDS = 20 * 60
 
 COMPILE_TARGETS = (
     "src/agent",
@@ -126,12 +126,27 @@ def javascript_commands() -> tuple[list[str], ...]:
     return (*syntax, ["node", "--test", *JS_TEST_TARGETS])
 
 
-def _run(command: Sequence[str], *, dry_run: bool) -> None:
+def _run(
+    command: Sequence[str],
+    *,
+    dry_run: bool,
+    timeout_seconds: float | None = None,
+) -> None:
     printable = " ".join(command)
     print(f"$ {printable}", flush=True)
     if dry_run:
         return
-    completed = subprocess.run(command, cwd=ROOT, check=False)
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=ROOT,
+            check=False,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ReadinessError(
+            f"command exceeded {timeout_seconds:g}s wall-clock budget: {printable}"
+        ) from exc
     if completed.returncode:
         raise ReadinessError(f"command failed with exit code {completed.returncode}: {printable}")
 
@@ -233,7 +248,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         mode = "full" if args.full else "quick"
         print(f"[agent-lab] running {mode} readiness contract", flush=True)
         _run(compile_command(), dry_run=args.dry_run)
-        _run(python_command(full=args.full), dry_run=args.dry_run)
+        _run(
+            python_command(full=args.full),
+            dry_run=args.dry_run,
+            timeout_seconds=PYTEST_WALL_TIMEOUT_SECONDS,
+        )
         if include_js:
             for command in javascript_commands():
                 _run(command, dry_run=args.dry_run)
