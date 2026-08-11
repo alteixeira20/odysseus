@@ -1,0 +1,48 @@
+name: Materialize legacy loop inversion
+
+on:
+  push:
+    branches:
+      - agent/legacy-loop-inversion-dev
+    paths:
+      - scripts/apply_legacy_loop_inversion.py
+      - .github/workflows/legacy-loop-inversion-apply.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: legacy-loop-inversion-apply
+  cancel-in-progress: true
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out development branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: agent/legacy-loop-inversion-dev
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Apply asserted plaintext inversion
+        run: |
+          set -euo pipefail
+          python scripts/apply_legacy_loop_inversion.py
+          python -m compileall -q src/agent src/agent_loop.py
+          git diff --check
+
+      - name: Materialize ordinary source commit
+        run: |
+          set -euo pipefail
+          git config user.name "odysseus-agent-migration-bot"
+          git config user.email "111787685+alteixeira20@users.noreply.github.com"
+          git add src/agent_loop.py
+          if git diff --cached --quiet; then
+            echo "No source changes to commit"
+            exit 0
+          fi
+          git commit -m "refactor(agent): invert legacy loop behind AgentRunner"
+          git push origin HEAD:agent/legacy-loop-inversion-dev
