@@ -189,6 +189,7 @@ from src.agent.supervision.intent_nudge import (
 from src.agent.supervision.verifier import (
     EFFECTFUL_TOOLS as _VERIFIER_EFFECTFUL_TOOLS,
     MAX_VERIFIER_ROUNDS as _VERIFIER_MAX_ROUNDS,
+    VerificationStatus as _VerificationStatus,
     build_actions_snapshot as _build_actions_snapshot,
     run_verifier_subagent as _run_verifier_subagent,
 )
@@ -2386,6 +2387,10 @@ async def stream_agent_loop(
     # on such turns and at most _VERIFIER_MAX_ROUNDS times.
     _effectful_used = False
     _verifier_rounds = 0
+    # Once a semantic verifier rejects completion, only fresh effectful work
+    # followed by a verifier PASS can clear the block. A prose-only retry must
+    # never convert a known verification failure into successful completion.
+    _verification_repair_required = False
     _verifier_instruction = _extract_last_user_message(messages)
     real_input_tokens = 0   # Accumulated real usage from API
     real_output_tokens = 0
@@ -2992,31 +2997,84 @@ async def stream_agent_loop(
                 )
                 break
             # ── Completion verifier (mechanism 3a) ────────────────────
-            # The model is finishing. If this was an effectful agentic turn,
-            # have a fresh-context verifier independently check the work
-            # before we accept "done". On FAIL, surface the issues and let
-            # the model fix them (capped, and it must do new effectful work
-            # to re-trigger). Skipped on force-answer rounds (no tools to
-            # fix with), pure Q&A, and when the toggle is off.
+            # Completion verification is an authority boundary for truthfulness:
+            # PASS permits completion, FAIL requires fresh effectful repair, and
+            # UNKNOWN is never interpreted as PASS. The verifier is opt-in, but
+            # when enabled its uncertainty must not create a false-success state.
             _claimed_done = bool(_strip_think_blocks(cleaned_round).strip())
-            if (_effectful_used and not _force_answer
-                    and _claimed_done
-                    and _verifier_rounds < _VERIFIER_MAX_ROUNDS
-                    # Default OFF: on weak local models the verifier can't judge
-                    # from the action-snapshot (no doc body), so it false-rejects
-                    # ("content not shown") and forces a costly extra round every
-                    # effectful turn. Opt-in via setting for strong models.
-                    and _settings.verifier_enabled):
+            if (
+                _settings.verifier_enabled
+                and _verification_repair_required
+                and not _effectful_used
+                and _claimed_done
+            ):
+                _run_disposition = RunDisposition.INCOMPLETE
+                _run_disposition_reason = "verification_failed_without_repair"
+                logger.warning(
+                    "[agent] round %s attempted completion after verifier FAIL without fresh effectful repair",
+                    round_num,
+                )
+                break
+
+            if (
+                _settings.verifier_enabled
+                and _effectful_used
+                and _claimed_done
+            ):
+                if _verifier_rounds >= _VERIFIER_MAX_ROUNDS:
+                    _run_disposition = RunDisposition.INCOMPLETE
+                    _run_disposition_reason = "verification_retry_budget_exhausted"
+                    logger.warning(
+                        "[agent] verifier retry budget exhausted after %s rejected completion(s)",
+                        _verifier_rounds,
+                    )
+                    break
+
                 # Brief "working" indicator while the verifier runs.
                 yield f'data: {json.dumps({"type": "agent_step", "round": round_num})}\n\n'
-                _vfail = await _run_verifier_subagent(
+                _verification = await _run_verifier_subagent(
                     _verifier_instruction,
                     _build_actions_snapshot(tool_events),
                     endpoint_url=endpoint_url, model=model, headers=headers,
                 )
-                if _vfail:
+                if _verification.status is _VerificationStatus.UNKNOWN:
+                    _run_disposition = RunDisposition.INCOMPLETE
+                    _run_disposition_reason = "verification_inconclusive"
+                    logger.warning(
+                        "[agent] verifier inconclusive on round %s diagnostic=%s",
+                        round_num,
+                        _verification.diagnostic,
+                    )
+                    yield (
+                        "data: "
+                        + json.dumps({
+                            "type": "verification_inconclusive",
+                            "round": round_num,
+                            "diagnostic": _verification.diagnostic,
+                        })
+                        + "\n\n"
+                    )
+                    break
+
+                if _verification.status is _VerificationStatus.FAIL:
                     _verifier_rounds += 1
-                    logger.info(f"[agent] verifier flagged {len(_vfail)} issue(s) on round {round_num}: {_vfail}")
+                    _verification_repair_required = True
+                    _vfail = list(_verification.findings)
+                    if _force_answer:
+                        _run_disposition = RunDisposition.INCOMPLETE
+                        _run_disposition_reason = "verification_failed_at_force_answer"
+                        logger.warning(
+                            "[agent] verifier rejected force-answer completion on round %s: %s",
+                            round_num,
+                            _vfail,
+                        )
+                        break
+                    logger.info(
+                        "[agent] verifier flagged %s issue(s) on round %s: %s",
+                        len(_vfail),
+                        round_num,
+                        _vfail,
+                    )
                     _note = "\n\n_Double-checked the work and found something to fix._\n\n"
                     yield f'data: {json.dumps({"delta": _note})}\n\n'
                     full_response += _note
@@ -3026,13 +3084,18 @@ async def stream_agent_loop(
                             "An independent verifier reviewed your work against the "
                             "original request and found issues that must be fixed before "
                             "this is actually done:\n- " + "\n- ".join(_vfail) +
-                            "\n\nFix these now using tools, then finish."
+                            "\n\nFix these using the minimum necessary tools. Do not repeat "
+                            "already-committed side effects. Then finish only after the "
+                            "new evidence addresses every verifier finding."
                         ),
                     })
-                    # Require fresh effectful work before verifying again, so we
-                    # never re-verify an unchanged state in a loop.
+                    # Fresh effectful work is required before another completion
+                    # claim can be verified; unchanged prose cannot clear FAIL.
                     _effectful_used = False
                     continue
+
+                # Only an explicit PASS clears a prior failure.
+                _verification_repair_required = False
             # ── Intent-without-action supervisor ─────────────────────
             # Catch "Let me tail the output" / "I'll check the logs" /
             # "Let me investigate" patterns where the model announces an
