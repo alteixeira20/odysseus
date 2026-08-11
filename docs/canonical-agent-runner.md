@@ -29,27 +29,30 @@ The current execution backend is `AgentLoopCompatibilityBackend`. It is a tempor
 
 ## Typed lifecycle boundary
 
-`run_state_event()` already creates an immutable `AgentEvent` before projecting it to the legacy SSE wire. The canonical lifecycle observes that typed event in the current task context and uses it as terminal truth.
+Odysseus currently has two typed event families that can produce terminal run state before SSE serialization:
 
 ```text
-AgentEvent(run_state)
-        |
-        +----> DurableRunLifecycle terminal semantics
-        |
-        v
-encode_legacy_sse()
-        |
-        v
-current frontend wire (unchanged)
+AgentEvent(run_state) -----------+
+                                 |
+RuntimeEvent v2(run_state) ------+--> DurableRunLifecycle
+                                 |          |
+                                 |          +--> durable terminal state
+                                 v
+                         existing SSE encoders
+                                 |
+                                 v
+                         frontend wire unchanged
 ```
 
-The durable replay ledger still stores the current wire event for compatibility. For terminal semantics, SSE JSON parsing is consulted only when a genuinely legacy producer bypasses the typed `AgentEvent` boundary. The typed terminal is applied after its exact wire event is journaled, preserving the existing replay-before-terminal ordering.
+`DurableRunLifecycle` installs task-local observers only while advancing the execution backend, captures either typed terminal family, journals the exact resulting wire event, and only then applies the durable terminal transition. The observer contexts are reset before transport/UI code receives each chunk.
+
+SSE JSON terminal parsing is retained only for genuinely legacy/literal wire producers that bypass both typed event encoders. It is no longer canonical terminal truth for modern Agent paths.
 
 ## Completed migration boundaries
 
 1. **Canonical execution entry point** — `AgentRunRequest -> AgentRunner` is the public execution path; Runtime V3 and the legacy loop are no longer invoked by `src.agent.api` directly.
 2. **Server/HTTP authority preparation** — `chat_routes.py` sends intent, workspace grants, host token and prepared turn lease through `AgentAuthorityRequest`; Runtime V2 execution-context construction is owned by `AgentRunner`.
-3. **Typed durable lifecycle** — `AgentRunner` owns `DurableRunLifecycle`; terminal state is typed-first and the old Runtime V3 orchestrator is only a compatibility façade.
+3. **Typed durable lifecycle** — `AgentRunner` owns `DurableRunLifecycle`; both AgentEvent and Runtime V2 terminal events are typed-first and the old Runtime V3 orchestrator is only a compatibility façade.
 
 ## Remaining migration seam
 
