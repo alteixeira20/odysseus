@@ -1,228 +1,314 @@
-# Broad CI diagnostic
+# Broad CI fail-fast diagnostic
 
-head_sha: dd255dd7bb8f318eb7750db20afd3d224d3987c6
+source_head_sha: 9c02b6b921b7d27febab8e3ff28f23de1c486da2
+diagnostic_head_sha: 2bf436ddc2f1678c0d7366577901eb6314a0c6e5
 exit_status: 1
 
 ## Failure/error lines
+=================================== FAILURES ===================================
+=============================== warnings summary ===============================
+=========================== short test summary info ============================
+FAILED tests/test_agent_runtime_contract.py::test_runtime_v2_shell_starts_each_call_at_immutable_execution_root - assert 1 == 0
+================== 1 failed, 407 passed, 1 warning in 31.89s ===================
 
-## Final 220 log lines
-tests/test_run_focus.py::test_area_and_sub_area_marker_expression PASSED [ 76%]
-tests/test_run_focus.py::test_area_and_embedding_sub_area_marker_expression_includes_memory_split PASSED [ 76%]
-tests/test_run_focus.py::test_no_selection_marker_expression_is_none PASSED [ 76%]
-tests/test_run_focus.py::test_fast_only_marker_expression PASSED         [ 76%]
-tests/test_run_focus.py::test_fast_composes_with_area PASSED             [ 76%]
-tests/test_run_focus.py::test_fast_composes_with_area_and_sub_area PASSED [ 76%]
-tests/test_run_focus.py::test_area_only_command PASSED                   [ 76%]
-tests/test_run_focus.py::test_sub_area_only_command PASSED               [ 76%]
-tests/test_run_focus.py::test_embedding_sub_area_command_includes_memory_split PASSED [ 76%]
-tests/test_run_focus.py::test_area_and_sub_area_command PASSED           [ 76%]
-tests/test_run_focus.py::test_keyword_only_command PASSED                [ 76%]
-tests/test_run_focus.py::test_area_and_keyword_command PASSED            [ 76%]
-tests/test_run_focus.py::test_passthrough_pytest_args_appended_last PASSED [ 76%]
-tests/test_run_focus.py::test_last_failed_appends_safe_flags PASSED      [ 76%]
-tests/test_run_focus.py::test_default_python_is_current_interpreter PASSED [ 76%]
-tests/test_run_focus.py::test_fast_only_command PASSED                   [ 76%]
-tests/test_run_focus.py::test_fast_with_area_command PASSED              [ 76%]
-tests/test_run_focus.py::test_fast_with_area_and_sub_area_command PASSED [ 76%]
-tests/test_run_focus.py::test_fast_with_embedding_sub_area_command_includes_memory_split PASSED [ 76%]
-tests/test_run_focus.py::test_durations_appends_flag PASSED              [ 76%]
-tests/test_run_focus.py::test_durations_min_appends_flag PASSED          [ 76%]
-tests/test_run_focus.py::test_durations_is_not_a_focus_selector PASSED   [ 76%]
-tests/test_run_focus.py::test_durations_kept_before_passthrough_args PASSED [ 77%]
-tests/test_run_focus.py::test_normalize_sub_area_lowercases_and_collapses PASSED [ 77%]
-tests/test_run_focus.py::test_normalize_sub_area_strips_separators PASSED [ 77%]
-tests/test_run_focus.py::test_normalize_sub_area_removes_marker_prefix PASSED [ 77%]
-tests/test_run_focus.py::test_normalize_sub_area_rejects_empty_after_normalization PASSED [ 77%]
-tests/test_run_focus.py::test_discover_sub_areas_from_test_filename PASSED [ 77%]
-tests/test_run_focus.py::test_dry_run_prints_command_and_does_not_execute PASSED [ 77%]
-tests/test_run_focus.py::test_dry_run_last_failed_prints_safe_flags PASSED [ 77%]
-tests/test_run_focus.py::test_run_invokes_executor_with_built_command PASSED [ 77%]
-tests/test_run_focus.py::test_run_last_failed_only PASSED                [ 77%]
-tests/test_run_focus.py::test_run_accepts_both_sub_area_forms[cookbook] PASSED [ 77%]
-tests/test_run_focus.py::test_run_accepts_both_sub_area_forms[sub_cookbook] PASSED [ 77%]
-tests/test_run_focus.py::test_run_keeps_embedding_memory_selector_specific PASSED [ 77%]
-tests/test_run_focus.py::test_run_expands_embedding_selector_to_memory_split PASSED [ 77%]
-tests/test_run_focus.py::test_invalid_area_exits_with_error PASSED       [ 77%]
-tests/test_run_focus.py::test_invalid_sub_area_exits_with_error PASSED   [ 77%]
-tests/test_run_focus.py::test_no_focus_selector_is_rejected PASSED       [ 77%]
-tests/test_run_focus.py::test_fast_run_invokes_executor_with_not_slow PASSED [ 77%]
-tests/test_run_focus.py::test_fast_with_durations_run_invokes_executor PASSED [ 77%]
-tests/test_run_focus.py::test_fast_durations_dry_run_prints_command PASSED [ 77%]
-tests/test_run_focus.py::test_durations_alone_is_rejected_before_executor PASSED [ 77%]
-tests/test_run_focus.py::test_durations_zero_is_allowed_means_show_all PASSED [ 77%]
-tests/test_run_focus.py::test_negative_duration_values_are_rejected[--durations--1] PASSED [ 77%]
-tests/test_run_focus.py::test_negative_duration_values_are_rejected[--durations-min--0.5] PASSED [ 77%]
-tests/test_run_focus.py::test_durations_min_without_durations_is_rejected[argv0] PASSED [ 77%]
-tests/test_run_focus.py::test_durations_min_without_durations_is_rejected[argv1] PASSED [ 77%]
-tests/test_run_focus.py::test_durations_min_with_durations_is_allowed PASSED [ 77%]
-tests/test_run_focus.py::test_fast_lane_collects_only_unmarked_auth_concurrency_test PASSED [ 77%]
-tests/test_run_focus.py::test_service_health_sub_area_command_includes_split_files PASSED [ 77%]
-tests/test_run_focus.py::test_service_health_alias_is_accepted_by_run PASSED [ 77%]
-tests/test_run_order_report.py::test_same_seed_shuffles_identically PASSED [ 77%]
-tests/test_run_order_report.py::test_different_seeds_shuffle_differently PASSED [ 77%]
-tests/test_run_order_report.py::test_shuffle_preserves_items PASSED      [ 77%]
-tests/test_run_order_report.py::test_plugin_hook_matches_shuffle_items PASSED [ 77%]
-tests/test_run_order_report.py::test_pytest_args_after_separator_are_forwarded PASSED [ 77%]
-tests/test_run_order_report.py::test_explicit_seed_reaches_plugin PASSED [ 77%]
-tests/test_run_order_report.py::test_pytest_exit_code_is_propagated PASSED [ 77%]
-tests/test_run_order_report.py::test_invalid_seed_is_rejected_before_pytest[abc] PASSED [ 77%]
-tests/test_run_order_report.py::test_invalid_seed_is_rejected_before_pytest[-1] PASSED [ 77%]
-tests/test_run_order_report.py::test_invalid_seed_is_rejected_before_pytest[4294967296] PASSED [ 77%]
-tests/test_run_order_report.py::test_explicit_seed_is_printed_with_repro_command PASSED [ 77%]
-tests/test_run_order_report.py::test_working_directory_is_reported PASSED [ 77%]
-tests/test_run_order_report.py::test_footer_repeats_seed_and_outcome PASSED [ 77%]
-tests/test_run_order_report.py::test_generated_seed_is_printed_and_used PASSED [ 77%]
-tests/test_run_order_report.py::test_generate_seed_is_within_range PASSED [ 77%]
-tests/test_run_order_report.py::test_subprocess_same_seed_is_reproducible PASSED [ 77%]
-tests/test_run_order_report.py::test_subprocess_different_seeds_change_order PASSED [ 77%]
-tests/test_run_order_report.py::test_subprocess_failure_exit_code_and_footer PASSED [ 77%]
-tests/test_runtime_paths.py::test_get_app_root_normal_run PASSED         [ 77%]
-tests/test_runtime_paths.py::test_get_app_root_frozen_with_meipass PASSED [ 77%]
-tests/test_runtime_paths.py::test_get_app_root_frozen_without_meipass PASSED [ 77%]
-tests/test_runtime_paths.py::test_get_default_data_dir_normal PASSED     [ 77%]
-tests/test_runtime_paths.py::test_get_default_data_dir_frozen PASSED     [ 77%]
-tests/test_runtime_v2_authority_policy.py::test_execution_context_and_authority_snapshot_are_immutable PASSED [ 77%]
-tests/test_runtime_v2_authority_policy.py::test_host_authorization_is_owner_bound_one_use_and_explicit_denial_wins PASSED [ 78%]
-tests/test_runtime_v2_authority_policy.py::test_concurrent_run_contexts_cannot_share_authority_or_workspace PASSED [ 78%]
-tests/test_runtime_v2_authority_policy.py::test_sensitive_or_opaque_host_effects_require_approval[sudo id] PASSED [ 78%]
-tests/test_runtime_v2_authority_policy.py::test_sensitive_or_opaque_host_effects_require_approval[apt-get install package] PASSED [ 78%]
-tests/test_runtime_v2_authority_policy.py::test_sensitive_or_opaque_host_effects_require_approval[systemctl restart service] PASSED [ 78%]
-tests/test_runtime_v2_authority_policy.py::test_sensitive_or_opaque_host_effects_require_approval[docker run image] PASSED [ 78%]
-tests/test_runtime_v2_authority_policy.py::test_sensitive_or_opaque_host_effects_require_approval[git push origin main] PASSED [ 78%]
-tests/test_runtime_v2_authority_policy.py::test_sensitive_or_opaque_host_effects_require_approval[cat ~/.ssh/id_ed25519] PASSED [ 78%]
-tests/test_runtime_v2_authority_policy.py::test_sensitive_or_opaque_host_effects_require_approval[rm -rf build] PASSED [ 78%]
-tests/test_runtime_v2_authority_policy.py::test_sensitive_or_opaque_host_effects_require_approval[curl -X POST --data value https://example.test/resource] PASSED [ 78%]
-tests/test_runtime_v2_authority_policy.py::test_sensitive_or_opaque_host_effects_require_approval[unclassified-host-program --do-something] PASSED [ 78%]
-tests/test_runtime_v2_authority_policy.py::test_every_generic_host_command_requires_exact_approval PASSED [ 78%]
-tests/test_runtime_v2_authority_policy.py::test_provider_schemas_are_canonical_and_host_is_contextual PASSED [ 78%]
-tests/test_runtime_v2_authority_policy.py::test_disabled_alias_is_denied_by_canonical_executor PASSED [ 78%]
-tests/test_runtime_v2_authority_policy.py::test_model_cannot_select_host_with_tool_arguments PASSED [ 78%]
-tests/test_runtime_v2_authority_policy.py::test_result_validation_rejects_handler_specific_or_mismatched_shapes PASSED [ 78%]
-tests/test_runtime_v2_authority_policy.py::test_migrated_handlers_are_explicitly_context_bound_without_ambient_reads PASSED [ 78%]
-tests/test_runtime_v2_authority_policy.py::test_structured_delete_waits_for_exact_effect_approval PASSED [ 78%]
-tests/test_runtime_v2_authority_policy.py::test_legacy_read_alias_enters_v2_without_ambient_workspace PASSED [ 78%]
-tests/test_runtime_v2_authority_policy.py::test_background_job_captures_the_exact_immutable_authority_snapshot FAILED [ 78%]
-tests/test_runtime_v2_dependability.py::test_selected_writable_repository_is_inspection_only_by_default PASSED [ 78%]
-tests/test_runtime_v2_dependability.py::test_process_local_runtime_refuses_multiple_workers PASSED [ 78%]
-tests/test_runtime_v2_dependability.py::test_process_output_redaction_covers_json_bearer_and_service_tokens PASSED [ 78%]
-tests/test_runtime_v2_dependability.py::test_final_boundary_rejects_unexposed_alias_fenced_legacy_and_mcp_calls PASSED [ 78%]
-tests/test_runtime_v2_dependability.py::test_read_only_sandbox_cannot_mutate_or_read_common_workspace_secret SKIPPED [ 78%]
-tests/test_runtime_v2_dependability.py::test_explicit_process_write_grant_advances_workspace_snapshot SKIPPED [ 78%]
-tests/test_runtime_v2_dependability.py::test_host_process_authority_does_not_grant_workspace_mutation SKIPPED [ 78%]
-tests/test_runtime_v2_dependability.py::test_approval_is_exact_atomic_and_one_use PASSED [ 78%]
-tests/test_runtime_v2_dependability.py::test_changed_arguments_invalidate_granted_approval PASSED [ 78%]
-tests/test_runtime_v2_dependability.py::test_superseded_turn_cannot_grant_a_pending_approval PASSED [ 78%]
-tests/test_runtime_v2_dependability.py::test_workspace_change_invalidates_approval_before_or_after_grant PASSED [ 78%]
-tests/test_runtime_v2_dependability.py::test_empty_provider_after_completed_tool_is_incomplete_without_replay PASSED [ 78%]
-tests/test_runtime_v2_dependability.py::test_real_agent_batch_resumes_same_exact_call_after_approval PASSED [ 78%]
-tests/test_runtime_v2_dependability.py::test_new_turn_blocks_old_text_migrated_and_legacy_calls PASSED [ 78%]
-tests/test_runtime_v2_dependability.py::test_nonmigrated_dispatch_cannot_rebind_owner_session_or_root PASSED [ 78%]
-tests/test_runtime_v2_dependability.py::test_exactly_one_candidate_can_commit_for_a_round PASSED [ 78%]
-tests/test_runtime_v2_dependability.py::test_workspace_revision_transactions_metadata_and_budgets PASSED [ 78%]
-tests/test_runtime_v2_dependability.py::test_native_search_masks_secret_files_and_secret_shaped_output PASSED [ 78%]
-tests/test_runtime_v2_execution_integrity.py::test_untrusted_git_configuration_never_executes_during_internal_reads PASSED [ 78%]
-tests/test_runtime_v2_execution_integrity.py::test_every_generic_host_command_requires_exact_approval[pwd] PASSED [ 78%]
-tests/test_runtime_v2_execution_integrity.py::test_every_generic_host_command_requires_exact_approval[rg --pre 'touch nested-sentinel' needle .] PASSED [ 78%]
-tests/test_runtime_v2_execution_integrity.py::test_every_generic_host_command_requires_exact_approval[git status --short] PASSED [ 78%]
-tests/test_runtime_v2_execution_integrity.py::test_every_generic_host_command_requires_exact_approval[python3 -c 'print(1)'] PASSED [ 78%]
-tests/test_runtime_v2_execution_integrity.py::test_every_generic_host_command_requires_exact_approval[sh -c 'printf wrapped'] PASSED [ 78%]
-tests/test_runtime_v2_execution_integrity.py::test_pre_effect_launch_failure_is_retryable_once_effect_can_start PASSED [ 78%]
-tests/test_runtime_v2_execution_integrity.py::test_post_start_interruption_records_unknown_effects_without_commit PASSED [ 78%]
-tests/test_runtime_v2_execution_integrity.py::test_denied_or_expired_approval_never_emits_false_running_transition[deny-approval_denied] PASSED [ 78%]
-tests/test_runtime_v2_execution_integrity.py::test_denied_or_expired_approval_never_emits_false_running_transition[None-approval_expired] PASSED [ 78%]
-tests/test_runtime_v2_execution_integrity.py::test_process_approval_invalidates_on_behavioral_identity_drift[executable] PASSED [ 78%]
-tests/test_runtime_v2_execution_integrity.py::test_process_approval_invalidates_on_behavioral_identity_drift[executable_removed] PASSED [ 78%]
-tests/test_runtime_v2_execution_integrity.py::test_process_approval_invalidates_on_behavioral_identity_drift[interpreter] PASSED [ 78%]
-tests/test_runtime_v2_execution_integrity.py::test_process_approval_invalidates_on_behavioral_identity_drift[environment] PASSED [ 78%]
-tests/test_runtime_v2_execution_integrity.py::test_process_approval_invalidates_on_behavioral_identity_drift[git_config] PASSED [ 78%]
-tests/test_runtime_v2_execution_integrity.py::test_process_approval_invalidates_when_default_git_hook_changes PASSED [ 78%]
-tests/test_runtime_v2_execution_integrity.py::test_project_scale_workspace_can_establish_strong_process_identity PASSED [ 79%]
-tests/test_runtime_v2_execution_integrity.py::test_patch_write_and_process_write_authorities_are_independent FAILED [ 79%]
-tests/test_runtime_v2_execution_integrity.py::test_find_files_prefix_collision_paginates_without_omission_or_duplicate PASSED [ 79%]
-tests/test_runtime_v2_execution_integrity.py::test_budget_exhausted_empty_search_pages_always_continue_exactly PASSED [ 79%]
-tests/test_runtime_v2_execution_integrity.py::test_one_entry_empty_search_pages_make_forward_progress PASSED [ 79%]
-tests/test_runtime_v2_execution_integrity.py::test_runtime_events_fail_closed_without_exact_conversation_and_turn PASSED [ 79%]
-tests/test_runtime_v2_execution_integrity.py::test_catalogue_revision_binds_security_relevant_behavior_versions PASSED [ 79%]
-tests/test_runtime_v2_execution_integrity.py::test_stale_transaction_journal_cannot_replay_against_another_filesystem_identity PASSED [ 79%]
-tests/test_runtime_v2_execution_integrity.py::test_prepare_then_commit_preserves_valid_run_and_rejects_concurrent_replacement PASSED [ 79%]
-tests/test_runtime_v2_execution_integrity.py::test_two_processes_cannot_share_process_local_runtime_state PASSED [ 79%]
-tests/test_runtime_v2_execution_integrity.py::test_cancellation_immediately_before_kernel_spawn_proves_no_child FAILED [ 79%]
-tests/test_runtime_v2_execution_integrity.py::test_cancellation_during_kernel_spawn_owns_and_reaps_returned_process +++++++++++++++++++++++++++++++++++ Timeout ++++++++++++++++++++++++++++++++++++
-~~~~~~~~~~~~~~~~~~~~ Stack of MainThread (140390504631168) ~~~~~~~~~~~~~~~~~~~~~
-  File "<frozen runpy>", line 198, in _run_module_as_main
-  File "<frozen runpy>", line 88, in _run_code
-  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/pytest/__main__.py", line 9, in <module>
-    raise SystemExit(_console_main())
-  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/_pytest/config/__init__.py", line 253, in _console_main
-    code = _main(prog=_get_prog_name(sys.argv))
-  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/_pytest/config/__init__.py", line 229, in _main
-    ret: ExitCode | int = config.hook.pytest_cmdline_main(config=config)
-  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/pluggy/_hooks.py", line 512, in __call__
-    return self._hookexec(self.name, self._hookimpls.copy(), kwargs, firstresult)
-  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/pluggy/_manager.py", line 120, in _hookexec
-    return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
-  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/pluggy/_callers.py", line 121, in _multicall
-    res = hook_impl.function(*args)
-  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/_pytest/main.py", line 377, in pytest_cmdline_main
-    return wrap_session(config, _main)
-  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/_pytest/main.py", line 330, in wrap_session
-    session.exitstatus = doit(config, session) or 0
-  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/_pytest/main.py", line 384, in _main
-    config.hook.pytest_runtestloop(session=session)
-  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/pluggy/_hooks.py", line 512, in __call__
-    return self._hookexec(self.name, self._hookimpls.copy(), kwargs, firstresult)
-  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/pluggy/_manager.py", line 120, in _hookexec
-    return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
-  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/pluggy/_callers.py", line 121, in _multicall
-    res = hook_impl.function(*args)
-  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/_pytest/main.py", line 408, in pytest_runtestloop
-    item.config.hook.pytest_runtest_protocol(item=item, nextitem=nextitem)
-  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/pluggy/_hooks.py", line 512, in __call__
-    return self._hookexec(self.name, self._hookimpls.copy(), kwargs, firstresult)
-  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/pluggy/_manager.py", line 120, in _hookexec
-    return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
-  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/pluggy/_callers.py", line 121, in _multicall
-    res = hook_impl.function(*args)
-  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/_pytest/runner.py", line 118, in pytest_runtest_protocol
-    runtestprotocol(item, nextitem=nextitem)
-  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/_pytest/runner.py", line 139, in runtestprotocol
-    reports.append(call_and_report(item, "call", log))
-  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/_pytest/runner.py", line 249, in call_and_report
-    call = CallInfo.from_call(
-  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/_pytest/runner.py", line 361, in from_call
-    result: TResult | None = func()
-  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/_pytest/runner.py", line 250, in <lambda>
-    lambda: runtest_hook(item=item, **kwds),
-  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/pluggy/_hooks.py", line 512, in __call__
-    return self._hookexec(self.name, self._hookimpls.copy(), kwargs, firstresult)
-  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/pluggy/_manager.py", line 120, in _hookexec
-    return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
-  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/pluggy/_callers.py", line 121, in _multicall
-    res = hook_impl.function(*args)
-  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/_pytest/runner.py", line 184, in pytest_runtest_call
-    item.runtest()
-  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/pytest_asyncio/plugin.py", line 569, in runtest
-    super().runtest()
-  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/_pytest/python.py", line 1707, in runtest
-    self.ihook.pytest_pyfunc_call(pyfuncitem=self)
-  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/pluggy/_hooks.py", line 512, in __call__
-    return self._hookexec(self.name, self._hookimpls.copy(), kwargs, firstresult)
-  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/pluggy/_manager.py", line 120, in _hookexec
-    return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
-  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/pluggy/_callers.py", line 121, in _multicall
-    res = hook_impl.function(*args)
-  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/_pytest/python.py", line 167, in pytest_pyfunc_call
-    result = testfunction(**testargs)
-  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/pytest_asyncio/plugin.py", line 905, in inner
-    runner.run(coro, context=context)
-  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/asyncio/runners.py", line 118, in run
-    return self._loop.run_until_complete(task)
-  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/asyncio/base_events.py", line 641, in run_until_complete
-    self.run_forever()
-  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/asyncio/base_events.py", line 608, in run_forever
-    self._run_once()
-  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/asyncio/base_events.py", line 1898, in _run_once
-    event_list = self._selector.select(timeout)
-  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/selectors.py", line 468, in select
-    fd_event_list = self._selector.poll(timeout, max_ev)
-+++++++++++++++++++++++++++++++++++ Timeout ++++++++++++++++++++++++++++++++++++
+## Final 300 log lines
+tests/runtime_v3/test_workspace_journal.py::WorkspaceJournalTests::test_normal_update_add_delete_commits_all_files PASSED [  2%]
+tests/runtime_v3/test_workspace_journal_integration_source.py::WorkspaceJournalIntegrationSourceTests::test_patch_tool_uses_runtime_v3_journal PASSED [  2%]
+tests/runtime_v3/test_workspace_journal_integration_source.py::WorkspaceJournalIntegrationSourceTests::test_startup_recovers_before_background_services_start PASSED [  2%]
+tests/test_action_intents.py::test_calendar_entry_request_promotes_to_agent PASSED [  2%]
+tests/test_action_intents.py::test_calendar_imperative_variants_promote_to_agent PASSED [  2%]
+tests/test_action_intents.py::test_calendar_read_requests_promote_to_agent PASSED [  2%]
+tests/test_action_intents.py::test_note_todo_and_reminder_actions_promote_to_agent PASSED [  2%]
+tests/test_action_intents.py::test_email_and_ui_actions_promote_to_agent PASSED [  2%]
+tests/test_action_intents.py::test_research_action_promotes_to_agent PASSED [  2%]
+tests/test_action_intents.py::test_explicit_web_search_promotes_to_agent PASSED [  2%]
+tests/test_action_intents.py::test_workspace_agent_requests_promote_to_shell_workspace PASSED [  2%]
+tests/test_action_intents.py::test_explanatory_calendar_questions_stay_plain_chat PASSED [  2%]
+tests/test_action_intents.py::test_router_reports_non_calendar_categories PASSED [  2%]
+tests/test_action_intents_shell_verbs.py::test_informational_shell_questions_stay_plain_chat PASSED [  2%]
+tests/test_action_intents_shell_verbs.py::test_incidental_shell_words_stay_plain_chat PASSED [  2%]
+tests/test_action_intents_shell_verbs.py::test_imperative_shell_commands_still_promote_to_agent PASSED [  2%]
+tests/test_action_intents_shell_verbs.py::test_can_you_shell_requests_still_promote_to_agent PASSED [  2%]
+tests/test_active_document_clear.py::test_clear_matching_id_resets_pointer PASSED [  2%]
+tests/test_active_document_clear.py::test_clear_non_matching_id_leaves_other_active_doc PASSED [  2%]
+tests/test_active_document_clear.py::test_clear_without_id_clears_unconditionally PASSED [  2%]
+tests/test_active_document_clear.py::test_clear_when_already_none_is_safe PASSED [  2%]
+tests/test_active_email_reply_guard.py::test_active_email_reader_blocks_immediate_reply_tools PASSED [  2%]
+tests/test_admin_device_flow_static.py::test_copilot_and_chatgpt_subscription_are_dropdown_device_auth_options PASSED [  2%]
+tests/test_admin_device_flow_static.py::test_provider_selection_is_inert_and_add_button_starts_device_flow PASSED [  2%]
+tests/test_admin_device_flow_static.py::test_google_add_omits_auto_refresh_mode_for_backend_manual_default PASSED [  2%]
+tests/test_admin_device_flow_static.py::test_device_auth_selection_disables_and_dims_api_test_button PASSED [  2%]
+tests/test_admin_device_flow_static.py::test_device_auth_keeps_manual_auth_button_without_auto_opening_tab PASSED [  2%]
+tests/test_admin_device_flow_static.py::test_loud_oauth_copy_and_removed_button_hooks_do_not_return PASSED [  2%]
+tests/test_admin_tools_registry.py::test_all_registered_in_tool_handlers PASSED [  2%]
+tests/test_admin_tools_registry.py::test_re_exported_from_agent_tools PASSED [  2%]
+tests/test_admin_tools_registry.py::test_owner_adapter_threads_owner_from_ctx PASSED [  2%]
+tests/test_admin_tools_registry.py::test_owner_adapter_defaults_owner_to_none PASSED [  2%]
+tests/test_admin_tools_registry.py::test_parse_tool_args_lives_in_tool_utils_single_source PASSED [  2%]
+tests/test_admin_wipe_gallery.py::test_wipe_gallery_clears_albums PASSED [  2%]
+tests/test_admin_wipe_routes_shim.py::test_legacy_and_canonical_admin_wipe_module_are_same_object PASSED [  2%]
+tests/test_agent_architecture.py::test_legacy_stream_signature_is_frozen PASSED [  2%]
+tests/test_agent_architecture.py::test_legacy_compatibility_symbols_remain_importable PASSED [  2%]
+tests/test_agent_architecture.py::test_agent_request_can_capture_legacy_inputs_without_runtime_side_effects PASSED [  2%]
+tests/test_agent_architecture.py::test_typed_events_encode_the_existing_sse_wire_format PASSED [  3%]
+tests/test_agent_architecture.py::test_settings_snapshot_normalizes_invalid_values_without_config_io PASSED [  3%]
+tests/test_agent_architecture.py::test_agent_package_respects_dependency_boundaries PASSED [  3%]
+tests/test_agent_architecture.py::test_agent_loop_facade_does_not_import_http_routes PASSED [  3%]
+tests/test_agent_architecture.py::test_tool_policy_does_not_import_the_legacy_orchestrator PASSED [  3%]
+tests/test_agent_architecture.py::test_chat_route_depends_on_stable_agent_api PASSED [  3%]
+tests/test_agent_architecture.py::test_stable_api_depends_on_runner_not_runtime_layers PASSED [  3%]
+tests/test_agent_architecture.py::test_runtime_callers_use_stable_agent_api_not_legacy_stream PASSED [  3%]
+tests/test_agent_architecture.py::test_typed_api_delegates_request_to_canonical_runner PASSED [  3%]
+tests/test_agent_authority_api.py::test_stable_api_delegates_authority_request_to_runner PASSED [  3%]
+tests/test_agent_authority_api.py::test_runner_forwards_server_authority_inputs_without_rebinding PASSED [  3%]
+tests/test_agent_authority_api.py::test_plan_mode_is_reapplied_inside_authority_boundary PASSED [  3%]
+tests/test_agent_authority_api.py::test_prepared_authority_owns_ui_projection PASSED [  3%]
+tests/test_agent_authority_source_contract.py::test_chat_route_uses_stable_api_for_agent_run_authority_preparation PASSED [  3%]
+tests/test_agent_authority_source_contract.py::test_routes_do_not_prepare_agent_execution_context_directly PASSED [  3%]
+tests/test_agent_authority_source_contract.py::test_host_authorization_endpoint_remains_separate_from_run_preparation PASSED [  3%]
+tests/test_agent_completion_contract.py::test_ordinary_completion_has_exactly_one_terminal_state_before_done PASSED [  3%]
+tests/test_agent_completion_contract.py::test_clean_protocol_done_without_finish_reason_does_not_continue PASSED [  3%]
+tests/test_agent_completion_contract.py::test_unexpected_eof_after_partial_text_continues PASSED [  3%]
+tests/test_agent_completion_contract.py::test_incomplete_native_call_continues_without_dispatch PASSED [  3%]
+tests/test_agent_completion_contract.py::test_incomplete_fenced_call_continues_without_dispatch PASSED [  3%]
+tests/test_agent_completion_contract.py::test_complete_tool_from_interrupted_round_executes_exactly_once PASSED [  3%]
+tests/test_agent_completion_contract.py::test_announcement_only_round_is_nudged_then_executes PASSED [  3%]
+tests/test_agent_completion_contract.py::test_detached_run_marks_generator_close_without_done_incomplete PASSED [  3%]
+tests/test_agent_completion_contract.py::test_detached_run_exception_has_one_error_terminal_and_done PASSED [  3%]
+tests/test_agent_completion_contract.py::test_explicit_error_terminal_controls_internal_status_after_done PASSED [  3%]
+tests/test_agent_completion_contract.py::test_exception_overrides_uncommitted_success_terminal PASSED [  3%]
+tests/test_agent_conversation.py::test_latest_user_text_flattens_text_blocks_and_ignores_non_text_blocks PASSED [  3%]
+tests/test_agent_conversation.py::test_user_turn_count_tolerates_empty_input PASSED [  3%]
+tests/test_agent_conversation.py::test_context_insertion_is_non_mutating_and_targets_latest_user PASSED [  3%]
+tests/test_agent_conversation.py::test_retrieval_context_is_newest_first_bounded_and_excludes_untrusted PASSED [  3%]
+tests/test_agent_conversation.py::test_agent_loop_keeps_legacy_conversation_exports PASSED [  3%]
+tests/test_agent_email_context.py::test_legacy_email_compactor_is_context_provider_alias PASSED [  3%]
+tests/test_agent_email_context.py::test_email_compactor_preserves_headers_and_bounds_quoted_history PASSED [  3%]
+tests/test_agent_event_observer.py::test_observer_receives_typed_event_and_exact_wire_without_changing_output PASSED [  3%]
+tests/test_agent_event_observer.py::test_nested_observers_compose_and_restore PASSED [  3%]
+tests/test_agent_event_observer.py::test_contextvar_observers_do_not_leak_between_concurrent_runs PASSED [  3%]
+tests/test_agent_execution_context.py::test_document_and_model_context_is_isolated_between_agent_tasks PASSED [  3%]
+tests/test_agent_finalizer.py::test_latest_supported_tool_result_wins PASSED [  3%]
+tests/test_agent_finalizer.py::test_supported_empty_result_stops_at_latest_matching_tool PASSED [  3%]
+tests/test_agent_finalizer.py::test_unrelated_tool_results_do_not_replace_final_response PASSED [  3%]
+tests/test_agent_intent_nudge.py::test_short_unfinished_action_requests_a_tool_retry PASSED [  3%]
+tests/test_agent_intent_nudge.py::test_long_answers_code_and_guide_only_turns_are_not_nudged PASSED [  3%]
+tests/test_agent_intent_nudge.py::test_nudge_cap_returns_explicit_finish_decision PASSED [  3%]
+tests/test_agent_lab_readiness.py::test_quick_suite_pins_high_risk_agent_invariants PASSED [  3%]
+tests/test_agent_lab_readiness.py::test_full_suite_expands_gate_categories_and_globs PASSED [  3%]
+tests/test_agent_lab_readiness.py::test_python_command_keeps_blocking_pytest_safety_flags PASSED [  3%]
+tests/test_agent_lab_readiness.py::test_compile_targets_cover_runtime_entrypoints PASSED [  3%]
+tests/test_agent_lab_readiness.py::test_javascript_syntax_checks_are_one_file_per_command PASSED [  3%]
+tests/test_agent_lab_readiness.py::test_runtime_gate_uses_readiness_runner_for_python_contract PASSED [  3%]
+tests/test_agent_lab_readiness.py::test_dry_run_does_not_execute_subprocess PASSED [  3%]
+tests/test_agent_lab_readiness.py::test_dry_run_needs_no_node_or_linux_sandbox_binary PASSED [  3%]
+tests/test_agent_lab_readiness.py::test_runner_turns_wall_clock_timeout_into_blocker PASSED [  3%]
+tests/test_agent_lifecycle_source_contract.py::test_runner_owns_lifecycle_service_not_runtime_v3_wrapper PASSED [  3%]
+tests/test_agent_lifecycle_source_contract.py::test_runtime_v3_orchestrator_is_only_compatibility_facade PASSED [  4%]
+tests/test_agent_lifecycle_source_contract.py::test_terminal_state_source_is_typed_first_with_explicit_legacy_fallback PASSED [  4%]
+tests/test_agent_lifecycle_source_contract.py::test_both_typed_sse_encoders_expose_task_local_observation PASSED [  4%]
+tests/test_agent_loop.py::test_import_stubs_do_not_leak_into_later_tests PASSED [  4%]
+tests/test_agent_loop.py::test_mcp_keyword_gate_matches_literal_mcp_requests PASSED [  4%]
+tests/test_agent_loop.py::test_polish_internet_search_request_classifies_as_web PASSED [  4%]
+tests/test_agent_loop.py::test_insert_before_latest_user_places_context_before_last_user_turn PASSED [  4%]
+tests/test_agent_loop.py::test_insert_before_latest_user_appends_when_no_user_message_exists PASSED [  4%]
+tests/test_agent_loop.py::TestDetectAdminIntent::test_add_endpoint PASSED [  4%]
+tests/test_agent_loop.py::TestDetectAdminIntent::test_create_endpoint PASSED [  4%]
+tests/test_agent_loop.py::TestDetectAdminIntent::test_manage_sessions PASSED [  4%]
+tests/test_agent_loop.py::TestDetectAdminIntent::test_rename_session PASSED [  4%]
+tests/test_agent_loop.py::TestDetectAdminIntent::test_archive_session PASSED [  4%]
+tests/test_agent_loop.py::TestDetectAdminIntent::test_configure_settings PASSED [  4%]
+tests/test_agent_loop.py::TestDetectAdminIntent::test_mcp_server PASSED  [  4%]
+tests/test_agent_loop.py::TestDetectAdminIntent::test_api_key PASSED     [  4%]
+tests/test_agent_loop.py::TestDetectAdminIntent::test_list_models PASSED [  4%]
+tests/test_agent_loop.py::TestDetectAdminIntent::test_switch_model PASSED [  4%]
+tests/test_agent_loop.py::TestDetectAdminIntent::test_manage_skills PASSED [  4%]
+tests/test_agent_loop.py::TestDetectAdminIntent::test_schedule_task PASSED [  4%]
+tests/test_agent_loop.py::TestDetectAdminIntent::test_case_insensitive PASSED [  4%]
+tests/test_agent_loop.py::TestDetectAdminIntent::test_hello PASSED       [  4%]
+tests/test_agent_loop.py::TestDetectAdminIntent::test_write_code PASSED  [  4%]
+tests/test_agent_loop.py::TestDetectAdminIntent::test_explain_concept PASSED [  4%]
+tests/test_agent_loop.py::TestDetectAdminIntent::test_general_question PASSED [  4%]
+tests/test_agent_loop.py::TestDetectAdminIntent::test_empty_messages PASSED [  4%]
+tests/test_agent_loop.py::TestDetectAdminIntent::test_no_user_message PASSED [  4%]
+tests/test_agent_loop.py::TestDetectAdminIntent::test_multimodal_content PASSED [  4%]
+tests/test_agent_loop.py::TestDetectAdminIntent::test_multimodal_no_admin PASSED [  4%]
+tests/test_agent_loop.py::TestDetectAdminIntent::test_uses_last_user_message PASSED [  4%]
+tests/test_agent_loop.py::TestComputeFinalMetrics::test_real_usage_tokens PASSED [  4%]
+tests/test_agent_loop.py::TestComputeFinalMetrics::test_estimated_usage_tokens PASSED [  4%]
+tests/test_agent_loop.py::TestComputeFinalMetrics::test_tps_calculation PASSED [  4%]
+tests/test_agent_loop.py::TestComputeFinalMetrics::test_tps_zero_duration PASSED [  4%]
+tests/test_agent_loop.py::TestComputeFinalMetrics::test_context_percent PASSED [  4%]
+tests/test_agent_loop.py::TestComputeFinalMetrics::test_context_percent_capped_at_100 PASSED [  4%]
+tests/test_agent_loop.py::TestComputeFinalMetrics::test_context_percent_zero_context_length PASSED [  4%]
+tests/test_agent_loop.py::TestComputeFinalMetrics::test_last_round_input_tokens_used_for_context_pct PASSED [  4%]
+tests/test_agent_loop.py::TestComputeFinalMetrics::test_response_time PASSED [  4%]
+tests/test_agent_loop.py::TestComputeFinalMetrics::test_time_to_first_token PASSED [  4%]
+tests/test_agent_loop.py::TestComputeFinalMetrics::test_time_to_first_token_none PASSED [  4%]
+tests/test_agent_loop.py::TestComputeFinalMetrics::test_model_returned PASSED [  4%]
+tests/test_agent_loop.py::TestComputeFinalMetrics::test_prep_timings_included PASSED [  4%]
+tests/test_agent_loop.py::TestComputeFinalMetrics::test_tool_events_included PASSED [  4%]
+tests/test_agent_loop.py::TestComputeFinalMetrics::test_no_tool_events_excluded PASSED [  4%]
+tests/test_agent_loop.py::TestAppendToolResultsNativeContent::test_empty_text_yields_null_content PASSED [  4%]
+tests/test_agent_loop.py::TestAppendToolResultsNativeContent::test_whitespace_only_text_yields_null_content PASSED [  4%]
+tests/test_agent_loop.py::TestAppendToolResultsNativeContent::test_real_prose_is_preserved PASSED [  4%]
+tests/test_agent_loop.py::TestAppendToolResultsNativeContent::test_non_native_path_unaffected PASSED [  4%]
+tests/test_agent_loop.py::TestAppendToolResultsThoughtSignature::test_extra_content_is_replayed_when_present PASSED [  4%]
+tests/test_agent_loop.py::TestAppendToolResultsThoughtSignature::test_no_extra_content_key_when_absent PASSED [  4%]
+tests/test_agent_loop.py::TestWebSearchSourcesKeyLookup::test_old_lookup_missed_output_key PASSED [  4%]
+tests/test_agent_loop.py::TestWebSearchSourcesKeyLookup::test_fixed_lookup_finds_output_key PASSED [  4%]
+tests/test_agent_loop.py::TestWebSearchSourcesKeyLookup::test_sources_extracted_from_output PASSED [  4%]
+tests/test_agent_loop.py::TestWebSearchSourcesKeyLookup::test_marker_stripped_from_output_key PASSED [  5%]
+tests/test_agent_loop.py::TestWebSearchSourcesKeyLookup::test_results_key_still_works PASSED [  5%]
+tests/test_agent_loop.py::TestWebSearchSourcesKeyLookup::test_stdout_key_still_works PASSED [  5%]
+tests/test_agent_loop_inversion.py::test_public_legacy_facade_enters_canonical_agent_api PASSED [  5%]
+tests/test_agent_loop_inversion.py::test_public_facade_and_internal_kernel_keep_identical_signature PASSED [  5%]
+tests/test_agent_loop_inversion.py::test_public_facade_source_contains_no_legacy_orchestration_body PASSED [  5%]
+tests/test_agent_loop_inversion.py::test_runner_backend_calls_internal_kernel_not_public_facade PASSED [  5%]
+tests/test_agent_loop_inversion.py::test_public_legacy_call_reaches_default_runner_once PASSED [  5%]
+tests/test_agent_loop_inversion.py::test_internal_kernel_rejects_missing_prepared_authority PASSED [  5%]
+tests/test_agent_loop_inversion_source_contract.py::test_agent_loop_has_one_internal_kernel_and_one_public_facade PASSED [  5%]
+tests/test_agent_loop_inversion_source_contract.py::test_public_facade_lazy_imports_only_stable_agent_api_for_execution PASSED [  5%]
+tests/test_agent_loop_inversion_source_contract.py::test_runner_backend_reaches_internal_kernel_not_public_facade PASSED [  5%]
+tests/test_agent_loop_inversion_source_contract.py::test_internal_kernel_cannot_construct_execution_authority PASSED [  5%]
+tests/test_agent_loop_inversion_source_contract.py::test_only_runner_reaches_internal_kernel_in_production_source PASSED [  5%]
+tests/test_agent_loop_tool_output_truncation.py::test_short_output_unchanged PASSED [  5%]
+tests/test_agent_loop_tool_output_truncation.py::test_long_output_truncated_with_indicator PASSED [  5%]
+tests/test_agent_loop_tool_output_truncation.py::test_exact_limit_unchanged PASSED [  5%]
+tests/test_agent_loop_tool_output_truncation.py::test_default_limit_matches_constant PASSED [  5%]
+tests/test_agent_loop_tool_output_truncation.py::test_empty_string PASSED [  5%]
+tests/test_agent_migration_manifest.py::test_collect_memory_json_accepts_strings_and_objects PASSED [  5%]
+tests/test_agent_migration_manifest.py::test_collect_memory_json_deduplicates_exact_text PASSED [  5%]
+tests/test_agent_migration_manifest.py::test_collect_skill_dir_scans_skill_markdown PASSED [  5%]
+tests/test_agent_migration_manifest.py::test_collect_skill_dir_skips_symlinked_skill_markdown PASSED [  5%]
+tests/test_agent_migration_manifest.py::test_collect_skill_dir_skips_symlinked_root PASSED [  5%]
+tests/test_agent_migration_manifest.py::test_archive_content_is_optional PASSED [  5%]
+tests/test_agent_migration_manifest.py::test_archive_skips_symlinked_file PASSED [  5%]
+tests/test_agent_migration_manifest.py::test_archive_skips_symlinked_root PASSED [  5%]
+tests/test_agent_migration_manifest.py::test_conversation_json_imports_generic_threads_metadata_only PASSED [  5%]
+tests/test_agent_migration_manifest.py::test_conversation_json_can_embed_generic_thread_content PASSED [  5%]
+tests/test_agent_migration_manifest.py::test_conversation_json_imports_chatgpt_mapping_ordered_by_time PASSED [  5%]
+tests/test_agent_migration_manifest.py::test_conversation_content_respects_message_limit PASSED [  5%]
+tests/test_agent_migration_manifest.py::test_archive_missing_path_warns PASSED [  5%]
+tests/test_agent_migration_manifest.py::test_main_writes_manifest_with_conversation_thread PASSED [  5%]
+tests/test_agent_migration_manifest.py::test_main_writes_manifest PASSED [  5%]
+tests/test_agent_odysseus_qwen_adapter.py::test_legacy_agent_loop_names_are_identity_preserving_aliases PASSED [  5%]
+tests/test_agent_odysseus_qwen_adapter.py::test_notes_and_memory_routing_guards_preserve_specialized_turns PASSED [  5%]
+tests/test_agent_odysseus_qwen_adapter.py::test_terminal_tool_summary_uses_concrete_namespaced_tool_name PASSED [  5%]
+tests/test_agent_odysseus_qwen_adapter.py::test_destructive_success_guard_requires_both_independent_signals PASSED [  5%]
+tests/test_agent_odysseus_qwen_prompts.py::test_legacy_minimal_prompt_names_remain_identity_aliases PASSED [  5%]
+tests/test_agent_odysseus_qwen_prompts.py::test_minimal_qwen_prompt_packs_match_characterized_snapshots PASSED [  5%]
+tests/test_agent_prompt_base.py::test_legacy_prompt_constants_reexport_static_base_text PASSED [  5%]
+tests/test_agent_prompt_base.py::test_legacy_prompt_override_remains_runtime_patchable PASSED [  5%]
+tests/test_agent_prompt_contexts.py::test_legacy_prompt_context_helpers_are_aliases PASSED [  5%]
+tests/test_agent_prompt_contexts.py::test_upload_manifest_is_bounded_and_marks_context_untrusted PASSED [  5%]
+tests/test_agent_prompt_contexts.py::test_workspace_rules_only_advertise_available_tools PASSED [  5%]
+tests/test_agent_prompt_message_assembly.py::test_agent_prompt_merges_after_initial_trusted_system_messages PASSED [  5%]
+tests/test_agent_prompt_message_assembly.py::test_protected_system_message_keeps_its_sequence_boundary PASSED [  5%]
+tests/test_agent_prompt_message_assembly.py::test_context_groups_keep_order_immediately_before_latest_user PASSED [  5%]
+tests/test_agent_provider_events.py::test_visible_reasoning_usage_and_model_events_accumulate_once PASSED [  5%]
+tests/test_agent_provider_events.py::test_native_tool_calls_are_captured_when_document_stream_is_closed PASSED [  5%]
+tests/test_agent_provider_events.py::test_blocked_native_delta_does_not_mutate_document_buffer PASSED [  5%]
+tests/test_agent_provider_events.py::test_native_document_open_preserves_legacy_later_tool_calls_quirk PASSED [  5%]
+tests/test_agent_provider_events.py::test_qwen_visible_document_text_is_normalized_and_not_forwarded PASSED [  5%]
+tests/test_agent_provider_events.py::test_direct_response_accumulator_tracks_usage_fallback_and_visible_text PASSED [  5%]
+tests/test_agent_qwen_tool_filter.py::test_implicit_memory_lookup_is_removed_and_requests_answer_retry PASSED [  6%]
+tests/test_agent_qwen_tool_filter.py::test_explicit_memory_write_is_retained_with_aligned_native_call PASSED [  6%]
+tests/test_agent_qwen_tool_filter.py::test_explicit_memory_browse_is_retained PASSED [  6%]
+tests/test_agent_qwen_tool_filter.py::test_non_memory_calls_keep_their_converted_call_alignment PASSED [  6%]
+tests/test_agent_reliability_repair.py::test_workspace_canonicalization PASSED [  6%]
+tests/test_agent_reliability_repair.py::test_existing_workspace_keyed_tmux_session_preserves_cd_state PASSED [  6%]
+tests/test_agent_reliability_repair.py::test_kimi_code_header_selection_performs_no_preflight_probe PASSED [  6%]
+tests/test_agent_reliability_repair.py::test_kimi_stream_reasoning_deltas_extracted PASSED [  6%]
+tests/test_agent_reliability_repair.py::test_is_transient_error_detection PASSED [  6%]
+tests/test_agent_reliability_repair.py::test_transient_http_502_retries_and_recovers PASSED [  6%]
+tests/test_agent_reliability_repair.py::test_transient_error_exceeds_max_retries_emits_error_then_done PASSED [  6%]
+tests/test_agent_reliability_repair.py::test_initial_agent_status_emitted PASSED [  6%]
+tests/test_agent_reliability_repair.py::test_client_disconnect_cancels_without_retry PASSED [  6%]
+tests/test_agent_replay_golden.py::test_replay_matches_golden_event_sequence[plain_no_tool.json] PASSED [  6%]
+tests/test_agent_replay_golden.py::test_replay_matches_golden_event_sequence[native_tool_call.json] PASSED [  6%]
+tests/test_agent_replay_golden.py::test_prompt_pack_snapshot[tools0-False-2165-aa4ced9801974f607c48c1a69588b484c7b763e06cf462f749651a9f0ae77805] PASSED [  6%]
+tests/test_agent_replay_golden.py::test_prompt_pack_snapshot[tools1-True-3632-77c2a15624579ffd5613e337b0491a1d601d4edfd6e47182bdd248f00246dde2] PASSED [  6%]
+tests/test_agent_replay_golden.py::test_prompt_pack_snapshot[tools2-False-3285-984f371ac470a083a1d63d2bcac4872adebdc3a88a6584a752d0888c1b0f9a1a] PASSED [  6%]
+tests/test_agent_result_adapters.py::test_web_sources_are_extracted_and_removed_from_visible_output PASSED [  6%]
+tests/test_agent_result_adapters.py::test_timeout_rendering_preserves_partial_stdout_and_stderr PASSED [  6%]
+tests/test_agent_result_adapters.py::test_document_projection_and_card_summary_are_separate PASSED [  6%]
+tests/test_agent_result_adapters.py::test_tool_output_payload_carries_lifecycle_ui_and_artifact_fields PASSED [  6%]
+tests/test_agent_result_adapters.py::test_generated_image_payload_is_additive_and_optional PASSED [  6%]
+tests/test_agent_result_adapters.py::test_mcp_event_name_is_recovered_from_persisted_event_details PASSED [  6%]
+tests/test_agent_result_adapters.py::test_result_projection_preserves_ask_plan_output_image_event_order PASSED [  6%]
+tests/test_agent_result_adapters.py::test_result_projection_cleans_web_sources_before_tool_output PASSED [  6%]
+tests/test_agent_result_adapters.py::test_result_projection_preserves_duplicate_document_update_contract PASSED [  6%]
+tests/test_agent_result_adapters.py::test_result_projection_builds_persisted_note_and_research_links PASSED [  6%]
+tests/test_agent_round_runner.py::test_transient_pre_content_error_retries_then_streams_answer PASSED [  6%]
+tests/test_agent_round_runner.py::test_successful_retry_clears_attempt_local_error_state PASSED [  6%]
+tests/test_agent_round_runner.py::test_three_transient_failures_produce_one_terminal_outcome PASSED [  6%]
+tests/test_agent_round_runner.py::test_visible_content_prevents_retry_after_provider_error PASSED [  6%]
+tests/test_agent_round_runner.py::test_substantive_transport_error_is_not_fatal_and_tags_error_kind PASSED [  6%]
+tests/test_agent_round_runner.py::test_all_transport_error_kinds_are_recognized_as_non_fatal[connect] PASSED [  6%]
+tests/test_agent_round_runner.py::test_all_transport_error_kinds_are_recognized_as_non_fatal[read_timeout] PASSED [  6%]
+tests/test_agent_round_runner.py::test_all_transport_error_kinds_are_recognized_as_non_fatal[network] PASSED [  6%]
+tests/test_agent_round_runner.py::test_all_transport_error_kinds_are_recognized_as_non_fatal[protocol] PASSED [  6%]
+tests/test_agent_round_runner.py::test_all_transport_error_kinds_are_recognized_as_non_fatal[unknown_exception] PASSED [  6%]
+tests/test_agent_round_runner.py::test_deadline_exceeded_after_substantive_content_is_flagged PASSED [  6%]
+tests/test_agent_round_runner.py::test_capacity_and_first_byte_timings_are_aggregated PASSED [  6%]
+tests/test_agent_round_runner.py::test_malformed_provider_data_preserves_round_one_compatibility[1-True] PASSED [  6%]
+tests/test_agent_round_runner.py::test_malformed_provider_data_preserves_round_one_compatibility[2-False] PASSED [  6%]
+tests/test_agent_round_runner.py::test_cancellation_during_retry_backoff_is_not_converted_to_error PASSED [  6%]
+tests/test_agent_rounds_exhausted.py::test_emits_rounds_exhausted_when_cap_hit_mid_task PASSED [  6%]
+tests/test_agent_rounds_exhausted.py::test_no_rounds_exhausted_on_normal_finish PASSED [  6%]
+tests/test_agent_rounds_exhausted.py::test_tool_budget_exhaustion_is_not_reported_as_completed PASSED [  6%]
+tests/test_agent_rounds_exhausted.py::test_emits_intent_nudge_exhausted_when_cap_is_exhausted PASSED [  6%]
+tests/test_agent_rounds_exhausted.py::test_emits_loop_breaker_triggered_when_loop_breaker_trips PASSED [  6%]
+tests/test_agent_routing_components.py::test_typed_routing_decision_preserves_legacy_projection PASSED [  6%]
+tests/test_agent_routing_components.py::test_legacy_routing_names_are_identity_preserving_aliases PASSED [  6%]
+tests/test_agent_routing_components.py::test_assistant_followup_inherits_prior_domain_context PASSED [  6%]
+tests/test_agent_routing_components.py::test_open_email_document_is_targeted_only_for_relevant_turn PASSED [  6%]
+tests/test_agent_run_limits.py::test_detached_run_wall_clock_limit_becomes_resumable_incomplete PASSED [  6%]
+tests/test_agent_run_limits.py::test_detached_run_idle_limit_is_independent_from_subscribers PASSED [  6%]
+tests/test_agent_run_limits.py::test_owner_and_server_concurrency_limits_fail_before_replacement PASSED [  7%]
+tests/test_agent_run_limits.py::test_run_listing_is_owner_scoped_and_excludes_replay_content PASSED [  7%]
+tests/test_agent_run_limits.py::test_background_job_session_quota_blocks_before_process_launch PASSED [  7%]
+tests/test_agent_runner.py::test_compatibility_backend_is_only_typed_to_legacy_projection PASSED [  7%]
+tests/test_agent_runner.py::test_runner_preserves_server_prepared_execution_context PASSED [  7%]
+tests/test_agent_runner.py::test_runner_prepares_missing_execution_context_with_canonical_catalog PASSED [  7%]
+tests/test_agent_runner.py::test_runner_owns_prepare_durability_then_backend_order PASSED [  7%]
+tests/test_agent_runner.py::test_runner_plan_mode_contributes_fail_closed_disabled_tools PASSED [  7%]
+tests/test_agent_runner_api_contract.py::test_legacy_api_signature_builds_typed_request_then_delegates PASSED [  7%]
+tests/test_agent_runner_api_contract.py::test_public_stream_accepts_exactly_one_typed_request PASSED [  7%]
+tests/test_agent_runner_lifecycle.py::test_default_runner_path_creates_one_lifecycle_per_run PASSED [  7%]
+tests/test_agent_runner_lifecycle.py::test_transitional_durable_stream_injection_does_not_create_lifecycle PASSED [  7%]
+tests/test_agent_runner_no_runtime_v4.py::test_no_runtime_v4_package_is_introduced PASSED [  7%]
+tests/test_agent_runner_preparation_contract.py::test_prepared_context_is_not_reconstructed_or_rebound PASSED [  7%]
+tests/test_agent_runner_request_projection.py::test_execution_mode_wins_over_legacy_shell_boolean_in_backend_projection PASSED [  7%]
+tests/test_agent_runner_request_projection.py::test_backend_projection_preserves_optional_none_semantics PASSED [  7%]
+tests/test_agent_runner_source_contract.py::test_api_does_not_own_runtime_or_legacy_projection PASSED [  7%]
+tests/test_agent_runner_source_contract.py::test_only_runner_is_allowed_to_import_legacy_stream_from_agent_package PASSED [  7%]
+tests/test_agent_runtime_contract.py::test_owner_shell_foundation_survives_relevance_and_has_prompt_schema_parity PASSED [  7%]
+tests/test_agent_runtime_contract.py::test_explicit_shell_disable_wins_everywhere PASSED [  7%]
+tests/test_agent_runtime_contract.py::test_public_security_policy_wins_over_shell_enablement PASSED [  7%]
+tests/test_agent_runtime_contract.py::test_workspace_foundation_is_complete_and_relevance_cannot_omit_it PASSED [  7%]
+tests/test_agent_runtime_contract.py::test_browser_tools_neither_replace_nor_suppress_process_tools PASSED [  7%]
+tests/test_agent_runtime_contract.py::test_dispatch_rejects_tool_outside_authoritative_allowlist PASSED [  7%]
+tests/test_agent_runtime_contract.py::test_privileged_process_tool_requires_explicit_run_approval PASSED [  7%]
+tests/test_agent_runtime_contract.py::test_no_effective_name_lacks_an_executable_registration_or_provider_surface PASSED [  7%]
+tests/test_agent_runtime_contract.py::test_two_concurrent_workspace_bindings_do_not_leak PASSED [  7%]
+tests/test_agent_runtime_contract.py::test_concurrent_agent_runs_keep_provider_tool_scopes_isolated PASSED [  7%]
+tests/test_agent_runtime_contract.py::test_tmux_workspace_key_handles_spaces_and_apostrophes PASSED [  7%]
+tests/test_agent_runtime_contract.py::test_runtime_v2_shell_starts_each_call_at_immutable_execution_root FAILED [  7%]
+
+=================================== FAILURES ===================================
+______ test_runtime_v2_shell_starts_each_call_at_immutable_execution_root ______
+tests/test_agent_runtime_contract.py:266: in test_runtime_v2_shell_starts_each_call_at_immutable_execution_root
+    assert changed["exit_code"] == 0
+E   assert 1 == 0
+=============================== warnings summary ===============================
+core/database.py:20
+  /home/runner/work/odysseus/odysseus/core/database.py:20: MovedIn20Warning: The ``declarative_base()`` function is now available as sqlalchemy.orm.declarative_base(). (deprecated since: 2.0) (Background on SQLAlchemy 2.0 at: https://sqlalche.me/e/b8d9)
+    Base = declarative_base()
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_agent_runtime_contract.py::test_runtime_v2_shell_starts_each_call_at_immutable_execution_root - assert 1 == 0
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 1 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+================== 1 failed, 407 passed, 1 warning in 31.89s ===================
