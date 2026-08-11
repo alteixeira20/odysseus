@@ -232,7 +232,7 @@ async def execute_with_durable_effects(
                 status=ToolResultStatus.DENIED,
                 data={
                     "effect_id": handle.effect_id,
-                    "durable_status": handle.status.value,
+                    "durable_status": "committed",
                     "one_use": True,
                 },
             )
