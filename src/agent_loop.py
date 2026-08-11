@@ -3516,7 +3516,7 @@ async def stream_agent_loop(
 
     from src.agent.api import stream_agent_loop as canonical_stream_agent_loop
 
-    async for event in canonical_stream_agent_loop(
+    delegated = canonical_stream_agent_loop(
         endpoint_url=endpoint_url,
         model=model,
         messages=messages,
@@ -3544,5 +3544,9 @@ async def stream_agent_loop(
         _is_teacher_run=_is_teacher_run,
         shell_enabled=shell_enabled,
         execution_context=execution_context,
-    ):
-        yield event
+    )
+    try:
+        async for event in delegated:
+            yield event
+    finally:
+        await delegated.aclose()
