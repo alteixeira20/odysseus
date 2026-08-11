@@ -91,5 +91,5 @@ async def stream_agent_loop(
 '''
 
 assert "Frozen public compatibility façade" not in text
-text = text.rstrip() + facade + "\n"
+text = text.rstrip() + facade.rstrip() + "\n"
 path.write_text(text, encoding="utf-8")
