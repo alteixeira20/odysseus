@@ -1,0 +1,73 @@
+name: Agent loop inversion diagnostics
+
+on:
+  pull_request:
+    branches:
+      - agentic-lab
+    paths:
+      - .github/workflows/agent-loop-inversion-diagnostics.yml
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out exact diagnostic head
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install Linux agent runtime dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap util-linux tmux
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          if [ -e /proc/sys/kernel/unprivileged_userns_clone ]; then
+            sudo sysctl -w kernel.unprivileged_userns_clone=1
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt
+
+      - name: Capture exact blocking Python failure summary
+        id: pytest
+        shell: bash
+        run: |
+          set +e
+          python scripts/agent_lab_readiness.py --full --no-js --skip-sandbox-probe 2>&1 | tee /tmp/agent-loop-inversion-pytest.log
+          code=${PIPESTATUS[0]}
+          {
+            echo "exit_code=${code}"
+            echo
+            echo "===== FAILURE MARKERS ====="
+            grep -nE '^(FAILED |ERROR |E +|F +|=+ FAILURES =+|=+ ERRORS =+|=+ short test summary info =+|.*AssertionError|.*Traceback)' /tmp/agent-loop-inversion-pytest.log | tail -n 200 || true
+            echo
+            echo "===== FINAL 260 LINES ====="
+            tail -n 260 /tmp/agent-loop-inversion-pytest.log
+          } > /tmp/failure-summary.txt
+          echo "exit_code=${code}" >> "$GITHUB_OUTPUT"
+          exit 0
+
+      - name: Upload compact failure summary
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: agent-loop-inversion-failure-summary
+          path: /tmp/failure-summary.txt
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Preserve diagnostic failure state
+        if: steps.pytest.outputs.exit_code != '0'
+        run: exit 1
