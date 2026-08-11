@@ -159,5 +159,6 @@ async def test_runner_plan_mode_contributes_fail_closed_disabled_tools(monkeypat
 
     await runner.prepare(request)
 
-    assert "bash" in captured["disabled_tools"]
-    assert "write_file" in captured["disabled_tools"]
+    expected = TOOL_REGISTRY.canonicalize_names({"bash", "write_file"}, None)
+    assert expected
+    assert expected <= captured["disabled_tools"]
