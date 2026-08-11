@@ -8,7 +8,8 @@ def _imports(path: Path):
         if isinstance(node, ast.ImportFrom):
             yield node.module or ""
         elif isinstance(node, ast.Import):
-            yield from alias.name for alias in node.names
+            for alias in node.names:
+                yield alias.name
 
 
 def test_chat_route_uses_stable_authority_api_not_runtime_v2_authority():
