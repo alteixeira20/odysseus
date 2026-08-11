@@ -1,6 +1,6 @@
 """Durable Agent run lifecycle owned by the canonical ``AgentRunner``.
 
-Runtime V3 is a durability service, not a second orchestrator.  The service
+Runtime V3 is a durability service, not a second orchestrator. The service
 journals the existing wire stream for replay compatibility, but semantic
 terminal state is consumed from typed :class:`src.agent.events.AgentEvent`
 objects whenever the canonical Agent event encoder produced the wire event.
@@ -87,10 +87,10 @@ def terminal_from_legacy_wire(wire: str) -> TerminalState | None:
 class DurableRunLifecycle:
     """Journal and terminalize one canonical Agent run.
 
-    A terminal ``AgentEvent`` is observed while it is encoded.  The service
+    A terminal ``AgentEvent`` is observed while it is encoded. The service
     delays the durable transition until the exact encoded string is yielded by
     the backend, preserving the historical ordering where the replay event is
-    appended before the run row becomes terminal.  String parsing is consulted
+    appended before the run row becomes terminal. String parsing is consulted
     only if no typed terminal corresponds to that yielded wire object.
     """
 
@@ -170,51 +170,54 @@ class DurableRunLifecycle:
         terminal_seen = False
         stream = None
         try:
-            with observe_agent_events(self.observe_typed_event):
-                stream = backend_factory()
-                while True:
-                    remaining = limits.wall_clock_seconds - (time.monotonic() - started)
-                    if remaining <= 0:
-                        ledger.transition(
-                            run_id,
-                            RunStatus.INCOMPLETE,
-                            reason="wall_clock_budget_exhausted",
-                            resumable=True,
-                        )
-                        raise TimeoutError("agent wall-clock budget exhausted")
-                    try:
+            stream = backend_factory()
+            while True:
+                remaining = limits.wall_clock_seconds - (time.monotonic() - started)
+                if remaining <= 0:
+                    ledger.transition(
+                        run_id,
+                        RunStatus.INCOMPLETE,
+                        reason="wall_clock_budget_exhausted",
+                        resumable=True,
+                    )
+                    raise TimeoutError("agent wall-clock budget exhausted")
+                try:
+                    # Keep the task-local observer installed only while the
+                    # backend advances. It is reset before the wire is yielded
+                    # to transport/UI code, preventing cross-layer observation.
+                    with observe_agent_events(self.observe_typed_event):
                         wire = await asyncio.wait_for(
                             stream.__anext__(),
                             timeout=min(limits.idle_seconds, remaining),
                         )
-                    except StopAsyncIteration:
-                        break
-                    except asyncio.TimeoutError as exc:
-                        ledger.transition(
-                            run_id,
-                            RunStatus.INCOMPLETE,
-                            reason="idle_timeout",
-                            resumable=True,
-                        )
-                        raise TimeoutError("agent stream idle timeout") from exc
-
-                    ledger.append_event(
+                except StopAsyncIteration:
+                    break
+                except asyncio.TimeoutError as exc:
+                    ledger.transition(
                         run_id,
-                        event_type_from_wire(wire),
-                        {"wire": wire},
-                        max_bytes=limits.max_event_bytes,
+                        RunStatus.INCOMPLETE,
+                        reason="idle_timeout",
+                        resumable=True,
                     )
-                    terminal = self.terminal_for_wire(wire)
-                    if terminal is not None:
-                        status, reason, resumable = terminal
-                        ledger.transition(
-                            run_id,
-                            status,
-                            reason=reason,
-                            resumable=resumable,
-                        )
-                        terminal_seen = True
-                    yield wire
+                    raise TimeoutError("agent stream idle timeout") from exc
+
+                ledger.append_event(
+                    run_id,
+                    event_type_from_wire(wire),
+                    {"wire": wire},
+                    max_bytes=limits.max_event_bytes,
+                )
+                terminal = self.terminal_for_wire(wire)
+                if terminal is not None:
+                    status, reason, resumable = terminal
+                    ledger.transition(
+                        run_id,
+                        status,
+                        reason=reason,
+                        resumable=resumable,
+                    )
+                    terminal_seen = True
+                yield wire
 
             if not terminal_seen:
                 ledger.transition(
