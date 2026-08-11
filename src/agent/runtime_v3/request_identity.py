@@ -2,7 +2,8 @@
 
 Durable recovery must reject accidental reuse of a run id for a semantically
 different request. It does not need prompt text, uploaded content, authorization
-headers, endpoint credentials, or workspace paths in plaintext to do so.
+headers, endpoint credentials, workspace paths, or endpoint paths in plaintext
+to do so.
 
 The complete request is projected and hashed in memory. Only the digest plus
 bounded non-secret diagnostics are persisted by Runtime V3.
@@ -33,12 +34,7 @@ def _canonical(value: Any) -> str:
 
 
 def _stable(value: Any, *, _seen: set[int] | None = None) -> Any:
-    """Project request values to deterministic JSON without deepcopy.
-
-    This projection exists only as hash input. Dataclasses are traversed field
-    by field rather than via ``asdict`` so active runtime objects are never
-    deep-copied merely to establish request identity.
-    """
+    """Project request values to deterministic JSON without deepcopy."""
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
     if isinstance(value, bytes):
@@ -126,25 +122,40 @@ def semantic_request_digest(request) -> str:
     return _sha256_bytes(_canonical(material).encode("utf-8"))
 
 
-def redacted_endpoint(url: str | None) -> str | None:
-    """Retain endpoint topology while dropping userinfo, query, and fragment."""
+def _parse_endpoint(url: str | None):
     if not url:
         return None
     try:
         parsed = urlparse(str(url))
-        host = parsed.hostname or ""
-        if ":" in host and not host.startswith("["):
-            host = f"[{host}]"
-        try:
-            port = parsed.port
-        except ValueError:
-            port = None
-        netloc = host if port is None else f"{host}:{port}"
-        return urlunparse((parsed.scheme.lower(), netloc, parsed.path or "", "", "", ""))
+        if not parsed.scheme or not parsed.hostname:
+            return None
+        return parsed
     except Exception:
-        # Never persist an unparsed URL: it may contain userinfo or a query key.
-        # The semantic digest still binds the original value in memory.
         return None
+
+
+def redacted_endpoint(url: str | None) -> str | None:
+    """Persist only endpoint origin; path/userinfo/query/fragment stay private."""
+    parsed = _parse_endpoint(url)
+    if parsed is None:
+        return None
+    host = parsed.hostname or ""
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    netloc = host if port is None else f"{host}:{port}"
+    return urlunparse((parsed.scheme.lower(), netloc, "", "", "", ""))
+
+
+def endpoint_path_fingerprint(url: str | None) -> str | None:
+    """Fingerprint endpoint path for diagnostics without retaining its text."""
+    parsed = _parse_endpoint(url)
+    if parsed is None or not parsed.path:
+        return None
+    return _sha256_bytes(parsed.path.encode("utf-8", errors="surrogatepass"))
 
 
 def _fingerprint_optional(value: Any) -> str | None:
@@ -161,6 +172,7 @@ def safe_request_snapshot(request) -> dict[str, Any]:
     execution_context = getattr(request, "execution_context", None)
     authority = getattr(execution_context, "authority_grant", None)
     root = getattr(execution_context, "execution_root", None)
+    endpoint_url = getattr(request, "endpoint_url", None)
 
     headers = getattr(model_options, "headers", None) or {}
     fallbacks = getattr(model_options, "fallbacks", None) or ()
@@ -172,7 +184,8 @@ def safe_request_snapshot(request) -> dict[str, Any]:
         "session_id": getattr(request, "session_id", None),
         "owner": getattr(request, "owner", None),
         "model": getattr(request, "model", None),
-        "endpoint": redacted_endpoint(getattr(request, "endpoint_url", None)),
+        "endpoint_origin": redacted_endpoint(endpoint_url),
+        "endpoint_path_sha256": endpoint_path_fingerprint(endpoint_url),
         "workload": getattr(request, "workload", None),
         "plan_mode": bool(getattr(request, "plan_mode", False)),
         "message_count": len(getattr(request, "messages", None) or ()),
@@ -193,6 +206,7 @@ def safe_request_snapshot(request) -> dict[str, Any]:
 
 
 __all__ = [
+    "endpoint_path_fingerprint",
     "redacted_endpoint",
     "safe_request_snapshot",
     "semantic_request_digest",
