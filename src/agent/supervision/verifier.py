@@ -1,21 +1,98 @@
-"""Independent completion verification for effectful agent work."""
+"""Independent completion verification for effectful agent work.
 
+The verifier is intentionally advisory to orchestration, but its own failures
+must never be indistinguishable from a successful verification. The typed
+``VerificationResult`` API preserves PASS/FAIL/UNKNOWN, while the legacy
+``run_verifier_subagent`` adapter fails closed by returning a concrete finding
+for UNKNOWN so existing callers request another evidence-producing round.
+"""
+
+from dataclasses import dataclass
+from enum import Enum
 import logging
+import re
+from typing import Iterable
 
 from src.agent.providers.adapters.default import strip_think_blocks
 
 
 logger = logging.getLogger(__name__)
 
+# Legacy/non-Runtime-V2 tools whose successful use changes state or can create
+# externally observable effects. Runtime-V2 calls are additionally detected by
+# committed effect metadata in ToolBatchRunner, so this set is a compatibility
+# backstop rather than the source of truth for new tools.
 EFFECTFUL_TOOLS = {
     "create_document",
     "update_document",
     "edit_document",
+    "suggest_document",
+    "write_file",
+    "edit_file",
+    "apply_patch",
+    "patch_workspace",
     "bash",
     "python",
-    "write_file",
+    "run_sandbox_command",
+    "run_host_command",
+    "run_python",
+    "send_email",
+    "reply_to_email",
+    "bulk_email",
+    "archive_email",
+    "delete_email",
+    "mark_email_read",
+    "unsubscribe_email",
+    "manage_calendar",
+    "manage_contact",
+    "manage_documents",
+    "manage_memory",
+    "manage_notes",
+    "manage_research",
+    "manage_session",
+    "manage_skills",
+    "manage_tasks",
+    "manage_settings",
+    "manage_endpoints",
+    "manage_mcp",
+    "manage_webhooks",
+    "manage_tokens",
+    "send_to_session",
+    "create_session",
+    "download_model",
+    "serve_model",
+    "serve_preset",
+    "stop_served_model",
+    "cancel_download",
+    "adopt_served_model",
+    "api_call",
+    "ui_control",
 }
 MAX_VERIFIER_ROUNDS = 2
+
+
+class VerificationStatus(str, Enum):
+    PASS = "pass"
+    FAIL = "fail"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class VerificationResult:
+    status: VerificationStatus
+    findings: tuple[str, ...] = ()
+    detail: str = ""
+
+    @property
+    def confirmed(self) -> bool:
+        return self.status is VerificationStatus.PASS
+
+
+_UNKNOWN_FINDING = (
+    "Independent verification was unavailable or malformed, so completion "
+    "could not be confirmed. Re-check the requested deliverables with tools "
+    "and produce fresh evidence before claiming the task is done."
+)
 
 
 def build_actions_snapshot(tool_events: list, limit: int = 8000) -> str:
@@ -41,14 +118,56 @@ def build_actions_snapshot(tool_events: list, limit: int = 8000) -> str:
     return snapshot[:limit] if len(snapshot) > limit else snapshot
 
 
-async def run_verifier_subagent(
+def _parse_verification(raw: str) -> VerificationResult:
+    text = strip_think_blocks(raw or "")
+    verification_lines = [
+        line.strip()
+        for line in text.splitlines()
+        if "VERIFICATION:" in line
+    ]
+    if not verification_lines:
+        return VerificationResult(
+            VerificationStatus.UNKNOWN,
+            detail="missing_verification_line",
+        )
+
+    line = verification_lines[-1]
+    if re.fullmatch(r"VERIFICATION:\s*SUCCESS\s*", line, flags=re.IGNORECASE):
+        return VerificationResult(VerificationStatus.PASS)
+
+    match = re.fullmatch(
+        r"VERIFICATION:\s*FAIL:\s*(.+)",
+        line,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return VerificationResult(
+            VerificationStatus.UNKNOWN,
+            detail="malformed_verification_line",
+        )
+
+    findings = tuple(
+        item.strip()
+        for item in match.group(1).split(";")
+        if item.strip()
+    )
+    if not findings:
+        return VerificationResult(
+            VerificationStatus.UNKNOWN,
+            detail="empty_failure_findings",
+        )
+    return VerificationResult(VerificationStatus.FAIL, findings=findings)
+
+
+async def verify_completion_subagent(
     instruction: str,
     actions_snapshot: str,
     *,
     endpoint_url: str,
     model: str,
     headers: dict,
-) -> list[str]:
+) -> VerificationResult:
+    """Return a typed verification outcome; transport/parser failures are UNKNOWN."""
     from src.llm_core import llm_call_async
 
     prompt = (
@@ -81,23 +200,51 @@ async def run_verifier_subagent(
         )
     except Exception as exc:
         logger.warning("[agent] verifier subagent failed: %s", exc)
+        return VerificationResult(
+            VerificationStatus.UNKNOWN,
+            detail=f"provider_error:{type(exc).__name__}",
+        )
+    result = _parse_verification(raw or "")
+    if result.status is VerificationStatus.UNKNOWN:
+        logger.warning("[agent] verifier returned an unparseable outcome: %s", result.detail)
+    return result
+
+
+async def run_verifier_subagent(
+    instruction: str,
+    actions_snapshot: str,
+    *,
+    endpoint_url: str,
+    model: str,
+    headers: dict,
+) -> list[str]:
+    """Legacy adapter used by agent_loop.
+
+    PASS keeps the historical empty-list contract. FAIL returns the verifier's
+    findings. UNKNOWN deliberately returns a finding as well, preventing a
+    timeout, provider error, or malformed verifier response from being treated
+    as implicit success by the current compatibility loop.
+    """
+    result = await verify_completion_subagent(
+        instruction,
+        actions_snapshot,
+        endpoint_url=endpoint_url,
+        model=model,
+        headers=headers,
+    )
+    if result.status is VerificationStatus.PASS:
         return []
-    raw = strip_think_blocks(raw or "")
-    last_verification = None
-    for line in raw.splitlines():
-        if "VERIFICATION:" in line:
-            last_verification = line.strip()
-    if (
-        not last_verification
-        or "VERIFICATION: FAIL:" not in last_verification
-    ):
-        return []
-    reasons = last_verification.split(
-        "VERIFICATION: FAIL:",
-        1,
-    )[1].strip()
-    return [
-        reason.strip()
-        for reason in reasons.split(";")
-        if reason.strip()
-    ]
+    if result.status is VerificationStatus.FAIL:
+        return list(result.findings)
+    return [_UNKNOWN_FINDING]
+
+
+__all__ = [
+    "EFFECTFUL_TOOLS",
+    "MAX_VERIFIER_ROUNDS",
+    "VerificationResult",
+    "VerificationStatus",
+    "build_actions_snapshot",
+    "run_verifier_subagent",
+    "verify_completion_subagent",
+]
