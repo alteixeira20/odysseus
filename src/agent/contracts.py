@@ -51,6 +51,33 @@ class ModelOptions:
 
 
 @dataclass(frozen=True)
+class AgentAuthorityRequest:
+    """Stable request for server-owned execution authority preparation.
+
+    HTTP/transport code supplies user intent and the already prepared turn
+    lease.  The canonical runner owns Runtime V2 budgets, catalogue revision,
+    configured roots, policy canonicalization and the actual authority call.
+    ``turn_lease`` intentionally remains opaque at this boundary while the run
+    manager is migrated behind the typed runtime.
+    """
+
+    owner_id: Optional[str]
+    session_id: str
+    requested_mode: Optional[bool | str] = None
+    selected_workspace: Optional[str] = None
+    max_rounds: int = 50
+    max_tool_calls: int = 0
+    plan_mode: bool = False
+    host_authorization_token: Optional[str] = None
+    conversation_id: Optional[str] = None
+    turn_lease: Any = None
+    workspace_write: bool = False
+    process_workspace_write: bool = False
+    disabled_tools: frozenset[str] = frozenset()
+    defer_ownership: bool = True
+
+
+@dataclass(frozen=True)
 class AgentRunRequest:
     """Typed representation of the legacy ``stream_agent_loop`` arguments."""
 

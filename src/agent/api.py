@@ -1,14 +1,17 @@
 """Stable entry points for the Agent runtime.
 
-All typed Agent execution enters through :class:`src.agent.runner.AgentRunner`.
-This module owns only API compatibility: construction of ``AgentRunRequest``
-from the historical function signature and streaming the runner's wire output.
+All typed Agent execution and authority preparation enter through the canonical
+:class:`src.agent.runner.AgentRunner` control plane.
 """
 
 from typing import AsyncGenerator, Dict, List, Optional, Set
 
-from .contracts import AgentRunRequest
-from .runner import DEFAULT_AGENT_RUNNER
+from .contracts import AgentAuthorityRequest, AgentRunRequest
+from .runner import DEFAULT_AGENT_RUNNER, PreparedAuthority
+
+
+async def prepare_authority(request: AgentAuthorityRequest) -> PreparedAuthority:
+    return await DEFAULT_AGENT_RUNNER.prepare_authority(request)
 
 
 async def stream(request: AgentRunRequest) -> AsyncGenerator[str, None]:
