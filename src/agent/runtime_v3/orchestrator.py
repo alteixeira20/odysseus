@@ -10,6 +10,7 @@ from typing import Any, AsyncGenerator, Callable
 from .config import load_runtime_v3_limits
 from .contracts import RunStatus
 from .ledger import get_runtime_ledger
+from .stream_journal import DurableStreamJournal
 
 
 def _safe_request_snapshot(request) -> dict[str, Any]:
@@ -59,7 +60,12 @@ def _terminal_from_wire(wire: str) -> tuple[RunStatus, str, bool] | None:
 
 
 async def stream_with_durable_runtime(request, legacy_factory: Callable[[], Any]) -> AsyncGenerator[str, None]:
-    """Wrap the compatibility runtime with durable run/event lifecycle state."""
+    """Wrap the compatibility runtime with durable run/event lifecycle state.
+
+    High-frequency transient SSE signals are coalesced only in the durable
+    ledger. The live wire contract is unchanged, while lifecycle/effect/error
+    events remain immediate durable boundaries.
+    """
     ledger = get_runtime_ledger()
     limits = load_runtime_v3_limits().normalize_request(
         max_rounds=request.limits.max_rounds,
@@ -83,6 +89,13 @@ async def stream_with_durable_runtime(request, legacy_factory: Callable[[], Any]
         {"run_id": run_id, "limits": asdict(limits)},
         max_bytes=limits.max_event_bytes,
     )
+    journal = DurableStreamJournal(
+        ledger,
+        run_id,
+        max_event_bytes=limits.max_event_bytes,
+        max_batch_events=limits.stream_batch_events,
+        max_batch_bytes=limits.stream_batch_bytes,
+    )
 
     started = time.monotonic()
     stream = legacy_factory()
@@ -91,6 +104,7 @@ async def stream_with_durable_runtime(request, legacy_factory: Callable[[], Any]
         while True:
             remaining = limits.wall_clock_seconds - (time.monotonic() - started)
             if remaining <= 0:
+                journal.flush()
                 ledger.transition(
                     run_id,
                     RunStatus.INCOMPLETE,
@@ -106,20 +120,19 @@ async def stream_with_durable_runtime(request, legacy_factory: Callable[[], Any]
             except StopAsyncIteration:
                 break
             except asyncio.TimeoutError as exc:
+                journal.flush()
                 ledger.transition(run_id, RunStatus.INCOMPLETE, reason="idle_timeout", resumable=True)
                 raise TimeoutError("agent stream idle timeout") from exc
-            ledger.append_event(
-                run_id,
-                _event_type(event),
-                {"wire": event},
-                max_bytes=limits.max_event_bytes,
-            )
+
+            journal.record(_event_type(event), event)
             terminal = _terminal_from_wire(event)
             if terminal:
                 status, reason, resumable = terminal
                 ledger.transition(run_id, status, reason=reason, resumable=resumable)
                 terminal_seen = True
             yield event
+
+        journal.flush()
         if not terminal_seen:
             ledger.transition(
                 run_id,
@@ -134,11 +147,22 @@ async def stream_with_durable_runtime(request, legacy_factory: Callable[[], Any]
                 max_bytes=limits.max_event_bytes,
             )
     except asyncio.CancelledError:
+        try:
+            journal.flush()
+        except Exception:
+            # Cancellation must not be replaced by a secondary journal error.
+            pass
         current = ledger.get_run(run_id)
         if current and not current.status.terminal:
             ledger.transition(run_id, RunStatus.CANCELLED, reason="task_cancelled", resumable=True)
         raise
     except BaseException as exc:
+        try:
+            journal.flush()
+        except Exception:
+            # Preserve the original runtime failure; critical events were never
+            # buffered, and unresolved effects remain governed by the ledger.
+            pass
         current = ledger.get_run(run_id)
         if current and not current.status.terminal:
             ledger.transition(
