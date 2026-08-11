@@ -3,7 +3,7 @@ import tempfile
 import unittest
 
 from src.agent.contracts import AgentRunRequest, RunDisposition
-from src.agent.events import run_state_event
+from src.agent.events import AgentEvent, encode_legacy_sse, run_state_event
 from src.agent.runtime_v3.contracts import RunStatus
 from src.agent.runtime_v3.ledger import DurableRunLedger
 from src.agent.runtime_v3.lifecycle import DurableRunLifecycle
@@ -81,8 +81,6 @@ class DurableLifecycleTests(unittest.IsolatedAsyncioTestCase):
         lifecycle = DurableRunLifecycle(ledger=self.ledger)
 
         async def backend():
-            from src.agent.events import AgentEvent, encode_legacy_sse
-
             yield encode_legacy_sse(
                 AgentEvent.typed(
                     "run_status",
@@ -98,6 +96,39 @@ class DurableLifecycleTests(unittest.IsolatedAsyncioTestCase):
         ]
 
         self.assertEqual(len(events), 1)
+        self.assertEqual(
+            tuple(self._run_row()),
+            ("incomplete", "stream_ended_without_terminal", 1),
+        )
+
+    async def test_observer_is_reset_before_wire_reaches_caller(self):
+        lifecycle = DurableRunLifecycle(ledger=self.ledger)
+
+        async def backend():
+            yield encode_legacy_sse(
+                AgentEvent.typed(
+                    "run_status",
+                    phase="working",
+                    label="Working",
+                    ephemeral=True,
+                )
+            )
+
+        stream = lifecycle.stream(self._request(), backend)
+        first = await stream.__anext__()
+        self.assertIn('"type": "run_status"', first)
+        self.assertEqual(len(lifecycle._typed_terminals), 0)
+
+        # This event is emitted by the consumer while the lifecycle generator is
+        # suspended at ``yield``. It must not be observed as part of the run.
+        _ = run_state_event(
+            RunDisposition.COMPLETED,
+            reason="outside-lifecycle",
+        )
+        self.assertEqual(len(lifecycle._typed_terminals), 0)
+
+        with self.assertRaises(StopAsyncIteration):
+            await stream.__anext__()
         self.assertEqual(
             tuple(self._run_row()),
             ("incomplete", "stream_ended_without_terminal", 1),
