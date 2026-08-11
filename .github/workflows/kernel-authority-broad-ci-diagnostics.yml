@@ -12,7 +12,7 @@ jobs:
   diagnose:
     if: github.head_ref == 'agent/kernel-authority-broad-ci-diagnostics'
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 10
     steps:
       - name: Check out exact diagnostic branch
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
@@ -27,34 +27,33 @@ jobs:
           python-version: "3.11"
           cache: pip
 
-      - name: Install exact CI dependencies
+      - name: Reproduce first broad CI failure
+        id: reproduce
+        shell: bash
         run: |
           set -euo pipefail
           pip install -r requirements.txt
           mkdir -p data diagnostics
 
-      - name: Reproduce broad CI and write compact summary
-        id: reproduce
-        shell: bash
-        run: |
           set +e
-          timeout --signal=TERM --kill-after=30s 20m \
-            python -m pytest -vv --tb=short --timeout=90 --timeout-method=thread \
+          timeout --signal=TERM --kill-after=30s 8m \
+            python -m pytest -vv --tb=short --maxfail=1 --timeout=90 --timeout-method=thread \
             > diagnostics/broad-ci-full.log 2>&1
           status=$?
           set -e
 
           {
-            echo "# Broad CI diagnostic"
+            echo "# Broad CI fail-fast diagnostic"
             echo
-            echo "head_sha: $(git rev-parse HEAD)"
+            echo "source_head_sha: 9c02b6b921b7d27febab8e3ff28f23de1c486da2"
+            echo "diagnostic_head_sha: $(git rev-parse HEAD)"
             echo "exit_status: $status"
             echo
             echo "## Failure/error lines"
             grep -E '^(FAILED|ERROR) |^=+ (FAILURES|ERRORS|short test summary info|warnings summary|[0-9]+ (failed|passed|error|errors))' diagnostics/broad-ci-full.log || true
             echo
-            echo "## Final 220 log lines"
-            tail -n 220 diagnostics/broad-ci-full.log
+            echo "## Final 300 log lines"
+            tail -n 300 diagnostics/broad-ci-full.log
           } > diagnostics/broad-ci-failure-summary.txt
 
           echo "status=$status" >> "$GITHUB_OUTPUT"
@@ -66,7 +65,7 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add diagnostics/broad-ci-failure-summary.txt
-          git commit -m 'chore(agent): record broad CI failure summary'
+          git commit -m 'chore(agent): record broad CI fail-fast summary'
           git push origin HEAD:agent/kernel-authority-broad-ci-diagnostics
 
       - name: Preserve reproduced CI status
