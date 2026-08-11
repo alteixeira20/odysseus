@@ -56,8 +56,12 @@ def redact_sensitive(value: Any, *, parent_key: str = "") -> Any:
 
 def _classify_effects(effects: Iterable[Effect]) -> tuple[EffectClass, RetryPolicy]:
     items = tuple(effects)
+    # Missing effect metadata is an unknown contract, not proof that the tool
+    # is a pure read. The first invocation may still execute after the normal
+    # Runtime V2 authority/policy preflight, but durable recovery must never
+    # infer that an unmodelled invocation is safe to retry automatically.
     if not items:
-        return EffectClass.READ, RetryPolicy.SAFE
+        return EffectClass.UNKNOWN, RetryPolicy.NEVER
     if any(effect.kind.startswith("process.") or effect.kind.startswith("process_") for effect in items):
         return EffectClass.PROCESS, RetryPolicy.NEVER
     if any(
