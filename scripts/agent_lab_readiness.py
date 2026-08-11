@@ -37,6 +37,7 @@ QUICK_PYTEST_TARGETS = (
     "tests/test_agent_unknown_tool_recovery.py",
     "tests/test_agent_truncation_continuation.py",
     "tests/test_agent_verifier_truthfulness.py",
+    "tests/test_tool_task_cancelled_on_disconnect.py",
     "tests/test_runtime_v2_execution_integrity.py",
     "tests/test_runtime_v2_dependability.py",
 )
@@ -55,6 +56,7 @@ FULL_PYTEST_FIXED = (
     "tests/test_stream_termination.py",
     "tests/test_tool_policy.py",
     "tests/test_tool_registry.py",
+    "tests/test_tool_task_cancelled_on_disconnect.py",
 )
 
 FULL_PYTEST_GLOBS = (
