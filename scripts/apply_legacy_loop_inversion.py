@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+"""Temporary asserted source materializer for the canonical loop inversion."""
+
 from pathlib import Path
 
 path = Path("src/agent_loop.py")
