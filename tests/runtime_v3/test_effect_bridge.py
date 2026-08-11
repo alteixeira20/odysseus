@@ -17,7 +17,7 @@ from src.agent.runtime_v2.contracts import (
     ToolResult,
     ToolResultStatus,
 )
-from src.agent.runtime_v3.contracts import EffectStatus
+from src.agent.runtime_v3.contracts import EffectClass, EffectStatus, RetryPolicy
 from src.agent.runtime_v3.effect_bridge import (
     begin_tool_effect,
     duplicate_effect_result,
@@ -89,6 +89,41 @@ class EffectBridgeTests(unittest.TestCase):
         self.assertNotIn("secret", str(value))
         self.assertNotIn("'p'", str(value))
         self.assertIn("$redacted_sha256", str(value))
+
+    def test_unmodelled_effect_contract_is_never_retryable(self):
+        call = NormalizedToolCall(
+            **{
+                **self.call.__dict__,
+                "call_id": "unknown-1",
+                "canonical_name": "future_tool",
+                "raw_name": "future_tool",
+            }
+        )
+        handle = begin_tool_effect(call, self.context, (), ledger=self.ledger)
+        self.assertTrue(handle.should_execute)
+        self.assertEqual(handle.effect_class, EffectClass.UNKNOWN)
+        self.assertEqual(handle.retry_policy, RetryPolicy.NEVER)
+
+        finish_tool_effect(
+            handle,
+            ToolResult(
+                call_id="unknown-1",
+                canonical_name="future_tool",
+                status=ToolResultStatus.ERROR,
+                error=ToolError("unknown_failure", "outcome cannot be proven"),
+            ),
+        )
+        row = self.ledger._conn.execute(
+            "SELECT status,retry_policy FROM agent_effects WHERE effect_id=?",
+            (handle.effect_id,),
+        ).fetchone()
+        self.assertEqual(tuple(row), (EffectStatus.UNKNOWN.value, RetryPolicy.NEVER.value))
+
+        duplicate = begin_tool_effect(call, self.context, (), ledger=self.ledger)
+        self.assertFalse(duplicate.should_execute)
+        blocked = duplicate_effect_result(call, duplicate)
+        self.assertEqual(blocked.status, ToolResultStatus.INCOMPLETE)
+        self.assertTrue(blocked.data["reconciliation_required"])
 
     def test_committed_duplicate_replays_without_execution(self):
         handle = begin_tool_effect(self.call, self.context, self.effects, ledger=self.ledger)
