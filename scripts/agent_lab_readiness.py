@@ -136,17 +136,8 @@ def _run(command: Sequence[str], *, dry_run: bool) -> None:
         raise ReadinessError(f"command failed with exit code {completed.returncode}: {printable}")
 
 
-def _probe_linux_sandbox(*, dry_run: bool) -> None:
-    if not sys.platform.startswith("linux"):
-        return
-    missing = [name for name in ("bwrap", "tmux") if shutil.which(name) is None]
-    if missing:
-        raise ReadinessError(
-            "missing Linux agent runtime dependency: "
-            + ", ".join(missing)
-            + ". Install bubblewrap and tmux before running the Agent Lab contract."
-        )
-    command = [
+def _sandbox_probe_command() -> list[str]:
+    return [
         "bwrap",
         "--unshare-all",
         "--die-with-parent",
@@ -160,10 +151,23 @@ def _probe_linux_sandbox(*, dry_run: bool) -> None:
         "--",
         "/bin/true",
     ]
+
+
+def _probe_linux_sandbox(*, dry_run: bool) -> None:
+    if not sys.platform.startswith("linux"):
+        return
+    command = _sandbox_probe_command()
     print("[preflight] probing Bubblewrap namespace support", flush=True)
     if dry_run:
         print("$ " + " ".join(command), flush=True)
         return
+    missing = [name for name in ("bwrap", "tmux") if shutil.which(name) is None]
+    if missing:
+        raise ReadinessError(
+            "missing Linux agent runtime dependency: "
+            + ", ".join(missing)
+            + ". Install bubblewrap and tmux before running the Agent Lab contract."
+        )
     completed = subprocess.run(
         command,
         cwd=ROOT,
@@ -184,13 +188,13 @@ def _probe_linux_sandbox(*, dry_run: bool) -> None:
         )
 
 
-def _validate_environment(*, include_js: bool) -> None:
+def _validate_environment(*, include_js: bool, dry_run: bool = False) -> None:
     _require_paths(COMPILE_TARGETS)
     _require_paths(QUICK_PYTEST_TARGETS)
     _require_paths(FULL_PYTEST_FIXED)
     if include_js:
         _require_paths((*JS_SYNTAX_TARGETS, *JS_TEST_TARGETS))
-        if shutil.which("node") is None:
+        if not dry_run and shutil.which("node") is None:
             raise ReadinessError("Node.js is required for the Agent Runtime JavaScript contract suite")
 
 
@@ -223,7 +227,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     include_js = not args.no_js
     try:
-        _validate_environment(include_js=include_js)
+        _validate_environment(include_js=include_js, dry_run=args.dry_run)
         if not args.skip_sandbox_probe:
             _probe_linux_sandbox(dry_run=args.dry_run)
         mode = "full" if args.full else "quick"
