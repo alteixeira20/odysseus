@@ -52,7 +52,7 @@ async def test_scheduler_agent_loop_path(monkeypatch):
         return
         yield  # async generator
 
-    monkeypatch.setattr("src.agent_loop.stream_agent_loop", _stub_stream)
+    monkeypatch.setattr("src.agent.api.stream_agent_loop", _stub_stream)
     monkeypatch.setattr("src.task_endpoint.resolve_task_candidates", lambda **kw: [])
 
     from src.task_scheduler import TaskScheduler

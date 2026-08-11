@@ -24,6 +24,10 @@ from .effect_bridge import (
 Implementation = Callable[..., Awaitable[ToolResult]]
 
 
+class EffectResolutionError(ValueError):
+    """Effect targeting failed before a durable lease could be created."""
+
+
 def _preflight_effects(
     call: NormalizedToolCall,
     context: AgentExecutionContext,
@@ -47,7 +51,10 @@ def _preflight_effects(
     for capability in definition.required_capabilities:
         if not context.authority_grant.allows(capability):
             return None
-    effects = tuple(definition.resolve_effects(arguments, context))
+    try:
+        effects = tuple(definition.resolve_effects(arguments, context))
+    except ValueError as exc:
+        raise EffectResolutionError(str(exc)) from exc
     outcome = EFFECT_POLICY.evaluate(
         context,
         effects,
@@ -170,6 +177,14 @@ async def execute_with_durable_effects(
 ) -> ToolResult:
     try:
         effects = _preflight_effects(call, context, approval_id=approval_id)
+    except EffectResolutionError as exc:
+        _invalidate_approval_after_preflight_failure(approval_id)
+        return _bridge_error(
+            call,
+            code="effect_resolution_error",
+            message=str(exc),
+            status=(ToolResultStatus.DENIED if approval_id else ToolResultStatus.INCOMPLETE),
+        )
     except (OSError, RuntimeError, TypeError, ValueError) as exc:
         _invalidate_approval_after_preflight_failure(approval_id)
         return _bridge_error(

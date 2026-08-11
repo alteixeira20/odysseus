@@ -189,7 +189,7 @@ async def test_run_teacher_inline_triggers_tier2_escalation(monkeypatch):
         yield "data: {\"type\": \"tool_output\", \"tool\": \"bash\"}\n\n"
         yield "data: {\"type\": \"text\", \"delta\": \"Teacher reply\"}\n\n"
         yield "data: [DONE]\n\n"
-    monkeypatch.setattr("src.agent_loop.stream_agent_loop", fake_stream_agent_loop)
+    monkeypatch.setattr("src.agent.api.stream_agent_loop", fake_stream_agent_loop)
 
     # Mock _call_teacher returning a skill definition
     async def fake_call_teacher(spec, prompt, owner=None):
