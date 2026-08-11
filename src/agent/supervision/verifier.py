@@ -11,7 +11,6 @@ from dataclasses import dataclass
 from enum import Enum
 import logging
 import re
-from typing import Iterable
 
 from src.agent.providers.adapters.default import strip_think_blocks
 
