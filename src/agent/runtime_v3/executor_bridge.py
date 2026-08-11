@@ -217,13 +217,24 @@ async def execute_with_durable_effects(
         if approval_denial is not None:
             return approval_denial
         if approval_id and handle.replay_result is not None:
-            return await _await_owned_implementation(
-                implementation(
-                    call,
-                    context,
-                    progress_cb=progress_cb,
-                    approval_id=approval_id,
-                )
+            # A committed durable result proves this approval-scoped effect has
+            # already crossed its one-use boundary. A disagreement with the
+            # approval store is an inconsistent state, never permission to run
+            # the handler again.
+            return _bridge_error(
+                call,
+                code="effect_approval_not_reusable",
+                message=(
+                    "A durable committed result already exists for this exact "
+                    "approval scope; cache replay cannot renew one-use authority."
+                ),
+                effects=effects,
+                status=ToolResultStatus.DENIED,
+                data={
+                    "effect_id": handle.effect_id,
+                    "durable_status": handle.status.value,
+                    "one_use": True,
+                },
             )
         return duplicate_effect_result(call, handle)
 
