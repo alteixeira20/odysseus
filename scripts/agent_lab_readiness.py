@@ -9,7 +9,6 @@ CI evidence cannot drift silently.
 from __future__ import annotations
 
 import argparse
-import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -110,7 +109,6 @@ def full_pytest_targets() -> tuple[str, ...]:
             if path.is_file()
         )
     expanded.extend(FULL_PYTEST_FIXED[1:])
-    # Preserve order while removing duplicate explicit/glob matches.
     return tuple(dict.fromkeys(expanded))
 
 
@@ -123,11 +121,9 @@ def compile_command() -> list[str]:
     return [sys.executable, "-m", "compileall", "-q", *COMPILE_TARGETS]
 
 
-def javascript_commands() -> tuple[list[str], list[str]]:
-    return (
-        ["node", *sum((["--check", target] for target in JS_SYNTAX_TARGETS), [])],
-        ["node", "--test", *JS_TEST_TARGETS],
-    )
+def javascript_commands() -> tuple[list[str], ...]:
+    syntax = tuple(["node", "--check", target] for target in JS_SYNTAX_TARGETS)
+    return (*syntax, ["node", "--test", *JS_TEST_TARGETS])
 
 
 def _run(command: Sequence[str], *, dry_run: bool) -> None:
