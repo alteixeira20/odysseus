@@ -1,0 +1,228 @@
+# Broad CI diagnostic
+
+head_sha: dd255dd7bb8f318eb7750db20afd3d224d3987c6
+exit_status: 1
+
+## Failure/error lines
+
+## Final 220 log lines
+tests/test_run_focus.py::test_area_and_sub_area_marker_expression PASSED [ 76%]
+tests/test_run_focus.py::test_area_and_embedding_sub_area_marker_expression_includes_memory_split PASSED [ 76%]
+tests/test_run_focus.py::test_no_selection_marker_expression_is_none PASSED [ 76%]
+tests/test_run_focus.py::test_fast_only_marker_expression PASSED         [ 76%]
+tests/test_run_focus.py::test_fast_composes_with_area PASSED             [ 76%]
+tests/test_run_focus.py::test_fast_composes_with_area_and_sub_area PASSED [ 76%]
+tests/test_run_focus.py::test_area_only_command PASSED                   [ 76%]
+tests/test_run_focus.py::test_sub_area_only_command PASSED               [ 76%]
+tests/test_run_focus.py::test_embedding_sub_area_command_includes_memory_split PASSED [ 76%]
+tests/test_run_focus.py::test_area_and_sub_area_command PASSED           [ 76%]
+tests/test_run_focus.py::test_keyword_only_command PASSED                [ 76%]
+tests/test_run_focus.py::test_area_and_keyword_command PASSED            [ 76%]
+tests/test_run_focus.py::test_passthrough_pytest_args_appended_last PASSED [ 76%]
+tests/test_run_focus.py::test_last_failed_appends_safe_flags PASSED      [ 76%]
+tests/test_run_focus.py::test_default_python_is_current_interpreter PASSED [ 76%]
+tests/test_run_focus.py::test_fast_only_command PASSED                   [ 76%]
+tests/test_run_focus.py::test_fast_with_area_command PASSED              [ 76%]
+tests/test_run_focus.py::test_fast_with_area_and_sub_area_command PASSED [ 76%]
+tests/test_run_focus.py::test_fast_with_embedding_sub_area_command_includes_memory_split PASSED [ 76%]
+tests/test_run_focus.py::test_durations_appends_flag PASSED              [ 76%]
+tests/test_run_focus.py::test_durations_min_appends_flag PASSED          [ 76%]
+tests/test_run_focus.py::test_durations_is_not_a_focus_selector PASSED   [ 76%]
+tests/test_run_focus.py::test_durations_kept_before_passthrough_args PASSED [ 77%]
+tests/test_run_focus.py::test_normalize_sub_area_lowercases_and_collapses PASSED [ 77%]
+tests/test_run_focus.py::test_normalize_sub_area_strips_separators PASSED [ 77%]
+tests/test_run_focus.py::test_normalize_sub_area_removes_marker_prefix PASSED [ 77%]
+tests/test_run_focus.py::test_normalize_sub_area_rejects_empty_after_normalization PASSED [ 77%]
+tests/test_run_focus.py::test_discover_sub_areas_from_test_filename PASSED [ 77%]
+tests/test_run_focus.py::test_dry_run_prints_command_and_does_not_execute PASSED [ 77%]
+tests/test_run_focus.py::test_dry_run_last_failed_prints_safe_flags PASSED [ 77%]
+tests/test_run_focus.py::test_run_invokes_executor_with_built_command PASSED [ 77%]
+tests/test_run_focus.py::test_run_last_failed_only PASSED                [ 77%]
+tests/test_run_focus.py::test_run_accepts_both_sub_area_forms[cookbook] PASSED [ 77%]
+tests/test_run_focus.py::test_run_accepts_both_sub_area_forms[sub_cookbook] PASSED [ 77%]
+tests/test_run_focus.py::test_run_keeps_embedding_memory_selector_specific PASSED [ 77%]
+tests/test_run_focus.py::test_run_expands_embedding_selector_to_memory_split PASSED [ 77%]
+tests/test_run_focus.py::test_invalid_area_exits_with_error PASSED       [ 77%]
+tests/test_run_focus.py::test_invalid_sub_area_exits_with_error PASSED   [ 77%]
+tests/test_run_focus.py::test_no_focus_selector_is_rejected PASSED       [ 77%]
+tests/test_run_focus.py::test_fast_run_invokes_executor_with_not_slow PASSED [ 77%]
+tests/test_run_focus.py::test_fast_with_durations_run_invokes_executor PASSED [ 77%]
+tests/test_run_focus.py::test_fast_durations_dry_run_prints_command PASSED [ 77%]
+tests/test_run_focus.py::test_durations_alone_is_rejected_before_executor PASSED [ 77%]
+tests/test_run_focus.py::test_durations_zero_is_allowed_means_show_all PASSED [ 77%]
+tests/test_run_focus.py::test_negative_duration_values_are_rejected[--durations--1] PASSED [ 77%]
+tests/test_run_focus.py::test_negative_duration_values_are_rejected[--durations-min--0.5] PASSED [ 77%]
+tests/test_run_focus.py::test_durations_min_without_durations_is_rejected[argv0] PASSED [ 77%]
+tests/test_run_focus.py::test_durations_min_without_durations_is_rejected[argv1] PASSED [ 77%]
+tests/test_run_focus.py::test_durations_min_with_durations_is_allowed PASSED [ 77%]
+tests/test_run_focus.py::test_fast_lane_collects_only_unmarked_auth_concurrency_test PASSED [ 77%]
+tests/test_run_focus.py::test_service_health_sub_area_command_includes_split_files PASSED [ 77%]
+tests/test_run_focus.py::test_service_health_alias_is_accepted_by_run PASSED [ 77%]
+tests/test_run_order_report.py::test_same_seed_shuffles_identically PASSED [ 77%]
+tests/test_run_order_report.py::test_different_seeds_shuffle_differently PASSED [ 77%]
+tests/test_run_order_report.py::test_shuffle_preserves_items PASSED      [ 77%]
+tests/test_run_order_report.py::test_plugin_hook_matches_shuffle_items PASSED [ 77%]
+tests/test_run_order_report.py::test_pytest_args_after_separator_are_forwarded PASSED [ 77%]
+tests/test_run_order_report.py::test_explicit_seed_reaches_plugin PASSED [ 77%]
+tests/test_run_order_report.py::test_pytest_exit_code_is_propagated PASSED [ 77%]
+tests/test_run_order_report.py::test_invalid_seed_is_rejected_before_pytest[abc] PASSED [ 77%]
+tests/test_run_order_report.py::test_invalid_seed_is_rejected_before_pytest[-1] PASSED [ 77%]
+tests/test_run_order_report.py::test_invalid_seed_is_rejected_before_pytest[4294967296] PASSED [ 77%]
+tests/test_run_order_report.py::test_explicit_seed_is_printed_with_repro_command PASSED [ 77%]
+tests/test_run_order_report.py::test_working_directory_is_reported PASSED [ 77%]
+tests/test_run_order_report.py::test_footer_repeats_seed_and_outcome PASSED [ 77%]
+tests/test_run_order_report.py::test_generated_seed_is_printed_and_used PASSED [ 77%]
+tests/test_run_order_report.py::test_generate_seed_is_within_range PASSED [ 77%]
+tests/test_run_order_report.py::test_subprocess_same_seed_is_reproducible PASSED [ 77%]
+tests/test_run_order_report.py::test_subprocess_different_seeds_change_order PASSED [ 77%]
+tests/test_run_order_report.py::test_subprocess_failure_exit_code_and_footer PASSED [ 77%]
+tests/test_runtime_paths.py::test_get_app_root_normal_run PASSED         [ 77%]
+tests/test_runtime_paths.py::test_get_app_root_frozen_with_meipass PASSED [ 77%]
+tests/test_runtime_paths.py::test_get_app_root_frozen_without_meipass PASSED [ 77%]
+tests/test_runtime_paths.py::test_get_default_data_dir_normal PASSED     [ 77%]
+tests/test_runtime_paths.py::test_get_default_data_dir_frozen PASSED     [ 77%]
+tests/test_runtime_v2_authority_policy.py::test_execution_context_and_authority_snapshot_are_immutable PASSED [ 77%]
+tests/test_runtime_v2_authority_policy.py::test_host_authorization_is_owner_bound_one_use_and_explicit_denial_wins PASSED [ 78%]
+tests/test_runtime_v2_authority_policy.py::test_concurrent_run_contexts_cannot_share_authority_or_workspace PASSED [ 78%]
+tests/test_runtime_v2_authority_policy.py::test_sensitive_or_opaque_host_effects_require_approval[sudo id] PASSED [ 78%]
+tests/test_runtime_v2_authority_policy.py::test_sensitive_or_opaque_host_effects_require_approval[apt-get install package] PASSED [ 78%]
+tests/test_runtime_v2_authority_policy.py::test_sensitive_or_opaque_host_effects_require_approval[systemctl restart service] PASSED [ 78%]
+tests/test_runtime_v2_authority_policy.py::test_sensitive_or_opaque_host_effects_require_approval[docker run image] PASSED [ 78%]
+tests/test_runtime_v2_authority_policy.py::test_sensitive_or_opaque_host_effects_require_approval[git push origin main] PASSED [ 78%]
+tests/test_runtime_v2_authority_policy.py::test_sensitive_or_opaque_host_effects_require_approval[cat ~/.ssh/id_ed25519] PASSED [ 78%]
+tests/test_runtime_v2_authority_policy.py::test_sensitive_or_opaque_host_effects_require_approval[rm -rf build] PASSED [ 78%]
+tests/test_runtime_v2_authority_policy.py::test_sensitive_or_opaque_host_effects_require_approval[curl -X POST --data value https://example.test/resource] PASSED [ 78%]
+tests/test_runtime_v2_authority_policy.py::test_sensitive_or_opaque_host_effects_require_approval[unclassified-host-program --do-something] PASSED [ 78%]
+tests/test_runtime_v2_authority_policy.py::test_every_generic_host_command_requires_exact_approval PASSED [ 78%]
+tests/test_runtime_v2_authority_policy.py::test_provider_schemas_are_canonical_and_host_is_contextual PASSED [ 78%]
+tests/test_runtime_v2_authority_policy.py::test_disabled_alias_is_denied_by_canonical_executor PASSED [ 78%]
+tests/test_runtime_v2_authority_policy.py::test_model_cannot_select_host_with_tool_arguments PASSED [ 78%]
+tests/test_runtime_v2_authority_policy.py::test_result_validation_rejects_handler_specific_or_mismatched_shapes PASSED [ 78%]
+tests/test_runtime_v2_authority_policy.py::test_migrated_handlers_are_explicitly_context_bound_without_ambient_reads PASSED [ 78%]
+tests/test_runtime_v2_authority_policy.py::test_structured_delete_waits_for_exact_effect_approval PASSED [ 78%]
+tests/test_runtime_v2_authority_policy.py::test_legacy_read_alias_enters_v2_without_ambient_workspace PASSED [ 78%]
+tests/test_runtime_v2_authority_policy.py::test_background_job_captures_the_exact_immutable_authority_snapshot FAILED [ 78%]
+tests/test_runtime_v2_dependability.py::test_selected_writable_repository_is_inspection_only_by_default PASSED [ 78%]
+tests/test_runtime_v2_dependability.py::test_process_local_runtime_refuses_multiple_workers PASSED [ 78%]
+tests/test_runtime_v2_dependability.py::test_process_output_redaction_covers_json_bearer_and_service_tokens PASSED [ 78%]
+tests/test_runtime_v2_dependability.py::test_final_boundary_rejects_unexposed_alias_fenced_legacy_and_mcp_calls PASSED [ 78%]
+tests/test_runtime_v2_dependability.py::test_read_only_sandbox_cannot_mutate_or_read_common_workspace_secret SKIPPED [ 78%]
+tests/test_runtime_v2_dependability.py::test_explicit_process_write_grant_advances_workspace_snapshot SKIPPED [ 78%]
+tests/test_runtime_v2_dependability.py::test_host_process_authority_does_not_grant_workspace_mutation SKIPPED [ 78%]
+tests/test_runtime_v2_dependability.py::test_approval_is_exact_atomic_and_one_use PASSED [ 78%]
+tests/test_runtime_v2_dependability.py::test_changed_arguments_invalidate_granted_approval PASSED [ 78%]
+tests/test_runtime_v2_dependability.py::test_superseded_turn_cannot_grant_a_pending_approval PASSED [ 78%]
+tests/test_runtime_v2_dependability.py::test_workspace_change_invalidates_approval_before_or_after_grant PASSED [ 78%]
+tests/test_runtime_v2_dependability.py::test_empty_provider_after_completed_tool_is_incomplete_without_replay PASSED [ 78%]
+tests/test_runtime_v2_dependability.py::test_real_agent_batch_resumes_same_exact_call_after_approval PASSED [ 78%]
+tests/test_runtime_v2_dependability.py::test_new_turn_blocks_old_text_migrated_and_legacy_calls PASSED [ 78%]
+tests/test_runtime_v2_dependability.py::test_nonmigrated_dispatch_cannot_rebind_owner_session_or_root PASSED [ 78%]
+tests/test_runtime_v2_dependability.py::test_exactly_one_candidate_can_commit_for_a_round PASSED [ 78%]
+tests/test_runtime_v2_dependability.py::test_workspace_revision_transactions_metadata_and_budgets PASSED [ 78%]
+tests/test_runtime_v2_dependability.py::test_native_search_masks_secret_files_and_secret_shaped_output PASSED [ 78%]
+tests/test_runtime_v2_execution_integrity.py::test_untrusted_git_configuration_never_executes_during_internal_reads PASSED [ 78%]
+tests/test_runtime_v2_execution_integrity.py::test_every_generic_host_command_requires_exact_approval[pwd] PASSED [ 78%]
+tests/test_runtime_v2_execution_integrity.py::test_every_generic_host_command_requires_exact_approval[rg --pre 'touch nested-sentinel' needle .] PASSED [ 78%]
+tests/test_runtime_v2_execution_integrity.py::test_every_generic_host_command_requires_exact_approval[git status --short] PASSED [ 78%]
+tests/test_runtime_v2_execution_integrity.py::test_every_generic_host_command_requires_exact_approval[python3 -c 'print(1)'] PASSED [ 78%]
+tests/test_runtime_v2_execution_integrity.py::test_every_generic_host_command_requires_exact_approval[sh -c 'printf wrapped'] PASSED [ 78%]
+tests/test_runtime_v2_execution_integrity.py::test_pre_effect_launch_failure_is_retryable_once_effect_can_start PASSED [ 78%]
+tests/test_runtime_v2_execution_integrity.py::test_post_start_interruption_records_unknown_effects_without_commit PASSED [ 78%]
+tests/test_runtime_v2_execution_integrity.py::test_denied_or_expired_approval_never_emits_false_running_transition[deny-approval_denied] PASSED [ 78%]
+tests/test_runtime_v2_execution_integrity.py::test_denied_or_expired_approval_never_emits_false_running_transition[None-approval_expired] PASSED [ 78%]
+tests/test_runtime_v2_execution_integrity.py::test_process_approval_invalidates_on_behavioral_identity_drift[executable] PASSED [ 78%]
+tests/test_runtime_v2_execution_integrity.py::test_process_approval_invalidates_on_behavioral_identity_drift[executable_removed] PASSED [ 78%]
+tests/test_runtime_v2_execution_integrity.py::test_process_approval_invalidates_on_behavioral_identity_drift[interpreter] PASSED [ 78%]
+tests/test_runtime_v2_execution_integrity.py::test_process_approval_invalidates_on_behavioral_identity_drift[environment] PASSED [ 78%]
+tests/test_runtime_v2_execution_integrity.py::test_process_approval_invalidates_on_behavioral_identity_drift[git_config] PASSED [ 78%]
+tests/test_runtime_v2_execution_integrity.py::test_process_approval_invalidates_when_default_git_hook_changes PASSED [ 78%]
+tests/test_runtime_v2_execution_integrity.py::test_project_scale_workspace_can_establish_strong_process_identity PASSED [ 79%]
+tests/test_runtime_v2_execution_integrity.py::test_patch_write_and_process_write_authorities_are_independent FAILED [ 79%]
+tests/test_runtime_v2_execution_integrity.py::test_find_files_prefix_collision_paginates_without_omission_or_duplicate PASSED [ 79%]
+tests/test_runtime_v2_execution_integrity.py::test_budget_exhausted_empty_search_pages_always_continue_exactly PASSED [ 79%]
+tests/test_runtime_v2_execution_integrity.py::test_one_entry_empty_search_pages_make_forward_progress PASSED [ 79%]
+tests/test_runtime_v2_execution_integrity.py::test_runtime_events_fail_closed_without_exact_conversation_and_turn PASSED [ 79%]
+tests/test_runtime_v2_execution_integrity.py::test_catalogue_revision_binds_security_relevant_behavior_versions PASSED [ 79%]
+tests/test_runtime_v2_execution_integrity.py::test_stale_transaction_journal_cannot_replay_against_another_filesystem_identity PASSED [ 79%]
+tests/test_runtime_v2_execution_integrity.py::test_prepare_then_commit_preserves_valid_run_and_rejects_concurrent_replacement PASSED [ 79%]
+tests/test_runtime_v2_execution_integrity.py::test_two_processes_cannot_share_process_local_runtime_state PASSED [ 79%]
+tests/test_runtime_v2_execution_integrity.py::test_cancellation_immediately_before_kernel_spawn_proves_no_child FAILED [ 79%]
+tests/test_runtime_v2_execution_integrity.py::test_cancellation_during_kernel_spawn_owns_and_reaps_returned_process +++++++++++++++++++++++++++++++++++ Timeout ++++++++++++++++++++++++++++++++++++
+~~~~~~~~~~~~~~~~~~~~ Stack of MainThread (140390504631168) ~~~~~~~~~~~~~~~~~~~~~
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/pytest/__main__.py", line 9, in <module>
+    raise SystemExit(_console_main())
+  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/_pytest/config/__init__.py", line 253, in _console_main
+    code = _main(prog=_get_prog_name(sys.argv))
+  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/_pytest/config/__init__.py", line 229, in _main
+    ret: ExitCode | int = config.hook.pytest_cmdline_main(config=config)
+  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/pluggy/_hooks.py", line 512, in __call__
+    return self._hookexec(self.name, self._hookimpls.copy(), kwargs, firstresult)
+  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/pluggy/_manager.py", line 120, in _hookexec
+    return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
+  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/pluggy/_callers.py", line 121, in _multicall
+    res = hook_impl.function(*args)
+  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/_pytest/main.py", line 377, in pytest_cmdline_main
+    return wrap_session(config, _main)
+  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/_pytest/main.py", line 330, in wrap_session
+    session.exitstatus = doit(config, session) or 0
+  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/_pytest/main.py", line 384, in _main
+    config.hook.pytest_runtestloop(session=session)
+  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/pluggy/_hooks.py", line 512, in __call__
+    return self._hookexec(self.name, self._hookimpls.copy(), kwargs, firstresult)
+  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/pluggy/_manager.py", line 120, in _hookexec
+    return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
+  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/pluggy/_callers.py", line 121, in _multicall
+    res = hook_impl.function(*args)
+  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/_pytest/main.py", line 408, in pytest_runtestloop
+    item.config.hook.pytest_runtest_protocol(item=item, nextitem=nextitem)
+  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/pluggy/_hooks.py", line 512, in __call__
+    return self._hookexec(self.name, self._hookimpls.copy(), kwargs, firstresult)
+  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/pluggy/_manager.py", line 120, in _hookexec
+    return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
+  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/pluggy/_callers.py", line 121, in _multicall
+    res = hook_impl.function(*args)
+  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/_pytest/runner.py", line 118, in pytest_runtest_protocol
+    runtestprotocol(item, nextitem=nextitem)
+  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/_pytest/runner.py", line 139, in runtestprotocol
+    reports.append(call_and_report(item, "call", log))
+  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/_pytest/runner.py", line 249, in call_and_report
+    call = CallInfo.from_call(
+  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/_pytest/runner.py", line 361, in from_call
+    result: TResult | None = func()
+  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/_pytest/runner.py", line 250, in <lambda>
+    lambda: runtest_hook(item=item, **kwds),
+  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/pluggy/_hooks.py", line 512, in __call__
+    return self._hookexec(self.name, self._hookimpls.copy(), kwargs, firstresult)
+  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/pluggy/_manager.py", line 120, in _hookexec
+    return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
+  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/pluggy/_callers.py", line 121, in _multicall
+    res = hook_impl.function(*args)
+  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/_pytest/runner.py", line 184, in pytest_runtest_call
+    item.runtest()
+  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/pytest_asyncio/plugin.py", line 569, in runtest
+    super().runtest()
+  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/_pytest/python.py", line 1707, in runtest
+    self.ihook.pytest_pyfunc_call(pyfuncitem=self)
+  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/pluggy/_hooks.py", line 512, in __call__
+    return self._hookexec(self.name, self._hookimpls.copy(), kwargs, firstresult)
+  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/pluggy/_manager.py", line 120, in _hookexec
+    return self._inner_hookexec(hook_name, methods, kwargs, firstresult)
+  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/pluggy/_callers.py", line 121, in _multicall
+    res = hook_impl.function(*args)
+  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/_pytest/python.py", line 167, in pytest_pyfunc_call
+    result = testfunction(**testargs)
+  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/site-packages/pytest_asyncio/plugin.py", line 905, in inner
+    runner.run(coro, context=context)
+  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/asyncio/base_events.py", line 641, in run_until_complete
+    self.run_forever()
+  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/asyncio/base_events.py", line 608, in run_forever
+    self._run_once()
+  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/asyncio/base_events.py", line 1898, in _run_once
+    event_list = self._selector.select(timeout)
+  File "/opt/hostedtoolcache/Python/3.11.15/x64/lib/python3.11/selectors.py", line 468, in select
+    fd_event_list = self._selector.poll(timeout, max_ev)
++++++++++++++++++++++++++++++++++++ Timeout ++++++++++++++++++++++++++++++++++++
