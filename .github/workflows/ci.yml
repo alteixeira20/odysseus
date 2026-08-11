@@ -128,6 +128,31 @@ jobs:
             echo "docs_only=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Install Linux agent runtime dependencies
+        if: steps.docs-check.outputs.docs_only != 'true'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap util-linux tmux
+
+      - name: Enable and probe unprivileged sandbox namespaces
+        if: steps.docs-check.outputs.docs_only != 'true'
+        run: |
+          set -euo pipefail
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          if [ -e /proc/sys/kernel/unprivileged_userns_clone ]; then
+            sudo sysctl -w kernel.unprivileged_userns_clone=1
+          fi
+          bwrap \
+            --unshare-all \
+            --die-with-parent \
+            --ro-bind / / \
+            --proc /proc \
+            --dev /dev \
+            -- /bin/true
+
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         if: steps.docs-check.outputs.docs_only != 'true'
         with:
