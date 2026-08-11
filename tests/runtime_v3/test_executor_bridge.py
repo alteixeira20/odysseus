@@ -119,21 +119,14 @@ class ExecutorBridgeTests(unittest.IsolatedAsyncioTestCase):
         async def implementation(*args, **kwargs):
             nonlocal calls
             calls += 1
-            if calls == 1:
-                return ToolResult(
-                    call_id=self.call.call_id,
-                    canonical_name=self.call.canonical_name,
-                    status=ToolResultStatus.SUCCESS,
-                    data={"summary": "committed"},
-                    attempted_effects=self.effects,
-                    observed_effects=self.effects,
-                    committed_effects=self.effects,
-                )
             return ToolResult(
                 call_id=self.call.call_id,
                 canonical_name=self.call.canonical_name,
-                status=ToolResultStatus.DENIED,
-                error=ToolError("approval_consumed", "approval is one-use"),
+                status=ToolResultStatus.SUCCESS,
+                data={"summary": "committed"},
+                attempted_effects=self.effects,
+                observed_effects=self.effects,
+                committed_effects=self.effects,
             )
 
         with patch(
@@ -155,8 +148,9 @@ class ExecutorBridgeTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(first.status, ToolResultStatus.SUCCESS)
         self.assertEqual(second.status, ToolResultStatus.DENIED)
-        self.assertEqual(second.error.code, "approval_consumed")
-        self.assertEqual(calls, 2)
+        self.assertEqual(second.error.code, "effect_approval_not_reusable")
+        self.assertEqual(second.data["durable_status"], "committed")
+        self.assertEqual(calls, 1)
 
     async def test_approval_scoped_pre_effect_failure_can_retry(self):
         calls = 0
