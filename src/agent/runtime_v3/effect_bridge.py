@@ -259,14 +259,19 @@ def finish_tool_effect(handle: DurableEffectHandle, result: ToolResult) -> None:
         ToolResultStatus.ERROR,
         ToolResultStatus.INCOMPLETE,
     }
-    # Runtime V2's observed_effects boundary is authoritative for whether a
-    # failed call may have crossed into an effect. A pre-effect failure has no
-    # observed or unknown effects and can be durably FAILED; an effectful
-    # failure remains UNKNOWN and can never be retried automatically.
+    # Runtime V2's effect evidence is authoritative for whether a failed call
+    # may have crossed into an effect. A pre-effect failure has no observed,
+    # committed, or unknown effects and can be durably FAILED; any partial or
+    # ambiguous effectful failure remains UNKNOWN and is never auto-retried.
+    has_effect_evidence = bool(
+        result.observed_effects
+        or result.committed_effects
+        or result.unknown_effects
+    )
     unknown = bool(result.unknown_effects) or (
         handle.effect_class is not EffectClass.READ
         and uncertain_status
-        and bool(result.observed_effects)
+        and has_effect_evidence
     )
     if unknown:
         handle.ledger.mark_effect_unknown(
