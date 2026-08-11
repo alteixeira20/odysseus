@@ -62,7 +62,10 @@ def test_public_facade_source_contains_no_legacy_orchestration_body():
     source = inspect.getsource(agent_loop.stream_agent_loop)
 
     assert "from src.agent.api import stream_agent_loop as canonical_stream_agent_loop" in source
-    assert "async for event in canonical_stream_agent_loop(" in source
+    assert "delegated = canonical_stream_agent_loop(" in source
+    assert "async for event in delegated:" in source
+    assert "finally:" in source
+    assert "await delegated.aclose()" in source
     assert "AgentSettingsSnapshot.capture" not in source
     assert "prepare_execution_context_async" not in source
     assert "ProviderAttemptRunner(" not in source
