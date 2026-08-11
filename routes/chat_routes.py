@@ -16,7 +16,8 @@ from pydantic import ValidationError
 from core.models import ChatMessage
 from src.request_models import ChatRequest
 from src.llm_core import llm_call_async, stream_llm, stream_llm_with_fallback
-from src.agent.api import stream_agent_loop
+from src.agent.api import prepare_authority, stream_agent_loop
+from src.agent.contracts import AgentAuthorityRequest
 from src import agent_runs
 from src.model_context import estimate_tokens
 from src.chat_helpers import coerce_message_and_session
@@ -1366,14 +1367,11 @@ def setup_chat_routes(
         _effective_mode = 'research' if effective_do_research else (chat_mode or 'chat')
 
         _execution_context = None
+        _authority_event = None
         _tool_budget = 0
         _max_rounds = 1
         if _effective_mode == "agent":
-            from src.agent.runtime_v2.authority import prepare_execution_context_async
-            from src.agent.runtime_v2.contracts import Capability, RunBudgets
-            from src.agent.tools.bootstrap import TOOL_REGISTRY
             from src.agent_tools import MAX_AGENT_ROUNDS as _DEFAULT_ROUNDS
-            from src.tool_security import blocked_tools_for_owner
 
             try:
                 _tool_budget = int(get_setting("agent_max_tool_calls", 0))
@@ -1387,49 +1385,44 @@ def setup_chat_routes(
             except (TypeError, ValueError):
                 _max_rounds = _DEFAULT_ROUNDS
             _max_rounds = max(1, min(_max_rounds, 200))
-            _run_budgets = RunBudgets(
-                max_rounds=_max_rounds,
-                max_tool_calls=(_tool_budget if _tool_budget > 0 else 256),
-                max_provider_requests=min(max(_max_rounds * 3, 1), 128),
+
+            _prepared_authority = await prepare_authority(
+                AgentAuthorityRequest(
+                    owner_id=str(_user or ""),
+                    session_id=str(session),
+                    requested_mode=execution_mode,
+                    selected_workspace=workspace or None,
+                    max_rounds=_max_rounds,
+                    max_tool_calls=_tool_budget,
+                    plan_mode=plan_mode,
+                    host_authorization_token=(
+                        str(host_authorization_token)
+                        if host_authorization_token
+                        else None
+                    ),
+                    conversation_id=str(session),
+                    turn_lease=_prepared_turn.lease,
+                    workspace_write=(
+                        str(allow_workspace_write).strip().lower() == "true"
+                        and bool(workspace)
+                        and not plan_mode
+                    ),
+                    process_workspace_write=(
+                        str(allow_process_workspace_write).strip().lower() == "true"
+                        and bool(workspace)
+                        and shell_enabled
+                        and not plan_mode
+                    ),
+                    disabled_tools=frozenset(disabled_tools),
+                    defer_ownership=True,
+                )
             )
-            _execution_context, _context_reason = await prepare_execution_context_async(
-                owner_id=str(_user or ""),
-                session_id=str(session),
-                requested_mode=execution_mode,
-                selected_workspace=workspace or None,
-                budgets=_run_budgets,
-                tool_catalog_revision=TOOL_REGISTRY.revision,
-                plan_mode=plan_mode,
-                host_authorization_token=(
-                    str(host_authorization_token)
-                    if host_authorization_token
-                    else None
-                ),
-                sandbox_default=get_setting("agent_sandbox_default_root", None),
-                host_default=get_setting("agent_host_default_root", None),
-                conversation_id=str(session),
-                turn_lease=_prepared_turn.lease,
-                workspace_write=(
-                    str(allow_workspace_write).strip().lower() == "true"
-                    and bool(workspace)
-                    and not plan_mode
-                ),
-                process_workspace_write=(
-                    str(allow_process_workspace_write).strip().lower() == "true"
-                    and bool(workspace)
-                    and shell_enabled
-                    and not plan_mode
-                ),
-                disabled_tools=TOOL_REGISTRY.canonicalize_names(
-                    set(disabled_tools) | set(blocked_tools_for_owner(_user)),
-                    None,
-                ),
-                defer_ownership=True,
-            )
+            _execution_context = _prepared_authority.context
+            _authority_event = _prepared_authority.event_payload()
             execution_mode = _execution_context.execution_mode
             shell_enabled = execution_mode.enabled
-            if _context_reason != "requested":
-                shell_mode_reason = _context_reason
+            if _prepared_authority.reason != "requested":
+                shell_mode_reason = _prepared_authority.reason
 
         async def stream_with_save() -> AsyncGenerator[str, None]:
             # _effective_mode is read-only here; closure captures it from
@@ -1888,37 +1881,8 @@ def setup_chat_routes(
                     elif _explicit_browser_intent:
                         _forced_tools = set(_BROWSER_MCP_TOOLS)
 
-                    yield "data: " + json.dumps({
-                        "type": "execution_authority",
-                        "mode": execution_mode.value,
-                        "reason": shell_mode_reason,
-                        "workspace": (
-                            _execution_context.execution_root.source.value
-                            == "selected_workspace"
-                        ),
-                        "ephemeral": True,
-                        "execution_root": _execution_context.execution_root.path,
-                        "root_source": _execution_context.execution_root.source.value,
-                        "workspace_revision": _execution_context.execution_root.workspace_revision,
-                        "workspace_snapshot_policy": (
-                            "nonexecuting_git_metadata_and_bounded_workspace_content; "
-                            "strong_revision_required_for_approval"
-                        ),
-                        "authority_revision": _execution_context.authority_grant.revision,
-                        "capabilities": sorted(
-                            capability.value
-                            for capability in _execution_context.authority_grant.capabilities
-                        ),
-                        "workspace_write_granted": _execution_context.authority_grant.allows(
-                            Capability.WORKSPACE_WRITE
-                        ),
-                        "process_workspace_write_granted": (
-                            _execution_context.authority_grant.allows(
-                                Capability.PROCESS_WORKSPACE_WRITE
-                            )
-                        ),
-                        "run_id": _execution_context.run_id,
-                    }) + "\n\n"
+                    assert _authority_event is not None
+                    yield "data: " + json.dumps(_authority_event) + "\n\n"
 
                     async for chunk in stream_agent_loop(
                         sess.endpoint_url,
