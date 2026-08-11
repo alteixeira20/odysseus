@@ -9,7 +9,7 @@ resulting digest plus bounded/redacted diagnostics.
 
 from __future__ import annotations
 
-from dataclasses import asdict, is_dataclass
+from dataclasses import fields, is_dataclass
 from enum import Enum
 import hashlib
 import json
@@ -36,7 +36,9 @@ def _stable(value: Any, *, _seen: set[int] | None = None) -> Any:
 
     This projection is used only as hash input. It is deliberately broader than
     the persisted snapshot so semantic inputs can affect run identity without
-    becoming recoverable plaintext in SQLite.
+    becoming recoverable plaintext in SQLite. Dataclasses are traversed field by
+    field instead of using ``asdict`` so nested runtime objects are never deep-
+    copied just to compute identity.
     """
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
@@ -62,7 +64,11 @@ def _stable(value: Any, *, _seen: set[int] | None = None) -> Any:
             items = [_stable(item, _seen=seen) for item in value]
             return sorted(items, key=_canonical)
         if is_dataclass(value):
-            return _stable(asdict(value), _seen=seen)
+            return {
+                field.name: _stable(getattr(value, field.name), _seen=seen)
+                for field in fields(value)
+                if not field.name.startswith("_")
+            }
         attributes = getattr(value, "__dict__", None)
         if isinstance(attributes, Mapping):
             public = {
