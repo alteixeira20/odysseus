@@ -226,9 +226,15 @@ def resolve_round_tool_calls(
     round_num: int,
     is_api_model: bool = False,
     allow_fenced_for_api: bool = False,
-    recover_unknown: bool = False,
+    recover_unknown: bool = True,
 ) -> ResolvedToolCalls:
-    """Return aligned executable blocks and recoverable unknown native calls."""
+    """Return aligned executable blocks and recoverable unknown native calls.
+
+    The typed resolver owns unknown native calls by default so a misspelled or
+    stale provider tool name becomes a structured model-visible error instead
+    of silently collapsing into a tool-free completion. The legacy tuple
+    adapter below explicitly opts out to preserve its characterized behavior.
+    """
 
     # Resolve through the compatibility package at call time. A few legacy
     # tests import agent_loop under temporary dependency stubs; lazy resolution
