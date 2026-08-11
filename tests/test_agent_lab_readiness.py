@@ -1,5 +1,8 @@
 from pathlib import Path
+import subprocess
 import sys
+
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,7 +27,7 @@ def test_quick_suite_pins_high_risk_agent_invariants():
     assert required <= targets
 
 
-def test_full_suite_matches_gate_categories_and_expands_globs():
+def test_full_suite_expands_gate_categories_and_globs():
     targets = readiness.full_pytest_targets()
     assert targets[0] == "tests/runtime_v3"
     assert "tests/test_agent_runtime_contract.py" in targets
@@ -43,6 +46,7 @@ def test_python_command_keeps_blocking_pytest_safety_flags():
     assert "--timeout=90" in command
     assert "--timeout-method=thread" in command
     assert command[-1] == "tests/test_runtime_v2_dependability.py"
+    assert readiness.PYTEST_WALL_TIMEOUT_SECONDS == 20 * 60
 
 
 def test_compile_targets_cover_runtime_entrypoints():
@@ -69,6 +73,16 @@ def test_javascript_syntax_checks_are_one_file_per_command():
     assert test_command == ["node", "--test", *readiness.JS_TEST_TARGETS]
 
 
+def test_runtime_gate_uses_readiness_runner_for_python_contract():
+    workflow = (ROOT / ".github/workflows/agent-runtime-gate.yml").read_text(encoding="utf-8")
+    assert '"scripts/agent_lab_readiness.py"' in workflow
+    assert "python scripts/agent_lab_readiness.py" in workflow
+    assert "--full" in workflow
+    assert "--no-js" in workflow
+    assert "--skip-sandbox-probe" in workflow
+    assert "python -m pytest -vv" not in workflow
+
+
 def test_dry_run_does_not_execute_subprocess(monkeypatch, capsys):
     called = False
 
@@ -92,3 +106,16 @@ def test_dry_run_needs_no_node_or_linux_sandbox_binary(monkeypatch, capsys):
 
     output = capsys.readouterr().out
     assert "bwrap --unshare-all" in output
+
+
+def test_runner_turns_wall_clock_timeout_into_blocker(monkeypatch):
+    def timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(args[0], timeout=1)
+
+    monkeypatch.setattr(readiness.subprocess, "run", timeout)
+    with pytest.raises(readiness.ReadinessError, match="wall-clock budget"):
+        readiness._run(
+            ["python", "-m", "pytest"],
+            dry_run=False,
+            timeout_seconds=1,
+        )
