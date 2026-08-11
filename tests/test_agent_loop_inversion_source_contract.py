@@ -54,3 +54,49 @@ def test_runner_backend_reaches_internal_kernel_not_public_facade():
     assert "from src.agent_loop import _legacy_stream_agent_kernel" in runner
     assert "return _legacy_stream_agent_kernel(**self.arguments(request))" in runner
     assert "from src.agent_loop import stream_agent_loop" not in runner
+
+
+def test_internal_kernel_cannot_construct_execution_authority():
+    root = Path(__file__).resolve().parents[1]
+    path = root / "src" / "agent_loop.py"
+    tree = _tree(path)
+    kernel = _function(path, "_legacy_stream_agent_kernel")
+
+    imported_modules = {
+        node.module
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom) and node.module
+    }
+    assert "src.agent.runtime_v2.authority" not in imported_modules
+    assert "src.execution_policy" not in imported_modules
+
+    called_names = {
+        node.func.id
+        for node in ast.walk(kernel)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "prepare_execution_context" not in called_names
+    assert "normalize_execution_mode" not in called_names
+    assert "RunBudgets" not in called_names
+
+    source = path.read_text(encoding="utf-8")
+    assert (
+        "_legacy_stream_agent_kernel requires a prepared "
+        "\"\n            \"AgentExecutionContext"
+    ) in source
+
+
+def test_only_runner_reaches_internal_kernel_in_production_source():
+    root = Path(__file__).resolve().parents[1]
+    allowed = {
+        root / "src" / "agent_loop.py",
+        root / "src" / "agent" / "runner.py",
+    }
+    offenders = []
+    for path in (root / "src").rglob("*.py"):
+        if path in allowed:
+            continue
+        if "_legacy_stream_agent_kernel" in path.read_text(encoding="utf-8"):
+            offenders.append(path.relative_to(root).as_posix())
+
+    assert offenders == []
