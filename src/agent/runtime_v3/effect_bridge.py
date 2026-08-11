@@ -56,8 +56,11 @@ def redact_sensitive(value: Any, *, parent_key: str = "") -> Any:
 
 def _classify_effects(effects: Iterable[Effect]) -> tuple[EffectClass, RetryPolicy]:
     items = tuple(effects)
+    # Missing effect metadata is not positive proof of a pure read. It may run
+    # once through the authoritative Runtime V2 policy path, but recovery must
+    # never infer that an unmodelled invocation is safe to retry.
     if not items:
-        return EffectClass.READ, RetryPolicy.SAFE
+        return EffectClass.UNKNOWN, RetryPolicy.NEVER
     if any(effect.kind.startswith("process.") or effect.kind.startswith("process_") for effect in items):
         return EffectClass.PROCESS, RetryPolicy.NEVER
     if any(
@@ -152,6 +155,12 @@ def begin_tool_effect(
     target = ledger or get_runtime_ledger()
     _ensure_run(target, context)
     effect_class, retry_policy = _classify_effects(effects)
+    # Exact approvals provide a stronger retry oracle only for explicitly
+    # modelled effects: Runtime V2 records whether execution crossed the effect
+    # boundary. Missing effect metadata remains UNKNOWN + NEVER even when an
+    # approval exists.
+    if idempotency_scope and effect_class is not EffectClass.UNKNOWN:
+        retry_policy = RetryPolicy.SAFE
     recorded_arguments = {
         "call_id": call.call_id,
         "candidate_id": call.candidate_id,
@@ -246,14 +255,28 @@ def finish_tool_effect(handle: DurableEffectHandle, result: ToolResult) -> None:
     if not handle.should_execute:
         return
     payload = _durable_result_payload(handle, result)
+    uncertain_status = result.status in {
+        ToolResultStatus.TIMED_OUT,
+        ToolResultStatus.CANCELLED,
+        ToolResultStatus.ERROR,
+        ToolResultStatus.INCOMPLETE,
+    }
+    has_effect_evidence = bool(
+        result.observed_effects
+        or result.committed_effects
+        or result.unknown_effects
+    )
+    # For a modelled non-read effect, a failure is retryable only when Runtime
+    # V2 proves it failed before any effect boundary. For an unmodelled effect,
+    # any uncertain terminal result is UNKNOWN by construction because the
+    # runtime lacks the metadata required to prove otherwise.
     unknown = bool(result.unknown_effects) or (
-        handle.effect_class is not EffectClass.READ
-        and result.status in {
-            ToolResultStatus.TIMED_OUT,
-            ToolResultStatus.CANCELLED,
-            ToolResultStatus.ERROR,
-            ToolResultStatus.INCOMPLETE,
-        }
+        handle.effect_class is EffectClass.UNKNOWN
+        and uncertain_status
+    ) or (
+        handle.effect_class not in {EffectClass.READ, EffectClass.UNKNOWN}
+        and uncertain_status
+        and has_effect_evidence
     )
     if unknown:
         handle.ledger.mark_effect_unknown(
@@ -276,6 +299,7 @@ def finish_tool_effect(handle: DurableEffectHandle, result: ToolResult) -> None:
             "canonical_name": result.canonical_name,
             "status": terminal_status.value,
             "tool_status": result.status.value,
+            "observed_effect_count": len(result.observed_effects),
             "unknown_effect_count": len(result.unknown_effects),
             "committed_effect_count": len(result.committed_effects),
         },

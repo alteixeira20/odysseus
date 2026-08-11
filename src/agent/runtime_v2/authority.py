@@ -286,7 +286,15 @@ def prepare_execution_context(
         disabled_tools=frozenset(disabled_tools),
     )
     actual_run_id = str(run_id or secrets.token_urlsafe(18))
-    conversation = str(conversation_id or session)
+    if conversation_id is not None:
+        conversation = str(conversation_id)
+    elif session == "direct-tool-call":
+        # Compatibility callers that omit a real session are independent
+        # one-shot invocations. Binding all of them to the same conversation
+        # makes concurrent calls supersede each other's ownership lease.
+        conversation = f"direct-tool-call:{actual_run_id}"
+    else:
+        conversation = session
     lease = turn_lease or RUN_OWNERSHIP.claim_turn(
         owner_id=owner,
         conversation_id=conversation,

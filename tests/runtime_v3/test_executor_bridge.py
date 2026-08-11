@@ -15,6 +15,7 @@ from src.agent.runtime_v2.contracts import (
     ExecutionRootSource,
     NormalizedToolCall,
     RunBudgets,
+    ToolError,
     ToolResult,
     ToolResultStatus,
 )
@@ -111,6 +112,165 @@ class ExecutorBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(second.status, ToolResultStatus.SUCCESS)
         self.assertEqual(second.data["summary"], "done")
         self.assertEqual(calls, 1)
+
+    async def test_committed_approval_scope_never_treats_cache_as_authority(self):
+        calls = 0
+
+        async def implementation(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            return ToolResult(
+                call_id=self.call.call_id,
+                canonical_name=self.call.canonical_name,
+                status=ToolResultStatus.SUCCESS,
+                data={"summary": "committed"},
+                attempted_effects=self.effects,
+                observed_effects=self.effects,
+                committed_effects=self.effects,
+            )
+
+        with patch(
+            "src.agent.runtime_v3.executor_bridge._preflight_effects",
+            return_value=self.effects,
+        ):
+            first = await execute_with_durable_effects(
+                self.call,
+                self.context,
+                implementation=implementation,
+                approval_id="approval-one",
+            )
+            second = await execute_with_durable_effects(
+                self.call,
+                self.context,
+                implementation=implementation,
+                approval_id="approval-one",
+            )
+
+        self.assertEqual(first.status, ToolResultStatus.SUCCESS)
+        self.assertEqual(second.status, ToolResultStatus.DENIED)
+        self.assertEqual(second.error.code, "effect_approval_not_reusable")
+        self.assertEqual(second.data["durable_status"], "committed")
+        self.assertEqual(calls, 1)
+
+    async def test_approval_scoped_pre_effect_failure_can_retry(self):
+        calls = 0
+
+        async def implementation(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return ToolResult(
+                    call_id=self.call.call_id,
+                    canonical_name=self.call.canonical_name,
+                    status=ToolResultStatus.ERROR,
+                    error=ToolError("launch_failed", "no effect started"),
+                    attempted_effects=self.effects,
+                )
+            return ToolResult(
+                call_id=self.call.call_id,
+                canonical_name=self.call.canonical_name,
+                status=ToolResultStatus.SUCCESS,
+                data={"summary": "retried"},
+                attempted_effects=self.effects,
+                observed_effects=self.effects,
+                committed_effects=self.effects,
+            )
+
+        with patch(
+            "src.agent.runtime_v3.executor_bridge._preflight_effects",
+            return_value=self.effects,
+        ):
+            first = await execute_with_durable_effects(
+                self.call,
+                self.context,
+                implementation=implementation,
+                approval_id="approval-retry",
+            )
+            second = await execute_with_durable_effects(
+                self.call,
+                self.context,
+                implementation=implementation,
+                approval_id="approval-retry",
+            )
+
+        self.assertEqual(first.status, ToolResultStatus.ERROR)
+        self.assertEqual(second.status, ToolResultStatus.SUCCESS)
+        self.assertEqual(second.data["summary"], "retried")
+        self.assertEqual(calls, 2)
+        row = ledger_module._LEDGER._conn.execute(
+            "SELECT status,attempt,retry_policy FROM agent_effects WHERE run_id=?",
+            (self.context.run_id,),
+        ).fetchone()
+        self.assertEqual(tuple(row), ("committed", 2, "safe"))
+
+    async def test_approval_scoped_observed_failure_becomes_unknown_and_blocks_retry(self):
+        calls = 0
+
+        async def implementation(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            return ToolResult(
+                call_id=self.call.call_id,
+                canonical_name=self.call.canonical_name,
+                status=ToolResultStatus.ERROR,
+                error=ToolError("transport_lost", "effect may have happened"),
+                attempted_effects=self.effects,
+                observed_effects=self.effects,
+                unknown_effects=self.effects,
+            )
+
+        with patch(
+            "src.agent.runtime_v3.executor_bridge._preflight_effects",
+            return_value=self.effects,
+        ):
+            first = await execute_with_durable_effects(
+                self.call,
+                self.context,
+                implementation=implementation,
+                approval_id="approval-unknown",
+            )
+            second = await execute_with_durable_effects(
+                self.call,
+                self.context,
+                implementation=implementation,
+                approval_id="approval-unknown",
+            )
+
+        self.assertEqual(first.status, ToolResultStatus.ERROR)
+        self.assertEqual(second.status, ToolResultStatus.INCOMPLETE)
+        self.assertTrue(second.data["reconciliation_required"])
+        self.assertEqual(calls, 1)
+        row = ledger_module._LEDGER._conn.execute(
+            "SELECT status FROM agent_effects WHERE run_id=?",
+            (self.context.run_id,),
+        ).fetchone()
+        self.assertEqual(row[0], "unknown")
+
+    async def test_approved_preflight_failure_denies_before_handler(self):
+        calls = 0
+
+        async def implementation(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            raise AssertionError("handler must not execute")
+
+        with patch(
+            "src.agent.runtime_v3.executor_bridge._preflight_effects",
+            side_effect=RuntimeError("process identity drift"),
+        ), patch(
+            "src.agent.runtime_v3.executor_bridge._invalidate_approval_after_preflight_failure"
+        ) as invalidate:
+            result = await execute_with_durable_effects(
+                self.call,
+                self.context,
+                implementation=implementation,
+                approval_id="approval-drift",
+            )
+
+        self.assertEqual(calls, 0)
+        self.assertEqual(result.status, ToolResultStatus.DENIED)
+        self.assertEqual(result.error.code, "durable_effect_preflight_failed")
+        invalidate.assert_called_once_with("approval-drift")
 
     async def test_ledger_failure_blocks_handler(self):
         calls = 0
