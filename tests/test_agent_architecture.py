@@ -196,12 +196,22 @@ def test_chat_route_depends_on_stable_agent_api():
     assert "src.agent_loop" not in imported
 
 
+def test_stable_api_depends_on_runner_not_runtime_layers():
+    root = Path(__file__).resolve().parents[1]
+    imported = tuple(_imports(root / "src" / "agent" / "api.py"))
+    assert "src.agent.runner" not in imported  # relative import is recorded as "runner"
+    assert "runner" in imported
+    assert not any(name.startswith("src.agent.runtime_v") for name in imported)
+    assert "src.agent_loop" not in imported
+
+
 def test_runtime_callers_use_stable_agent_api_not_legacy_stream():
     root = Path(__file__).resolve().parents[1]
     offenders = []
+    allowed = {root / "src" / "agent" / "runner.py"}
     for package in ("routes", "src"):
         for path in (root / package).rglob("*.py"):
-            if path == root / "src" / "agent" / "api.py":
+            if path in allowed:
                 continue
             tree = ast.parse(
                 path.read_text(encoding="utf-8"),
@@ -220,18 +230,16 @@ def test_runtime_callers_use_stable_agent_api_not_legacy_stream():
     assert offenders == []
 
 
-async def test_typed_api_projects_request_to_legacy_runtime(monkeypatch):
+async def test_typed_api_delegates_request_to_canonical_runner(monkeypatch):
     captured = {}
 
-    def fake_legacy(**arguments):
-        async def generate():
-            captured.update(arguments)
+    class FakeRunner:
+        async def stream(self, request):
+            captured["request"] = request
             yield 'data: {"delta": "ready"}\n\n'
             yield "data: [DONE]\n\n"
 
-        return generate()
-
-    monkeypatch.setattr(agent_api, "_legacy_stream", fake_legacy)
+    monkeypatch.setattr(agent_api, "DEFAULT_AGENT_RUNNER", FakeRunner())
     request = AgentRunRequest.from_legacy_arguments(
         endpoint_url="https://provider.invalid/v1",
         model="test-model",
@@ -245,7 +253,4 @@ async def test_typed_api_projects_request_to_legacy_runtime(monkeypatch):
     events = [event async for event in agent_api.stream(request)]
 
     assert events[-1] == "data: [DONE]\n\n"
-    assert captured["max_rounds"] == 3
-    assert captured["relevant_tools"] == {"read_file"}
-    assert captured["workspace"] == "/tmp/workspace"
-    assert captured["shell_enabled"] is False
+    assert captured["request"] is request
