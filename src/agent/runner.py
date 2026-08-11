@@ -18,7 +18,7 @@ from .contracts import AgentAuthorityRequest, AgentRunRequest
 from .runtime_v2.authority import prepare_execution_context_async
 from .runtime_v2.contracts import AgentExecutionContext, Capability, RunBudgets
 from .runtime_v3.config import load_runtime_v3_limits
-from .runtime_v3.orchestrator import stream_with_durable_runtime
+from .runtime_v3.lifecycle import DurableRunLifecycle
 from .tools.bootstrap import TOOL_REGISTRY
 
 
@@ -50,24 +50,49 @@ class AgentLoopCompatibilityBackend:
             "active_document": request.contexts.active_document,
             "active_email": request.contexts.active_email,
             "session_id": request.session_id,
-            "disabled_tools": set(request.policy.disabled_tools) if request.policy.disabled_tools is not None else None,
+            "disabled_tools": (
+                set(request.policy.disabled_tools)
+                if request.policy.disabled_tools is not None
+                else None
+            ),
             "owner": request.owner,
-            "relevant_tools": set(request.policy.relevant_tools) if request.policy.relevant_tools is not None else None,
-            "fallbacks": list(request.model_options.fallbacks) if request.model_options.fallbacks is not None else None,
+            "relevant_tools": (
+                set(request.policy.relevant_tools)
+                if request.policy.relevant_tools is not None
+                else None
+            ),
+            "fallbacks": (
+                list(request.model_options.fallbacks)
+                if request.model_options.fallbacks is not None
+                else None
+            ),
             "plan_mode": request.plan_mode,
             "approved_plan": request.approved_plan,
             "tool_policy": request.policy.policy,
             "workspace": request.contexts.workspace,
-            "forced_tools": set(request.policy.forced_tools) if request.policy.forced_tools is not None else None,
-            "uploaded_files": list(request.contexts.uploaded_files) if request.contexts.uploaded_files is not None else None,
+            "forced_tools": (
+                set(request.policy.forced_tools)
+                if request.policy.forced_tools is not None
+                else None
+            ),
+            "uploaded_files": (
+                list(request.contexts.uploaded_files)
+                if request.contexts.uploaded_files is not None
+                else None
+            ),
             "workload": request.workload,
             "_is_teacher_run": request.is_teacher_run,
-            "shell_enabled": request.policy.execution_mode if request.policy.execution_mode is not None else request.policy.shell_enabled,
+            "shell_enabled": (
+                request.policy.execution_mode
+                if request.policy.execution_mode is not None
+                else request.policy.shell_enabled
+            ),
             "execution_context": request.execution_context,
         }
 
     def stream(self, request: AgentRunRequest):
         from src.agent_loop import stream_agent_loop as legacy_stream_agent_loop
+
         return legacy_stream_agent_loop(**self.arguments(request))
 
 
@@ -93,9 +118,13 @@ class PreparedAuthority:
                 "strong_revision_required_for_approval"
             ),
             "authority_revision": grant.revision,
-            "capabilities": sorted(capability.value for capability in grant.capabilities),
+            "capabilities": sorted(
+                capability.value for capability in grant.capabilities
+            ),
             "workspace_write_granted": grant.allows(Capability.WORKSPACE_WRITE),
-            "process_workspace_write_granted": grant.allows(Capability.PROCESS_WORKSPACE_WRITE),
+            "process_workspace_write_granted": grant.allows(
+                Capability.PROCESS_WORKSPACE_WRITE
+            ),
             "run_id": self.context.run_id,
         }
 
@@ -110,8 +139,19 @@ class PreparedAgentRun:
 class AgentRunner:
     """Own typed request preparation, authority, durability and execution."""
 
-    def __init__(self, *, backend: AgentBackend | None = None, durable_stream: Callable[..., Any] = stream_with_durable_runtime, prepare_execution_context: Callable[..., Any] = prepare_execution_context_async) -> None:
+    def __init__(
+        self,
+        *,
+        backend: AgentBackend | None = None,
+        lifecycle_factory: Callable[[], DurableRunLifecycle] = DurableRunLifecycle,
+        durable_stream: Callable[..., Any] | None = None,
+        prepare_execution_context: Callable[..., Any] = prepare_execution_context_async,
+    ) -> None:
         self.backend: AgentBackend = backend or AgentLoopCompatibilityBackend()
+        self._lifecycle_factory = lifecycle_factory
+        # Compatibility injection seam for focused tests and transitional
+        # integrators. Canonical/default execution does not use the historical
+        # Runtime V3 wrapper function.
         self._durable_stream = durable_stream
         self._prepare_execution_context = prepare_execution_context
 
@@ -123,19 +163,31 @@ class AgentRunner:
         )
         return RunBudgets(
             max_rounds=effective.max_rounds,
-            max_tool_calls=effective.max_tool_calls if effective.max_tool_calls and effective.max_tool_calls > 0 else 256,
+            max_tool_calls=(
+                effective.max_tool_calls
+                if effective.max_tool_calls and effective.max_tool_calls > 0
+                else 256
+            ),
             max_provider_requests=min(max(effective.max_rounds * 3, 1), 128),
         )
 
     @staticmethod
-    def _canonical_disabled(owner: str | None, disabled_tools, *, plan_mode: bool) -> frozenset[str]:
+    def _canonical_disabled(
+        owner: str | None,
+        disabled_tools,
+        *,
+        plan_mode: bool,
+    ) -> frozenset[str]:
         disabled = set(disabled_tools or ())
         disabled.update(blocked_tools_for_owner(owner))
         if plan_mode:
             disabled.update(plan_mode_disabled_tools())
         return TOOL_REGISTRY.canonicalize_names(disabled, None)
 
-    async def prepare_authority(self, request: AgentAuthorityRequest) -> PreparedAuthority:
+    async def prepare_authority(
+        self,
+        request: AgentAuthorityRequest,
+    ) -> PreparedAuthority:
         requested_mode = normalize_execution_mode(request.requested_mode)
         context, reason = await self._prepare_execution_context(
             owner_id=request.owner_id,
@@ -162,19 +214,29 @@ class AgentRunner:
         return PreparedAuthority(context=context, reason=reason)
 
     @staticmethod
-    def _compatibility_disabled_tools(request: AgentRunRequest) -> frozenset[str]:
+    def _compatibility_disabled_tools(
+        request: AgentRunRequest,
+    ) -> frozenset[str]:
         disabled = set(request.policy.disabled_tools or ())
         policy = request.policy.policy
         if policy is not None:
             all_disabled = getattr(policy, "all_disabled_names", None)
             if callable(all_disabled):
                 disabled.update(all_disabled())
-        return AgentRunner._canonical_disabled(request.owner, disabled, plan_mode=request.plan_mode)
+        return AgentRunner._canonical_disabled(
+            request.owner,
+            disabled,
+            plan_mode=request.plan_mode,
+        )
 
     async def prepare(self, request: AgentRunRequest) -> PreparedAgentRun:
         if request.execution_context is not None:
             return PreparedAgentRun(request=request)
-        requested = request.policy.execution_mode if request.policy.execution_mode is not None else request.policy.shell_enabled
+        requested = (
+            request.policy.execution_mode
+            if request.policy.execution_mode is not None
+            else request.policy.shell_enabled
+        )
         prepared = await self.prepare_authority(
             AgentAuthorityRequest(
                 owner_id=request.owner,
@@ -197,10 +259,29 @@ class AgentRunner:
     async def stream(self, request: AgentRunRequest) -> AsyncGenerator[str, None]:
         prepared = await self.prepare(request)
         typed_request = prepared.request
-        async for event in self._durable_stream(typed_request, lambda: self.backend.stream(typed_request)):
+        backend_factory = lambda: self.backend.stream(typed_request)
+
+        if self._durable_stream is not None:
+            # Transitional injection seam. The production/default path below
+            # owns a concrete durability service instance per run.
+            durable = self._durable_stream(typed_request, backend_factory)
+        else:
+            durable = self._lifecycle_factory().stream(
+                typed_request,
+                backend_factory,
+            )
+
+        async for event in durable:
             yield event
 
 
 DEFAULT_AGENT_RUNNER = AgentRunner()
 
-__all__ = ["AgentBackend", "AgentLoopCompatibilityBackend", "AgentRunner", "DEFAULT_AGENT_RUNNER", "PreparedAgentRun", "PreparedAuthority"]
+__all__ = [
+    "AgentBackend",
+    "AgentLoopCompatibilityBackend",
+    "AgentRunner",
+    "DEFAULT_AGENT_RUNNER",
+    "PreparedAgentRun",
+    "PreparedAuthority",
+]
