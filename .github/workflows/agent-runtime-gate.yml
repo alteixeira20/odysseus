@@ -121,7 +121,8 @@ jobs:
 
       - name: Run blocking focused agent/runtime suite
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          set +e
           timeout --signal=TERM --kill-after=30s 20m \
             python -m pytest -q --tb=short --maxfail=20 \
               --timeout=90 --timeout-method=thread \
@@ -139,7 +140,12 @@ jobs:
               tests/test_provider_finish_reason.py \
               tests/test_stream_termination.py \
               tests/test_tool_policy.py \
-              tests/test_tool_registry.py
+              tests/test_tool_registry.py \
+              > /tmp/agent-runtime-pytest.log 2>&1
+          status=$?
+          set -e
+          tail -n 250 /tmp/agent-runtime-pytest.log
+          exit "$status"
 
       - name: Validate diff whitespace
         run: git diff --check HEAD^ HEAD
