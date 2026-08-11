@@ -8,6 +8,7 @@ import pytest
 
 from core import database
 from src import agent_loop
+from tests.helpers.agent_kernel import stream_legacy_kernel
 from src.agent.runtime_v2.contracts import ToolResult, ToolResultStatus
 
 
@@ -166,7 +167,7 @@ async def test_replay_matches_golden_event_sequence(
 
     chunks = [
         chunk
-        async for chunk in agent_loop._legacy_stream_agent_kernel(
+        async for chunk in stream_legacy_kernel(
             replay["endpoint_url"],
             replay["model"],
             replay["messages"],

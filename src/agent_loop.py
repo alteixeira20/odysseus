@@ -26,7 +26,6 @@ from src.settings import get_setting
 from src.prompt_security import untrusted_context_message
 from src.tool_security import blocked_tools_for_owner, plan_mode_disabled_tools
 from src.tool_policy import GUIDE_ONLY_DIRECTIVE, WEB_TOOL_NAMES, ToolPolicy
-from src.execution_policy import ExecutionMode, normalize_execution_mode
 from src.effective_tools import calculate_effective_tools
 from src.tool_utils import _truncate, get_mcp_manager
 from src.agent.conversation import (
@@ -206,11 +205,9 @@ from src.agent_tools import (
     MAX_AGENT_ROUNDS,
 )
 from src.agent.tools.bootstrap import TOOL_REGISTRY
-from src.agent.runtime_v2.authority import prepare_execution_context
 from src.agent.runtime_v2.contracts import (
     AgentExecutionContext,
     Capability,
-    RunBudgets,
 )
 from src.agent.runtime_v2.events import encode_runtime_sse
 from src.agent.runtime_v2.state import RunState
@@ -1488,34 +1485,9 @@ async def _legacy_stream_agent_kernel(
 
     _settings = AgentSettingsSnapshot.capture(get_setting)
     if execution_context is None:
-        _compatibility_disabled = set(disabled_tools or ())
-        if tool_policy is not None:
-            _compatibility_disabled.update(tool_policy.all_disabled_names())
-        _compatibility_disabled.update(blocked_tools_for_owner(owner))
-        if plan_mode:
-            _compatibility_disabled.update(plan_mode_disabled_tools())
-        _legacy_mode = normalize_execution_mode(
-            shell_enabled,
-            shell_enabled=shell_enabled,
-        )
-        _legacy_budgets = RunBudgets(
-            max_rounds=max_rounds,
-            max_tool_calls=(max_tool_calls if max_tool_calls and max_tool_calls > 0 else 256),
-            max_provider_requests=min(max(max_rounds * 3, 1), 128),
-        )
-        execution_context, _ = prepare_execution_context(
-            owner_id=owner,
-            session_id=str(session_id or "compatibility-run"),
-            requested_mode=_legacy_mode,
-            selected_workspace=workspace,
-            budgets=_legacy_budgets,
-            tool_catalog_revision=TOOL_REGISTRY.revision,
-            plan_mode=plan_mode,
-            sandbox_default=get_setting("agent_sandbox_default_root", None),
-            host_default=get_setting("agent_host_default_root", None),
-            disabled_tools=TOOL_REGISTRY.canonicalize_names(
-                _compatibility_disabled, None
-            ),
+        raise RuntimeError(
+            "_legacy_stream_agent_kernel requires a prepared "
+            "AgentExecutionContext"
         )
     workspace = execution_context.execution_root.path
     shell_enabled = execution_context.execution_mode.value

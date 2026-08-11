@@ -134,3 +134,21 @@ async def test_public_legacy_call_reaches_default_runner_once(monkeypatch):
     assert len(requests) == 1
     assert requests[0].session_id == "session-a"
     assert requests[0].owner == "owner-a"
+
+
+@pytest.mark.asyncio
+async def test_internal_kernel_rejects_missing_prepared_authority(monkeypatch):
+    monkeypatch.setattr(
+        agent_loop,
+        "get_setting",
+        lambda key, default=None: default,
+    )
+
+    stream = agent_loop._legacy_stream_agent_kernel(
+        endpoint_url="https://provider.invalid/v1",
+        model="model-a",
+        messages=[{"role": "user", "content": "hello"}],
+    )
+
+    with pytest.raises(RuntimeError, match="requires a prepared AgentExecutionContext"):
+        await anext(stream)

@@ -35,6 +35,7 @@ _legacy_stream_agent_kernel
 - `src.agent_loop.stream_agent_loop` preserves the historical signature but delegates through the stable API/runner.
 - An already prepared `AgentExecutionContext` is preserved by identity and never prepared a second time.
 - A compatibility/direct request without an execution context is prepared by `AgentRunner` before durable execution begins.
+- `_legacy_stream_agent_kernel` consumes a prepared `AgentExecutionContext` and fails closed when one is missing. It cannot construct Runtime V2 authority or normalize execution mode itself.
 
 ## Typed lifecycle boundary
 
@@ -63,6 +64,7 @@ SSE JSON terminal parsing is retained only for genuinely legacy/literal wire pro
 2. **Server/HTTP authority preparation** — `chat_routes.py` sends intent, workspace grants, host token and prepared turn lease through `AgentAuthorityRequest`; Runtime V2 execution-context construction is owned by `AgentRunner`.
 3. **Typed durable lifecycle** — `AgentRunner` owns `DurableRunLifecycle`; both AgentEvent and Runtime V2 terminal events are typed-first and the old Runtime V3 orchestrator is only a compatibility façade.
 4. **Public legacy-loop inversion** — the historical `src.agent_loop.stream_agent_loop` signature now delegates into the canonical API/runner; the characterized implementation is explicitly internal as `_legacy_stream_agent_kernel`.
+5. **Sole authority ownership** — the internal kernel no longer imports or calls Runtime V2 authority preparation. `AgentRunner` prepares authority exactly once and the kernel rejects bypass calls without a prepared context.
 
 ## Remaining internal kernel debt
 
