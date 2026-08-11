@@ -1,0 +1,40 @@
+name: Materialize kernel authority boundary
+
+on:
+  pull_request:
+    branches: [agentic-lab]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.head_ref == 'agent/kernel-authority-boundary-dev'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out development branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          ref: agent/kernel-authority-boundary-dev
+          fetch-depth: 2
+          persist-credentials: true
+
+      - name: Apply asserted authority-boundary transform
+        run: |
+          set -euo pipefail
+          python scripts/materialize_kernel_authority_boundary.py
+          git diff --check
+
+      - name: Materialize ordinary source commit
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/agent_loop.py tests/test_agent_replay_golden.py tests/test_agent_runtime_contract.py
+          if git diff --cached --quiet; then
+            echo 'No source changes to materialize.'
+            exit 0
+          fi
+          git commit -m 'refactor(agent): require runner-prepared kernel authority'
+          git push origin HEAD:agent/kernel-authority-boundary-dev
