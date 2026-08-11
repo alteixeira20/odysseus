@@ -165,5 +165,42 @@ jobs:
       - name: Run bounded diagnostic pytest suite
         if: steps.docs-check.outputs.docs_only != 'true'
         run: |
-          timeout --signal=TERM --kill-after=30s 20m \
-            python -m pytest -vv --tb=short --timeout=90 --timeout-method=thread
+          python - <<'PY'
+          import os
+          import signal
+          import subprocess
+          import sys
+
+          command = [
+              sys.executable,
+              "-m",
+              "pytest",
+              "-vv",
+              "--tb=short",
+              "--timeout=90",
+              "--timeout-method=thread",
+          ]
+          process = subprocess.Popen(command, start_new_session=True)
+          try:
+              returncode = process.wait(timeout=20 * 60)
+          except subprocess.TimeoutExpired:
+              print(
+                  "Broad pytest exceeded 20 minutes; terminating the entire process group.",
+                  flush=True,
+              )
+              try:
+                  os.killpg(process.pid, signal.SIGTERM)
+              except ProcessLookupError:
+                  pass
+              try:
+                  process.wait(timeout=15)
+              except subprocess.TimeoutExpired:
+                  try:
+                      os.killpg(process.pid, signal.SIGKILL)
+                  except ProcessLookupError:
+                      pass
+                  process.wait()
+              raise SystemExit(124)
+
+          raise SystemExit(returncode)
+          PY
