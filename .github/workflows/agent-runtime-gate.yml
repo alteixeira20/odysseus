@@ -1,0 +1,151 @@
+name: Agent Runtime Gate
+
+on:
+  pull_request:
+    branches:
+      - agentic-lab
+    paths:
+      - "src/agent/**"
+      - "src/agent_loop.py"
+      - "src/agent_tools/**"
+      - "src/effective_tools.py"
+      - "src/execution_policy.py"
+      - "src/process_sandbox.py"
+      - "src/tool_execution.py"
+      - "src/tool_policy.py"
+      - "src/tool_schemas.py"
+      - "src/llm_core.py"
+      - "src/mcp_manager.py"
+      - "routes/chat_routes.py"
+      - "routes/agent_runtime_routes.py"
+      - "static/js/agentRuntimeInspector.js"
+      - "static/js/agentToolLifecycle.js"
+      - "static/js/agentToolRequest.js"
+      - "static/js/runtimeEvents.js"
+      - "tests/runtime_v3/**"
+      - "tests/test_agent_*.py"
+      - "tests/test_runtime_v2_*.py"
+      - "tests/agent*.test.mjs"
+      - "tests/runtimeEvents.test.mjs"
+      - ".github/workflows/agent-runtime-gate.yml"
+  push:
+    branches:
+      - agentic-lab
+    paths:
+      - "src/agent/**"
+      - "src/agent_loop.py"
+      - "src/agent_tools/**"
+      - "src/effective_tools.py"
+      - "src/execution_policy.py"
+      - "src/process_sandbox.py"
+      - "src/tool_execution.py"
+      - "src/tool_policy.py"
+      - "src/tool_schemas.py"
+      - "src/llm_core.py"
+      - "src/mcp_manager.py"
+      - "routes/chat_routes.py"
+      - "routes/agent_runtime_routes.py"
+      - "static/js/agentRuntimeInspector.js"
+      - "static/js/agentToolLifecycle.js"
+      - "static/js/agentToolRequest.js"
+      - "static/js/runtimeEvents.js"
+      - "tests/runtime_v3/**"
+      - "tests/test_agent_*.py"
+      - "tests/test_runtime_v2_*.py"
+      - "tests/agent*.test.mjs"
+      - "tests/runtimeEvents.test.mjs"
+      - ".github/workflows/agent-runtime-gate.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agent-runtime-gate-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python-agent-runtime:
+    name: Python agent/runtime focused suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install locked application dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt
+
+      - name: Compile agent/runtime surfaces
+        run: |
+          python -m compileall -q \
+            src/agent \
+            src/agent_loop.py \
+            src/agent_tools \
+            src/llm_core.py \
+            src/mcp_manager.py \
+            routes/agent_runtime_routes.py \
+            routes/chat_routes.py \
+            tests/runtime_v3
+
+      - name: Run blocking focused agent/runtime suite
+        run: |
+          set -euo pipefail
+          timeout --signal=TERM --kill-after=30s 20m \
+            python -m pytest -vv --tb=short --maxfail=20 \
+              --timeout=90 --timeout-method=thread \
+              tests/runtime_v3 \
+              tests/test_agent_*.py \
+              tests/test_runtime_v2_*.py \
+              tests/test_context_budget_manager.py \
+              tests/test_execution_authority.py \
+              tests/test_filesystem_transaction_safety.py \
+              tests/test_manage_plan_tool.py \
+              tests/test_mcp_server_activation.py \
+              tests/test_native_tool_result_threading.py \
+              tests/test_observation_ledger.py \
+              tests/test_process_sandbox.py \
+              tests/test_provider_finish_reason.py \
+              tests/test_stream_termination.py \
+              tests/test_tool_policy.py \
+              tests/test_tool_registry.py
+
+      - name: Validate diff whitespace
+        run: git diff --check HEAD^ HEAD
+
+  javascript-agent-runtime:
+    name: JavaScript agent/runtime contract suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out exact revision
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "20"
+
+      - name: Check agent runtime JavaScript syntax
+        run: |
+          node --check static/js/agentRuntimeInspector.js
+          node --check static/js/agentToolLifecycle.js
+          node --check static/js/agentToolRequest.js
+          node --check static/js/runtimeEvents.js
+
+      - name: Run agent runtime JavaScript tests
+        run: |
+          node --test \
+            tests/agentToolLifecycle.test.mjs \
+            tests/agentToolRequest.test.mjs \
+            tests/runtimeEvents.test.mjs
