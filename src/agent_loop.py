@@ -26,7 +26,6 @@ from src.settings import get_setting
 from src.prompt_security import untrusted_context_message
 from src.tool_security import blocked_tools_for_owner, plan_mode_disabled_tools
 from src.tool_policy import GUIDE_ONLY_DIRECTIVE, WEB_TOOL_NAMES, ToolPolicy
-from src.execution_policy import ExecutionMode
 from src.effective_tools import calculate_effective_tools
 from src.tool_utils import _truncate, get_mcp_manager
 from src.agent.conversation import (
