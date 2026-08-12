@@ -11,7 +11,7 @@ permissions:
 concurrency:
   # Keep superseded broad runs cancellable while isolating the authoritative
   # qualification series from stale jobs created by the earlier CI namespace.
-  group: ci-authoritative-${{ github.ref }}
+  group: ci-authoritative-v2-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
