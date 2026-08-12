@@ -1,0 +1,32 @@
+name: Diagnose shard 8 child 1 grandchild 2
+on:
+  push:
+    branches: [agent/lab-shard8-child1-gc2-diagnostic]
+permissions:
+  contents: read
+jobs:
+  parts:
+    name: Suspect part ${{ matrix.part }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [0, 1, 2, 3]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap util-linux tmux
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0; fi
+          if [ -e /proc/sys/kernel/unprivileged_userns_clone ]; then sudo sysctl -w kernel.unprivileged_userns_clone=1; fi
+          bwrap --unshare-all --die-with-parent --ro-bind / / --proc /proc --dev /dev -- /bin/true
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: mkdir -p data
+      - run: python scripts/diagnose_ci_shard8_child1_gc2.py --part "${{ matrix.part }}" -vv --tb=short --timeout=90 --timeout-method=thread
