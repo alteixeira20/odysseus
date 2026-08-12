@@ -9,9 +9,9 @@ permissions:
   contents: read
 
 concurrency:
-  # Keep superseded broad runs cancellable while isolating the authoritative
-  # qualification series from stale jobs created by the earlier CI namespace.
-  group: ci-authoritative-v2-${{ github.ref }}
+  # Keep superseded broad runs cancellable while isolating this qualification
+  # series from stale jobs created by the earlier CI namespaces.
+  group: ci-authoritative-v3-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -108,7 +108,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
@@ -174,7 +174,7 @@ jobs:
         run: |
           python scripts/ci_pytest_shard.py \
             --index "${{ matrix.shard }}" \
-            --count 8 \
+            --count 16 \
             --wall-timeout-seconds 720 \
             -vv \
             --tb=short \
