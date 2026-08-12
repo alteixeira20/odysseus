@@ -73,7 +73,7 @@ def _normalize_scopes(scopes: str | list[str] | None = None, profile: str | None
     return normalized or [DEFAULT_SCOPES]
 
 
-ALLOWED_AGENT_PROVIDERS = {"agy", "codex", "claude"}
+ALLOWED_AGENT_PROVIDERS = {"agy", "codex", "claude", "custom"}
 
 
 def _infer_legacy_provider(name: str) -> str | None:

@@ -1,3 +1,5 @@
+import './integrationCategoryActions.js';
+
 // Accessibility enhancements for keyboard + screen-reader users.
 //
 // Several primary controls in Odysseus are authored as click-only <div>s
