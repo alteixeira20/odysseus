@@ -1,0 +1,32 @@
+name: List shard 8 suspect modules
+on:
+  push:
+    branches: [agent/lab-shard8-suspect-list]
+permissions:
+  contents: read
+jobs:
+  list:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0
+        with:
+          persist-credentials: false
+      - name: Print deterministic suspect sets
+        run: |
+          python - <<'PY'
+          import sys
+          sys.path.insert(0, 'scripts')
+          from ci_pytest_shard import ROOT, build_shards, discover_test_modules
+          original = build_shards(discover_test_modules(), 16)[8]
+          child = build_shards(original.paths, 4)[1]
+          grandchild = build_shards(child.paths, 4)[2]
+          suspect = build_shards(grandchild.paths, 4)[1]
+          print('ORIGINAL_SHARD_8')
+          for p in original.paths: print(p.relative_to(ROOT).as_posix())
+          print('CHILD_1')
+          for p in child.paths: print(p.relative_to(ROOT).as_posix())
+          print('GRANDCHILD_2')
+          for p in grandchild.paths: print(p.relative_to(ROOT).as_posix())
+          print('FINAL_SUSPECT')
+          for p in suspect.paths: print(p.relative_to(ROOT).as_posix())
+          PY
