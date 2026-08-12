@@ -15,8 +15,12 @@ async def prepare_authority(request: AgentAuthorityRequest) -> PreparedAuthority
 
 
 async def stream(request: AgentRunRequest) -> AsyncGenerator[str, None]:
-    async for event in DEFAULT_AGENT_RUNNER.stream(request):
-        yield event
+    delegated = DEFAULT_AGENT_RUNNER.stream(request)
+    try:
+        async for event in delegated:
+            yield event
+    finally:
+        await delegated.aclose()
 
 
 async def stream_agent_loop(
@@ -77,5 +81,9 @@ async def stream_agent_loop(
         shell_enabled=shell_enabled,
         execution_context=execution_context,
     )
-    async for event in stream(request):
-        yield event
+    delegated = stream(request)
+    try:
+        async for event in delegated:
+            yield event
+    finally:
+        await delegated.aclose()

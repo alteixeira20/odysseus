@@ -21,6 +21,7 @@ def test_quick_suite_pins_high_risk_agent_invariants():
         "tests/test_agent_unknown_tool_recovery.py",
         "tests/test_agent_truncation_continuation.py",
         "tests/test_agent_verifier_truthfulness.py",
+        "tests/test_tool_task_cancelled_on_disconnect.py",
         "tests/test_runtime_v2_execution_integrity.py",
         "tests/test_runtime_v2_dependability.py",
     }
@@ -36,6 +37,7 @@ def test_full_suite_expands_gate_categories_and_globs():
     assert "tests/test_runtime_v2_execution_integrity.py" in targets
     assert "tests/test_process_sandbox.py" in targets
     assert "tests/test_tool_registry.py" in targets
+    assert "tests/test_tool_task_cancelled_on_disconnect.py" in targets
     assert len(targets) == len(set(targets))
 
 

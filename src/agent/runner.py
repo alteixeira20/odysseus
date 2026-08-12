@@ -276,8 +276,13 @@ class AgentRunner:
                 backend_factory,
             )
 
-        async for event in durable:
-            yield event
+        try:
+            async for event in durable:
+                yield event
+        finally:
+            aclose = getattr(durable, "aclose", None)
+            if callable(aclose):
+                await aclose()
 
 
 DEFAULT_AGENT_RUNNER = AgentRunner()

@@ -37,6 +37,8 @@ The process-integrity contract expects `bubblewrap` and `tmux`. On Ubuntu 24.04,
 
 The GitHub Agent Runtime Gate changes namespace sysctls only inside its ephemeral hosted runner. Do not copy those changes blindly to a persistent workstation; inspect the local security policy first.
 
+The broad repository CI also provisions and probes the same Linux sandbox prerequisites. Its Python suite is deterministically partitioned across 16 exhaustive module shards; every discovered test module is assigned exactly once and the shards are blocking.
+
 ## 2. Hard blocker criteria
 
 Stop testing and treat the branch as not ready if any scenario produces one of these outcomes:
@@ -101,39 +103,68 @@ A useful agent benchmark should eventually automate these metrics. During manual
 
 Do not optimize token count or latency at the expense of correctness. In particular, measure local-model tool quality separately from strong remote models.
 
-## 5. Stabilization slices already integrated
+## 5. Integrated Agent Lab architecture
 
-The current lab stabilization work was intentionally merged as reviewable slices rather than one branch-wide refactor:
+The public execution path has crossed the canonical-runner boundary:
 
-- **PR #17 — durable execution/unknown-tool baseline:** fail-high effect classification, exact approval/replay coherence, cancellation ownership, unknown-tool recovery, direct one-shot authority isolation, and regression hardening.
-- **PR #18 — completion truthfulness:** typed `PASS | FAIL | UNKNOWN` verifier semantics and fail-closed completion behavior.
-- **PR #19 — request identity/privacy:** semantic request collision identity with bounded durable diagnostics, workspace fingerprinting, endpoint-origin-only persistence, and endpoint path fingerprinting.
-- **Agent Runtime Gate:** blocking Linux sandbox-aware focused correctness suite plus JavaScript runtime contracts.
+```text
+application / legacy caller
+          |
+          v
+     src.agent.api
+          |
+          v
+      AgentRunner
+          |
+          +-- Runtime V2 authority preparation
+          +-- Runtime V3 durable lifecycle
+          +-- backend execution
+          |
+          v
+AgentLoopCompatibilityBackend
+          |
+          v
+_legacy_stream_agent_kernel
+```
 
-## 6. Upstream extraction strategy
+`AgentRunner` owns request preparation, authority preparation, one durable run lifecycle, backend invocation, and delegated-stream cleanup. The legacy kernel consumes a prepared `AgentExecutionContext` and fails closed if that authority context is absent. The public façade, stable API, runner, durable lifecycle, and compatibility backend propagate async-generator close/cancellation so client disconnects synchronously reach in-flight tool cleanup.
 
-Do not upstream `agentic-lab` wholesale. Start each upstream contribution from the current official `dev` and keep it independently reviewable.
+The remaining size of `_legacy_stream_agent_kernel` is internal kernel debt under a single authoritative runner, not evidence that another top-level runtime or `AgentRunner` should be introduced. Further large decomposition should wait for behavioral evidence from real models.
 
-Recommended extraction order:
+## 6. Stabilization slices already integrated
 
-1. Provider finish/termination and bounded truncation continuation, if not already present upstream.
-2. Behavior-preserving orchestration/component extraction in ordinary source commits. Do **not** use PR #8's compressed hidden-patch workflow as an upstream review shape.
-3. Trust-bound fallback and candidate-specific context budgeting.
-4. Reconcile tool/effect metadata with the official authority/sandbox/approval stack; do not introduce a competing security registry.
-5. Durable run/effect semantics: fail-high unmodelled effects, unknown reconciliation, idempotency, exact approval/replay coherence, cancellation ownership.
-6. Completion verifier truthfulness as a separate, small PR.
-7. Semantic request identity and durable metadata privacy as a separate, small PR.
-8. Durable run operations/inspector after storage internals are encapsulated.
-9. Crash-recoverable workspace transaction journal as a separate filesystem-correctness PR.
-10. Planning/evidence state and an automated behavioral evaluation harness after the canonical runtime shape is settled.
+The current lab stabilization work was intentionally merged into the laboratory branch as reviewable internal slices rather than one branch-wide rewrite. It includes:
 
-## 7. Known deferred work
+- durable execution and unknown-tool recovery, including fail-high effect classification, exact approval/replay coherence, cancellation ownership, direct-call authority isolation, and rollback regressions;
+- typed verifier `PASS | FAIL | UNKNOWN` semantics with fail-closed completion behavior;
+- semantic durable request identity with secret-minimal diagnostics, workspace fingerprinting, endpoint-origin-only persistence, and path fingerprinting;
+- canonical `src.agent.api` / `AgentRunner` control-plane inversion while preserving the legacy kernel as a compatibility backend;
+- deterministic local Browser MCP deployment expectations and background process lifecycle hardening;
+- the Agent Runtime Gate plus deterministic broad repository CI with real Linux sandbox prerequisites.
 
-The branch is ready for behavioral testing when the deterministic gate is green, but these architectural debts remain and should not be hidden by a successful test session:
+## 7. Upstream extraction strategy
 
-- Runtime V3 still wraps/interprets legacy SSE rather than owning one typed canonical `AgentRunner` control plane.
-- Runtime V3 currently journals raw wire events and can perform synchronous SQLite durability work at streaming frequency. Measure latency, DB growth, and retained content during testing before changing batching/crash semantics.
-- Operations code still has storage-coupling that should move behind a repository API before upstreaming.
+Do not upstream `agentic-lab` wholesale. Start **every section branch from the then-current official `odysseus-dev/odysseus:dev`**, reconcile current upstream work first, and copy only the behavior/capability that is still missing or materially stronger.
+
+Use one umbrella tracking issue for the complete Agent runtime reliability effort. Prefer approximately six coherent section PRs rather than micro-PRs. The first section can be ready for review; later sections should initially be drafts. Use child/stacked PRs only when a section has a real dependency boundary or is too large to review safely as one unit.
+
+Recommended section order:
+
+1. **Provider protocol and completion correctness.** Finish/termination normalization, bounded truncation continuation, interrupted/incomplete native tool-call handling, and candidate-specific context budgeting. Reconcile fallback behavior with whatever routing/fallback work is current upstream; do not duplicate an active fallback implementation.
+2. **Canonical Agent execution boundary and lifecycle ownership.** Stable `src.agent.api`, typed `AgentRunner`, prepared execution context, compatibility inversion, one durable lifecycle per run, and deterministic stream-close/cancellation ownership.
+3. **Durable execution integrity and authority reconciliation.** Runtime V3 run/effect semantics, fail-high unmodelled effects, unknown-effect reconciliation, idempotency, exact approval/replay coherence, process cleanup, and workspace transaction correctness. Reconcile with upstream sandbox/approval/security work instead of introducing a competing authority stack.
+4. **Completion truthfulness plus durable identity/privacy.** Verifier `PASS | FAIL | UNKNOWN`, fail-closed finalization/repair semantics, semantic request collision identity, and secret-minimal durable metadata/fingerprints.
+5. **MCP and background-runtime reliability.** Deterministic lockfile-installed Browser MCP binary resolution, no runtime NPX install path, deployment guards, background task ownership, and process cleanup.
+6. **Qualification and CI contract.** Reproducible readiness runner, real Bubblewrap namespace probe, deterministic exhaustive broad CI, cancellation regressions, and behavioral-evaluation guidance.
+
+The section boundary is the review unit. A section may contain several ordinary commits organized by behavior, tests, and integration, but upstream should not receive dozens of tiny PRs solely to reproduce the fork's development history.
+
+## 8. Known deferred work
+
+The branch is ready for behavioral testing when the deterministic gates are green, but these architectural debts remain and should not be hidden by a successful test session:
+
+- Runtime V3 still journals raw wire events and can perform synchronous SQLite durability work at streaming frequency. Measure latency, DB growth, and retained content before changing batching/crash semantics.
+- Operations code still has storage-coupling that should move behind a repository API before upstreaming durable operations/inspection.
 - Context management is still primarily transcript projection rather than typed working state/evidence references.
 - Routing/domain/prompt/tool metadata is duplicated across several registries and regex maps.
 - The semantic verifier is LLM-based and opt-in; deterministic postconditions should eventually be the primary verifier for effects/artifacts.

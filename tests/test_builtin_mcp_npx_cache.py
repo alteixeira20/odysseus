@@ -1,7 +1,5 @@
-import asyncio
 import importlib.util
 from pathlib import Path
-import subprocess
 import sys
 import types
 
@@ -14,7 +12,6 @@ def _load_builtin_mcp(monkeypatch):
     core.__path__ = []
     platform_compat = types.ModuleType("core.platform_compat")
     platform_compat.IS_WINDOWS = False
-    platform_compat.which_tool = lambda name: None
     monkeypatch.setitem(sys.modules, "core", core)
     monkeypatch.setitem(sys.modules, "core.platform_compat", platform_compat)
 
@@ -28,158 +25,66 @@ def _load_builtin_mcp(monkeypatch):
     return module
 
 
-def test_npx_package_from_args_prefers_package_after_y_flag(monkeypatch):
+def _install_local_binary(tmp_path: Path):
+    node_modules = tmp_path / "node_modules"
+    target = node_modules / "@playwright" / "mcp" / "cli.js"
+    target.parent.mkdir(parents=True)
+    target.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+    shim = node_modules / ".bin" / "playwright-mcp"
+    shim.parent.mkdir(parents=True)
+    shim.symlink_to(target)
+    return shim, target
+
+
+def test_local_node_binary_resolves_lockfile_installed_shim(monkeypatch, tmp_path):
+    builtin_mcp = _load_builtin_mcp(monkeypatch)
+    shim, _target = _install_local_binary(tmp_path)
+
+    assert builtin_mcp._find_local_node_binary("playwright-mcp", str(tmp_path)) == str(shim)
+
+
+def test_local_node_binary_rejects_target_escaping_node_modules(monkeypatch, tmp_path):
+    builtin_mcp = _load_builtin_mcp(monkeypatch)
+    outside = tmp_path / "outside.js"
+    outside.write_text("x", encoding="utf-8")
+    shim = tmp_path / "node_modules" / ".bin" / "playwright-mcp"
+    shim.parent.mkdir(parents=True)
+    shim.symlink_to(outside)
+
+    assert builtin_mcp._find_local_node_binary("playwright-mcp", str(tmp_path)) is None
+
+
+def test_browser_mcp_args_use_existing_configured_browser(monkeypatch, tmp_path):
+    browser = tmp_path / "chromium"
+    browser.write_text("browser", encoding="utf-8")
+    monkeypatch.setenv("ODYSSEUS_BROWSER_EXECUTABLE", str(browser))
     builtin_mcp = _load_builtin_mcp(monkeypatch)
 
-    assert builtin_mcp._npx_package_from_args(
-        ["-y", "@playwright/mcp@latest", "--headless"]
-    ) == "@playwright/mcp@latest"
+    args = builtin_mcp._browser_mcp_args(["--headless"])
 
-
-def test_browser_mcp_cache_requirement_is_opt_in(monkeypatch):
-    monkeypatch.delenv("ODYSSEUS_BROWSER_MCP_REQUIRE_CACHE", raising=False)
-    builtin_mcp = _load_builtin_mcp(monkeypatch)
-
-    assert builtin_mcp.BROWSER_MCP_REQUIRE_CACHE is False
-
-
-def test_browser_mcp_cache_requirement_can_be_enabled(monkeypatch):
-    monkeypatch.setenv("ODYSSEUS_BROWSER_MCP_REQUIRE_CACHE", "1")
-    builtin_mcp = _load_builtin_mcp(monkeypatch)
-
-    assert builtin_mcp.BROWSER_MCP_REQUIRE_CACHE is True
-
-
-def test_browser_mcp_args_use_configured_browser_executable(monkeypatch):
-    monkeypatch.setenv("ODYSSEUS_BROWSER_EXECUTABLE", "/usr/bin/chromium")
-    builtin_mcp = _load_builtin_mcp(monkeypatch)
-
-    args = builtin_mcp._browser_mcp_args(["-y", "@playwright/mcp@latest", "--headless"])
-
-    assert "--executable-path" in args
-    assert "/usr/bin/chromium" in args
+    assert args[args.index("--executable-path") + 1] == str(browser.resolve())
     assert "--isolated" in args
-    assert "--no-sandbox" in args
+    assert "--no-sandbox" not in args
 
 
-def test_browser_mcp_args_can_use_persistent_profile_when_requested(monkeypatch):
-    monkeypatch.setenv("ODYSSEUS_BROWSER_EXECUTABLE", "/usr/bin/chromium")
+def test_browser_mcp_args_can_use_persistent_profile(monkeypatch, tmp_path):
+    browser = tmp_path / "chromium"
+    browser.write_text("browser", encoding="utf-8")
+    monkeypatch.setenv("ODYSSEUS_BROWSER_EXECUTABLE", str(browser))
     monkeypatch.setenv("ODYSSEUS_BROWSER_ISOLATED", "0")
     builtin_mcp = _load_builtin_mcp(monkeypatch)
 
-    args = builtin_mcp._browser_mcp_args(["-y", "@playwright/mcp@latest", "--headless"])
-
-    assert "--executable-path" in args
-    assert "--isolated" not in args
-
-
-def test_browser_mcp_args_respect_explicit_user_data_dir(monkeypatch):
-    monkeypatch.setenv("ODYSSEUS_BROWSER_EXECUTABLE", "/usr/bin/chromium")
-    builtin_mcp = _load_builtin_mcp(monkeypatch)
-
-    args = builtin_mcp._browser_mcp_args([
-        "-y", "@playwright/mcp@latest", "--headless", "--user-data-dir", "/tmp/profile",
-    ])
+    args = builtin_mcp._browser_mcp_args(["--headless", "--user-data-dir", "/tmp/profile"])
 
     assert "--user-data-dir" in args
     assert "--isolated" not in args
 
 
-def test_browser_mcp_args_can_keep_sandbox(monkeypatch):
-    monkeypatch.setenv("ODYSSEUS_BROWSER_EXECUTABLE", "/usr/bin/chromium")
-    monkeypatch.setenv("ODYSSEUS_BROWSER_NO_SANDBOX", "0")
+def test_browser_mcp_no_sandbox_requires_explicit_opt_in(monkeypatch, tmp_path):
+    browser = tmp_path / "chromium"
+    browser.write_text("browser", encoding="utf-8")
+    monkeypatch.setenv("ODYSSEUS_BROWSER_EXECUTABLE", str(browser))
+    monkeypatch.setenv("ODYSSEUS_BROWSER_NO_SANDBOX", "1")
     builtin_mcp = _load_builtin_mcp(monkeypatch)
 
-    args = builtin_mcp._browser_mcp_args(["-y", "@playwright/mcp@latest", "--headless"])
-
-    assert "--executable-path" in args
-    assert "--no-sandbox" not in args
-
-
-def test_npx_cache_check_detects_scoped_package_in_npx_cache(monkeypatch, tmp_path):
-    builtin_mcp = _load_builtin_mcp(monkeypatch)
-    package_json = (
-        tmp_path
-        / ".npm"
-        / "_npx"
-        / "9833c18b2d85bc59"
-        / "node_modules"
-        / "@playwright"
-        / "mcp"
-        / "package.json"
-    )
-    package_json.parent.mkdir(parents=True)
-    package_json.write_text('{"name":"@playwright/mcp","version":"0.0.76"}', encoding="utf-8")
-
-    async def unexpected_exec(*args, **kwargs):
-        raise AssertionError("cache hit should not shell out to npx")
-
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.delenv("npm_config_cache", raising=False)
-    monkeypatch.setattr(builtin_mcp.asyncio, "create_subprocess_exec", unexpected_exec)
-
-    assert asyncio.run(
-        builtin_mcp._is_npx_package_cached(
-            "npx",
-            "@playwright/mcp@latest",
-            timeout_s=2,
-        )
-    ) is True
-
-
-def test_npx_cache_check_falls_back_when_async_subprocess_is_unsupported(monkeypatch, tmp_path):
-    builtin_mcp = _load_builtin_mcp(monkeypatch)
-
-    async def unsupported_exec(*args, **kwargs):
-        raise NotImplementedError("subprocess transport unavailable")
-
-    captured = {}
-
-    def fake_run(args, **kwargs):
-        captured["args"] = args
-        captured["kwargs"] = kwargs
-        return subprocess.CompletedProcess(args, 0, stdout=b"1.2.3\n", stderr=b"")
-
-    monkeypatch.setattr(builtin_mcp.asyncio, "create_subprocess_exec", unsupported_exec)
-    monkeypatch.setattr(builtin_mcp.subprocess, "run", fake_run)
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.delenv("npm_config_cache", raising=False)
-
-    assert asyncio.run(
-        builtin_mcp._is_npx_package_cached(
-            "npx.cmd",
-            "@playwright/mcp@latest",
-            timeout_s=2,
-        )
-    ) is True
-    assert captured["args"] == [
-        "npx.cmd",
-        "--no-install",
-        "@playwright/mcp@latest",
-        "--version",
-    ]
-    assert captured["kwargs"]["capture_output"] is True
-    assert captured["kwargs"]["timeout"] == 2
-
-
-def test_npx_cache_check_fallback_treats_timeout_as_cache_miss(monkeypatch, tmp_path):
-    builtin_mcp = _load_builtin_mcp(monkeypatch)
-
-    async def unsupported_exec(*args, **kwargs):
-        raise NotImplementedError("subprocess transport unavailable")
-
-    def fake_run(args, **kwargs):
-        raise subprocess.TimeoutExpired(args, kwargs["timeout"])
-
-    monkeypatch.setattr(builtin_mcp.asyncio, "create_subprocess_exec", unsupported_exec)
-    monkeypatch.setattr(builtin_mcp.subprocess, "run", fake_run)
-    monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.delenv("npm_config_cache", raising=False)
-
-    assert asyncio.run(
-        builtin_mcp._is_npx_package_cached(
-            "npx.cmd",
-            "@playwright/mcp@latest",
-            timeout_s=2,
-        )
-    ) is False
+    assert "--no-sandbox" in builtin_mcp._browser_mcp_args(["--headless"])

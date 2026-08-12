@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-broad-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -97,12 +97,13 @@ jobs:
           done
 
   python-tests:
-    name: Python tests (pytest)
+    name: Python tests (pytest shard ${{ matrix.shard }})
     runs-on: ubuntu-latest
-    timeout-minutes: 25
-    # Diagnostic until the historical failures and timeout are repaired. The
-    # job is bounded and prints every test identity, so hangs are actionable.
-    continue-on-error: true
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
@@ -128,6 +129,31 @@ jobs:
             echo "docs_only=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Install Linux agent runtime dependencies
+        if: steps.docs-check.outputs.docs_only != 'true'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends bubblewrap util-linux tmux
+
+      - name: Enable and probe unprivileged sandbox namespaces
+        if: steps.docs-check.outputs.docs_only != 'true'
+        run: |
+          set -euo pipefail
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          if [ -e /proc/sys/kernel/unprivileged_userns_clone ]; then
+            sudo sysctl -w kernel.unprivileged_userns_clone=1
+          fi
+          bwrap \
+            --unshare-all \
+            --die-with-parent \
+            --ro-bind / / \
+            --proc /proc \
+            --dev /dev \
+            -- /bin/true
+
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         if: steps.docs-check.outputs.docs_only != 'true'
         with:
@@ -137,8 +163,15 @@ jobs:
         if: steps.docs-check.outputs.docs_only != 'true'
       - run: mkdir -p data
         if: steps.docs-check.outputs.docs_only != 'true'
-      - name: Run bounded diagnostic pytest suite
+
+      - name: Run deterministic pytest shard
         if: steps.docs-check.outputs.docs_only != 'true'
         run: |
-          timeout --signal=TERM --kill-after=30s 20m \
-            python -m pytest -vv --tb=short --timeout=90 --timeout-method=thread
+          python scripts/ci_pytest_shard.py \
+            --index "${{ matrix.shard }}" \
+            --count 16 \
+            --wall-timeout-seconds 720 \
+            -vv \
+            --tb=short \
+            --timeout=90 \
+            --timeout-method=thread
