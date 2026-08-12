@@ -8,7 +8,8 @@ _MOCKED_IMPORTS = [
     'sqlalchemy', 'sqlalchemy.orm', 'sqlalchemy.ext', 'sqlalchemy.ext.declarative',
     'sqlalchemy.ext.hybrid', 'sqlalchemy.sql', 'sqlalchemy.sql.expression',
     'src.database',
-    'src.agent_tools',
+    # Keep src.agent_tools real: Runtime V2 imports package submodules such as
+    # src.agent_tools.subprocess_tools while src.agent_loop is imported.
     'core.models', 'core.database',
 ]
 _INJECTED_IMPORT_STUBS = {}
