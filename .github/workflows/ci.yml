@@ -9,9 +9,7 @@ permissions:
   contents: read
 
 concurrency:
-  # Keep superseded broad runs cancellable while isolating this qualification
-  # series from stale jobs created by the earlier CI namespaces.
-  group: ci-authoritative-v3-${{ github.ref }}
+  group: ci-broad-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -102,9 +100,6 @@ jobs:
     name: Python tests (pytest shard ${{ matrix.shard }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # Diagnostic until every deterministic shard is clean. Once the historical
-    # broad-suite failures are repaired this becomes authoritative.
-    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
