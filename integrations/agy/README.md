@@ -15,10 +15,10 @@ export ODYSSEUS_URL=http://your-odysseus-host:7000
 export ODYSSEUS_API_TOKEN=ody_generated_token
 mkdir -p ~/.gemini/skills/
 curl -fsSL -H "Authorization: Bearer $ODYSSEUS_API_TOKEN" $ODYSSEUS_URL/api/agy/plugin.zip -o /tmp/odysseus-agy-skill.zip
-python3 -m zipfile -e /tmp/odysseus-agy-skill.zip ~/.gemini/skills/
+python3 -m zipfile -e /tmp/odysseus-agy-skill.zip ~/.gemini/
 ```
 
-AGY auto-loads skills under `~/.gemini/skills/`, so the `odysseus` skill is available in any session that has `ODYSSEUS_URL` and `ODYSSEUS_API_TOKEN` in its environment.
+The archive contains `skills/odysseus/...`; extracting it at `~/.gemini/` therefore installs the skill at `~/.gemini/skills/odysseus/`. AGY auto-loads skills from that directory, so the `odysseus` skill is available in any session that has `ODYSSEUS_URL` and `ODYSSEUS_API_TOKEN` in its environment.
 
 ## What's in the bundle?
 
