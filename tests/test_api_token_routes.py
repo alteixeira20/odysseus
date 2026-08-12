@@ -266,7 +266,7 @@ def test_list_tokens_returns_safe_display_fields_only(monkeypatch, token_routes_
 
     assert len(result) == 2
 
-    safe_fields = {"id", "name", "owner", "token_prefix", "scopes", "is_active", "last_used_at", "created_at"}
+    safe_fields = {"id", "name", "owner", "token_prefix", "scopes", "is_active", "agent_provider", "last_used_at", "created_at"}
     for item in result:
         assert set(item.keys()) == safe_fields
         assert "token" not in item
@@ -576,3 +576,128 @@ def test_update_token_normal_object_still_works(monkeypatch, token_routes_mod):
     assert token.name == "updated"
     assert resp["name"] == "updated"
     invalidator.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# 8. Provider metadata — POST, GET, and PATCH support explicit provider
+# ---------------------------------------------------------------------------
+
+
+def test_create_and_list_token_with_explicit_agent_provider(monkeypatch, token_routes_mod):
+    """Explicit agent_provider is stored on POST, returned on GET, and updated on PATCH."""
+    monkeypatch.setenv("AUTH_ENABLED", "true")
+    mod = token_routes_mod
+
+    captured = {}
+
+    class _FakeApiToken:
+        id = MagicMock()
+
+        def __init__(self, **kw):
+            captured.clear()
+            captured.update(kw)
+            self.__dict__.update(kw)
+
+    fake_session = MagicMock()
+    monkeypatch.setattr(mod, "ApiToken", _FakeApiToken)
+    monkeypatch.setattr(mod, "get_db_session", lambda: _db_ctx(fake_session))
+    monkeypatch.setattr(mod, "get_current_user", lambda req: req.state.current_user)
+
+    req = _req("alice", is_admin=True)
+    create_token = _get_handler(mod, "POST", "/tokens")
+
+    # Valid agent provider: agy
+    resp = create_token(request=req, name="AGY CLI Connection", agent_provider="agy")
+    assert resp["agent_provider"] == "agy"
+    assert captured["agent_provider"] == "agy"
+
+    # Valid agent provider: codex
+    resp_codex = create_token(request=req, name="Codex Workstation", agent_provider="codex")
+    assert resp_codex["agent_provider"] == "codex"
+    assert captured["agent_provider"] == "codex"
+
+    # Valid agent provider: claude
+    resp_claude = create_token(request=req, name="Claude Laptop", agent_provider="claude")
+    assert resp_claude["agent_provider"] == "claude"
+    assert captured["agent_provider"] == "claude"
+
+    # Invalid agent provider should raise 400
+    with pytest.raises(HTTPException) as exc_info:
+        create_token(request=req, name="Bad Provider", agent_provider="invalid_provider")
+    assert exc_info.value.status_code == 400
+
+    row = SimpleNamespace(
+        id="tok_agy",
+        name="AGY Connection",
+        owner="alice",
+        token_prefix="ody_agy1",
+        token_hash="$2b$12$HASH",
+        scopes="chat",
+        agent_provider="agy",
+        is_active=True,
+        last_used_at=None,
+        created_at=datetime.datetime(2024, 2, 1, 0, 0),
+    )
+    fake_session.query.return_value.all.return_value = [row]
+    list_tokens = _get_handler(mod, "GET", "/tokens")
+    listed = list_tokens(request=req)
+    assert listed[0]["agent_provider"] == "agy"
+
+    # Test PATCH agent_provider
+    fake_session.query.return_value.filter.return_value.first.return_value = row
+    patch_req = _patch_request(MagicMock(), {"agent_provider": "claude"})
+    update_token = _get_handler(mod, "PATCH", "/tokens/{token_id}")
+    patched_resp = asyncio.run(update_token(request=patch_req, token_id="tok_agy"))
+    assert row.agent_provider == "claude"
+    assert patched_resp["agent_provider"] == "claude"
+
+    # Test PATCH with invalid provider raises 400
+    patch_bad_req = _patch_request(MagicMock(), {"agent_provider": "unsupported_provider"})
+    with pytest.raises(HTTPException) as exc_info_patch:
+        asyncio.run(update_token(request=patch_bad_req, token_id="tok_agy"))
+    assert exc_info_patch.value.status_code == 400
+
+
+def test_list_tokens_infers_legacy_provider(monkeypatch, token_routes_mod):
+    """When agent_provider is None in DB, legacy names are inferred for backward compatibility."""
+    monkeypatch.setenv("AUTH_ENABLED", "true")
+    mod = token_routes_mod
+    monkeypatch.setattr(mod, "get_current_user", lambda req: req.state.current_user)
+
+    row_agy = SimpleNamespace(
+        id="tok_legacy_1",
+        name="AGY Agent Connection",
+        owner="alice",
+        token_prefix="ody_leg1",
+        token_hash="$2b$12$HASH",
+        scopes="chat",
+        agent_provider=None,
+        provider=None,
+        is_active=True,
+        last_used_at=None,
+        created_at=datetime.datetime(2024, 2, 1, 0, 0),
+    )
+    row_claude = SimpleNamespace(
+        id="tok_legacy_2",
+        name="Claude Agent Workstation",
+        owner="alice",
+        token_prefix="ody_leg2",
+        token_hash="$2b$12$HASH",
+        scopes="chat",
+        agent_provider=None,
+        provider=None,
+        is_active=True,
+        last_used_at=None,
+        created_at=datetime.datetime(2024, 2, 1, 0, 0),
+    )
+
+    fake_session = MagicMock()
+    fake_session.query.return_value.all.return_value = [row_agy, row_claude]
+    monkeypatch.setattr(mod, "get_db_session", lambda: _db_ctx(fake_session))
+
+    req = _req("alice", is_admin=True)
+    list_tokens = _get_handler(mod, "GET", "/tokens")
+    listed = list_tokens(request=req)
+
+    assert listed[0]["agent_provider"] == "agy"
+    assert listed[1]["agent_provider"] == "claude"

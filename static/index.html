@@ -2320,12 +2320,26 @@
         <!-- ═══ TOOLS TAB ═══ -->
         <!-- ═══ INTEGRATIONS TAB ═══ -->
         <div data-settings-panel="integrations" class="hidden">
-          <div class="admin-card">
-            <h2><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:5px;opacity:0.6"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>Integrations</h2>
-            <div class="admin-toggle-sub" style="margin-bottom:8px">All external service connections in one place.</div>
+          <div class="admin-card" style="display:flex;flex-direction:column;gap:8px;">
+            <div style="display:flex;align-items:center;justify-content:space-between;">
+              <h2 style="margin:0;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:5px;opacity:0.6"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>Integrations</h2>
+            </div>
+            <div class="admin-toggle-sub" style="margin:0">Manage connected CLI agents, MCP servers, communication services, and API integrations.</div>
+
+            <!-- Integrations Category Sub-Navigation -->
+            <div class="intg-category-tabs" id="intg-category-tabs" style="display:flex;gap:4px;border-bottom:1px solid var(--border);padding-bottom:6px;margin-top:4px;overflow-x:auto;">
+              <button type="button" class="intg-cat-btn active" data-cat="overview">Overview</button>
+              <button type="button" class="intg-cat-btn" data-cat="agents">Agents</button>
+              <button type="button" class="intg-cat-btn" data-cat="mcp">MCP</button>
+              <button type="button" class="intg-cat-btn" data-cat="email">Email</button>
+              <button type="button" class="intg-cat-btn" data-cat="calendar">Calendar</button>
+              <button type="button" class="intg-cat-btn" data-cat="contacts">Contacts</button>
+              <button type="button" class="intg-cat-btn" data-cat="api">API</button>
+            </div>
+
             <div id="unified-integrations-list"></div>
             <div id="unified-intg-form" style="display:none"></div>
-            <div style="text-align:right;padding:8px 0;">
+            <div id="unified-intg-add-wrap" style="text-align:right;padding:8px 0;">
               <button type="button" class="admin-btn-add" id="unified-intg-add-btn" style="text-align:center;display:inline-flex;align-items:center;justify-content:center;gap:5px;flex-shrink:0;"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>Add Integration</button>
             </div>
           </div>

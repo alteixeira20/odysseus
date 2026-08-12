@@ -73,6 +73,20 @@ def _normalize_scopes(scopes: str | list[str] | None = None, profile: str | None
     return normalized or [DEFAULT_SCOPES]
 
 
+ALLOWED_AGENT_PROVIDERS = {"agy", "codex", "claude"}
+
+
+def _infer_legacy_provider(name: str) -> str | None:
+    lower_name = (name or "").lower().strip()
+    if lower_name.startswith("agy agent") or lower_name == "agy":
+        return "agy"
+    if lower_name.startswith("codex agent") or lower_name == "codex":
+        return "codex"
+    if lower_name.startswith("claude agent") or lower_name == "claude":
+        return "claude"
+    return None
+
+
 def setup_api_token_routes() -> APIRouter:
     router = APIRouter(prefix="/api", tags=["api_tokens"])
 
@@ -81,19 +95,21 @@ def setup_api_token_routes() -> APIRouter:
         require_admin(request)
         with get_db_session() as db:
             tokens = db.query(ApiToken).all()
-            return [
-                {
+            res = []
+            for t in tokens:
+                prov = getattr(t, "agent_provider", None) or _infer_legacy_provider(t.name)
+                res.append({
                     "id": t.id,
                     "name": t.name,
                     "owner": getattr(t, "owner", None),
                     "token_prefix": t.token_prefix,
                     "scopes": [s.strip() for s in (getattr(t, "scopes", "") or DEFAULT_SCOPES).split(",") if s.strip()],
                     "is_active": t.is_active,
+                    "agent_provider": prov,
                     "last_used_at": t.last_used_at.isoformat() if t.last_used_at else None,
                     "created_at": t.created_at.isoformat() if t.created_at else None,
-                }
-                for t in tokens
-            ]
+                })
+            return res
 
     def _invalidate_cache(request: Request):
         """Tell the auth middleware its cached token map is stale."""
@@ -118,11 +134,19 @@ def setup_api_token_routes() -> APIRouter:
         name: str = Form(""),
         scopes: str = Form(None),
         profile: str = Form(None),
+        agent_provider: str = Form(None),
     ):
         require_admin(request)
         name = name.strip()[:MAX_NAME_LEN]
         if not name:
             raise HTTPException(400, "Token name is required")
+
+        raw_provider = None
+        if isinstance(agent_provider, str) and agent_provider.strip():
+            raw_provider = agent_provider.strip().lower()
+            if raw_provider not in ALLOWED_AGENT_PROVIDERS:
+                raise HTTPException(400, f"Invalid agent provider: '{raw_provider}'. Must be one of: {', '.join(sorted(ALLOWED_AGENT_PROVIDERS))}")
+
         owner = get_current_user(request)
         scope_list = _normalize_scopes(scopes, profile)
         scopes_value = ",".join(scope_list)
@@ -139,6 +163,7 @@ def setup_api_token_routes() -> APIRouter:
                 token_hash=token_hash,
                 token_prefix=raw_token[:8],
                 scopes=scopes_value,
+                agent_provider=raw_provider,
                 is_active=True,
             ))
         _invalidate_cache(request)
@@ -150,6 +175,7 @@ def setup_api_token_routes() -> APIRouter:
             "token": raw_token,
             "token_prefix": raw_token[:8],
             "scopes": scope_list,
+            "agent_provider": raw_provider,
         }
 
     @router.patch("/tokens/{token_id}")
@@ -170,6 +196,16 @@ def setup_api_token_routes() -> APIRouter:
                 raise HTTPException(403, "Not your token")
             if isinstance(payload.get("name"), str) and payload["name"].strip():
                 token.name = payload["name"].strip()[:MAX_NAME_LEN]
+            if "agent_provider" in payload:
+                p = payload.get("agent_provider")
+                if isinstance(p, str) and p.strip():
+                    p = p.strip().lower()
+                    if p not in ALLOWED_AGENT_PROVIDERS:
+                        raise HTTPException(400, f"Invalid agent provider: '{p}'. Must be one of: {', '.join(sorted(ALLOWED_AGENT_PROVIDERS))}")
+                else:
+                    p = None
+                token.agent_provider = p
+
             # Only touch scopes when the caller actually sent them. A partial
             # update such as a rename ({"name": ...} with no "scopes" key) must
             # not silently reset the token to the default scope — that dropped
@@ -182,12 +218,14 @@ def setup_api_token_routes() -> APIRouter:
                 for s in (getattr(token, "scopes", "") or DEFAULT_SCOPES).split(",")
                 if s.strip()
             ]
+            prov = getattr(token, "agent_provider", None) or _infer_legacy_provider(getattr(token, "name", ""))
             response = {
                 "id": token_id,
                 "name": getattr(token, "name", ""),
                 "owner": getattr(token, "owner", None),
                 "token_prefix": getattr(token, "token_prefix", ""),
                 "scopes": current_scopes,
+                "agent_provider": prov,
             }
         _invalidate_cache(request)
         return response

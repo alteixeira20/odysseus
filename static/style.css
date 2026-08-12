@@ -15683,6 +15683,32 @@ span[id$="-logo"] svg:not([width]) {
 /* Selected integration card — class beats inline borderColor reset */
 .intg-card.intg-card-active { border-color: var(--accent, var(--red)) !important; }
 
+/* Category sub-navigation tabs inside Integrations panel */
+.intg-cat-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--fg);
+  opacity: 0.65;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+.intg-cat-btn:hover {
+  opacity: 0.9;
+  background: color-mix(in srgb, var(--fg) 5%, transparent);
+}
+.intg-cat-btn.active {
+  opacity: 1;
+  font-weight: 600;
+  color: var(--accent, var(--red));
+  border-color: color-mix(in srgb, var(--accent, var(--red)) 35%, transparent);
+  background: color-mix(in srgb, var(--accent, var(--red)) 10%, transparent);
+}
+
 /* Edge-dock resize handle: invisible at rest, accent stripe animates in
    on hover. Inline background:transparent + transition come from
    modalSnap.js; this rule paints the accent gradient on hover, beating

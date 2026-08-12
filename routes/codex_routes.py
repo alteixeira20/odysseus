@@ -908,3 +908,34 @@ def setup_claude_routes() -> APIRouter:
         return StreamingResponse(buf, media_type="application/zip", headers=headers)
 
     return router
+
+
+def setup_agy_routes() -> APIRouter:
+    """Serve the AGY (Antigravity) skill bundle.
+
+    AGY uses the same scope-gated `/api/codex/*` endpoints at runtime;
+    this router only exists to deliver the skill zip via `/api/agy/plugin.zip`
+    so the user-facing setup commands stay in the AGY namespace.
+    """
+    router = APIRouter(prefix="/api/agy", tags=["agy"])
+
+    @router.get("/plugin.zip")
+    def plugin_zip(request: Request):
+        require_authenticated_request(request)
+        # Only ship the skills/ subtree so extracting at ~/.gemini/
+        # puts skills/odysseus/ in place.
+        skills_root = Path(__file__).resolve().parent.parent / "integrations" / "agy" / "skills"
+        if not skills_root.exists():
+            raise HTTPException(404, "AGY skill bundle not found")
+        bundle_root = skills_root.parent
+        buf = BytesIO()
+        with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for path in sorted(skills_root.rglob("*")):
+                if path.is_dir() or "__pycache__" in path.parts or path.suffix == ".pyc":
+                    continue
+                zf.write(path, path.relative_to(bundle_root))
+        buf.seek(0)
+        headers = {"Content-Disposition": 'attachment; filename="odysseus-agy-skill.zip"'}
+        return StreamingResponse(buf, media_type="application/zip", headers=headers)
+
+    return router

@@ -3507,28 +3507,45 @@ async function initIntegrations() {
 /* ══ Unified Integrations ══ */
 
 const INTG_TYPES = {
-  api:     { label: 'API',     icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>' },
-  caldav:  { label: 'CalDAV',  icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>' },
-  contacts: { label: 'Contacts', icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>' },
-  carddav: { label: 'CardDAV', icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>' },
-  email:   { label: 'Email',   icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>' },
-  mcp:     { label: 'MCP',     icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>' },
-  codex:   { label: 'Codex',   icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M22.282 9.821a5.985 5.985 0 0 0-.516-4.91 6.046 6.046 0 0 0-6.51-2.9A6.065 6.065 0 0 0 10.696.453a6.023 6.023 0 0 0-5.75 4.172 6.061 6.061 0 0 0-3.946 2.945 6.024 6.024 0 0 0 .742 7.099 5.98 5.98 0 0 0 .516 4.911 6.046 6.046 0 0 0 6.51 2.9A5.996 5.996 0 0 0 13.26 23.547a6.023 6.023 0 0 0 5.75-4.172 6.061 6.061 0 0 0 3.946-2.945 6.024 6.024 0 0 0-.674-6.609zM13.26 21.047a4.508 4.508 0 0 1-2.886-1.041l.143-.082 4.793-2.769a.777.777 0 0 0 .391-.676V10.34l2.026 1.17a.072.072 0 0 1 .039.061v5.596a4.532 4.532 0 0 1-4.506 4.48zM3.968 17.64a4.473 4.473 0 0 1-.537-3.018l.143.086 4.793 2.769a.79.79 0 0 0 .782 0l5.852-3.379v2.34a.072.072 0 0 1-.029.062l-4.845 2.796a4.532 4.532 0 0 1-6.159-1.656zM2.804 7.922a4.49 4.49 0 0 1 2.348-1.973V11.6a.778.778 0 0 0 .391.676l5.852 3.378-2.026 1.17a.072.072 0 0 1-.068 0L4.456 14.03a4.532 4.532 0 0 1-1.652-6.108zm16.423 3.823L13.375 8.367l2.026-1.17a.072.072 0 0 1 .068 0l4.845 2.796a4.525 4.525 0 0 1-.7 8.08V12.42a.778.778 0 0 0-.387-.676zm2.015-3.025l-.143-.086-4.793-2.769a.79.79 0 0 0-.782 0L9.672 9.243V6.903a.072.072 0 0 1 .029-.062l4.845-2.796a4.525 4.525 0 0 1 6.696 4.675zM8.598 12.66L6.57 11.49a.072.072 0 0 1-.039-.061V5.833a4.525 4.525 0 0 1 7.413-3.48l-.143.082-4.793 2.769a.777.777 0 0 0-.391.676l-.019 6.78zm1.1-2.379l2.607-1.505 2.607 1.505v3.01l-2.607 1.505-2.607-1.505z"/></svg>' },
-  claude:  { label: 'Claude',  icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M17.3041 3.541h-3.6718l6.696 16.918H24Zm-10.6082 0L0 20.459h3.7442l1.3693-3.5527h7.0052l1.3693 3.5528h3.7442L10.5363 3.5409Zm-.3712 10.2232 2.2914-5.9456 2.2914 5.9456Z"/></svg>' },
-  vault:   { label: 'Vault',   icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>' },
+  api:      { label: 'API',         icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>' },
+  caldav:   { label: 'CalDAV',      icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>' },
+  contacts: { label: 'Contacts',    icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>' },
+  carddav:  { label: 'CardDAV',     icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>' },
+  email:    { label: 'Email',       icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>' },
+  mcp:      { label: 'MCP',         icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>' },
+  agy:      { label: 'AGY CLI',     icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>' },
+  codex:    { label: 'Codex CLI',   icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M22.282 9.821a5.985 5.985 0 0 0-.516-4.91 6.046 6.046 0 0 0-6.51-2.9A6.065 6.065 0 0 0 10.696.453a6.023 6.023 0 0 0-5.75 4.172 6.061 6.061 0 0 0-3.946 2.945 6.024 6.024 0 0 0 .742 7.099 5.98 5.98 0 0 0 .516 4.911 6.046 6.046 0 0 0 6.51 2.9A5.996 5.996 0 0 0 13.26 23.547a6.023 6.023 0 0 0 5.75-4.172 6.061 6.061 0 0 0 3.946-2.945 6.024 6.024 0 0 0-.674-6.609zM13.26 21.047a4.508 4.508 0 0 1-2.886-1.041l.143-.082 4.793-2.769a.777.777 0 0 0 .391-.676V10.34l2.026 1.17a.072.072 0 0 1 .039.061v5.596a4.532 4.532 0 0 1-4.506 4.48zM3.968 17.64a4.473 4.473 0 0 1-.537-3.018l.143.086 4.793 2.769a.79.79 0 0 0 .782 0l5.852-3.379v2.34a.072.072 0 0 1-.029.062l-4.845 2.796a4.532 4.532 0 0 1-6.159-1.656zM2.804 7.922a4.49 4.49 0 0 1 2.348-1.973V11.6a.778.778 0 0 0 .391.676l5.852 3.378-2.026 1.17a.072.072 0 0 1-.068 0L4.456 14.03a4.532 4.532 0 0 1-1.652-6.108zm16.423 3.823L13.375 8.367l2.026-1.17a.072.072 0 0 1 .068 0l4.845 2.796a4.525 4.525 0 0 1-.7 8.08V12.42a.778.778 0 0 0-.387-.676zm2.015-3.025l-.143-.086-4.793-2.769a.79.79 0 0 0-.782 0L9.672 9.243V6.903a.072.072 0 0 1 .029-.062l4.845-2.796a4.525 4.525 0 0 1 6.696 4.675zM8.598 12.66L6.57 11.49a.072.072 0 0 1-.039-.061V5.833a4.525 4.525 0 0 1 7.413-3.48l-.143.082-4.793 2.769a.777.777 0 0 0-.391.676l-.019 6.78zm1.1-2.379l2.607-1.505 2.607 1.505v3.01l-2.607 1.505-2.607-1.505z"/></svg>' },
+  claude:   { label: 'Claude Code', icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M17.3041 3.541h-3.6718l6.696 16.918H24Zm-10.6082 0L0 20.459h3.7442l1.3693-3.5527h7.0052l1.3693 3.5528h3.7442L10.5363 3.5409Zm-.3712 10.2232 2.2914-5.9456 2.2914 5.9456Z"/></svg>' },
+  vault:    { label: 'Vault',       icon: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>' },
 };
 
-// Config shared by the Codex Agent and Claude Agent forms. Both use the same
-// scope-gated /api/codex/* backend; this just parameterizes the UI label,
-// default token name, and the per-agent install commands.
+// Config for external CLI connections (AGY CLI, Codex CLI, Claude Code).
+// All use the same scope-gated /api/codex/* backend; parameterizing UI label,
+// default connection name, and CLI-specific setup commands.
 const AGENT_CONFIGS = {
+  agy: {
+    label: 'AGY CLI',
+    word: 'AGY CLI',
+    namePrefix: 'agy',
+    defaultName: 'Workstation',
+    connectLabel: 'Connect AGY CLI',
+    pluginPath: '/api/agy/plugin.zip',
+    setupDescription: 'Downloads skill bundle and registers it with AGY CLI.',
+    buildSetup: (origin, token) => `export ODYSSEUS_URL=${origin}
+export ODYSSEUS_API_TOKEN='${token}'
+mkdir -p ~/.gemini/skills/
+curl -fsSL -H "Authorization: Bearer $ODYSSEUS_API_TOKEN" "$ODYSSEUS_URL/api/agy/plugin.zip" -o /tmp/odysseus-agy-skill.zip
+python3 -m zipfile -e /tmp/odysseus-agy-skill.zip ~/.gemini/skills/
+python3 ~/.gemini/skills/odysseus/scripts/odysseus_api.py capabilities`,
+  },
   codex: {
-    label: 'Codex Agent',
-    word: 'Codex',
-    namePrefix: 'codex agent',
-    defaultName: 'Codex Agent',
+    label: 'Codex CLI',
+    word: 'Codex CLI',
+    namePrefix: 'codex',
+    defaultName: 'Main workstation',
+    connectLabel: 'Connect Codex CLI',
     pluginPath: '/api/codex/plugin.zip',
-    setupDescription: 'Downloads a plugin bundle and registers it.',
+    setupDescription: 'Downloads a plugin bundle and registers it with Codex CLI.',
     buildSetup: (origin, token) => `export ODYSSEUS_URL=${origin}
 export ODYSSEUS_API_TOKEN='${token}'
 mkdir -p ~/plugins
@@ -3555,18 +3572,19 @@ entry = {
     "category": "Productivity",
 }
 data["plugins"] = [item for item in plugins if item.get("name") != "odysseus"] + [entry]
-p.write_text(json.dumps(data, indent=2) + "\\n")
+p.write_text(json.dumps(data, indent=2) + "\n")
 PY
 codex plugin add odysseus@personal
 python3 ~/plugins/odysseus/scripts/odysseus_api.py capabilities`,
   },
   claude: {
-    label: 'Claude Agent',
-    word: 'Claude',
-    namePrefix: 'claude agent',
-    defaultName: 'Claude Agent',
+    label: 'Claude Code',
+    word: 'Claude Code',
+    namePrefix: 'claude',
+    defaultName: 'Laptop',
+    connectLabel: 'Connect Claude Code',
     pluginPath: '/api/claude/plugin.zip',
-    setupDescription: 'Downloads a plugin bundle and registers it.',
+    setupDescription: 'Downloads skill bundle and registers it with Claude Code.',
     buildSetup: (origin, token) => `export ODYSSEUS_URL=${origin}
 export ODYSSEUS_API_TOKEN='${token}'
 mkdir -p ~/.claude
@@ -3577,6 +3595,7 @@ python3 ~/.claude/skills/odysseus/scripts/odysseus_api.py capabilities`,
 };
 
 let _unifiedInited = false;
+let _currentCategory = 'overview';
 
 async function initUnifiedIntegrations() {
   if (_unifiedInited) return;
@@ -3585,13 +3604,24 @@ async function initUnifiedIntegrations() {
   const listEl = el('unified-integrations-list');
   const formEl = el('unified-intg-form');
   const addBtn = el('unified-intg-add-btn');
+  const catTabsEl = el('intg-category-tabs');
   if (!listEl) return;
   let integrationNotice = '';
 
+  if (catTabsEl) {
+    catTabsEl.querySelectorAll('.intg-cat-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        catTabsEl.querySelectorAll('.intg-cat-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        _currentCategory = btn.dataset.cat || 'overview';
+        if (formEl) formEl.style.display = 'none';
+        renderList();
+      });
+    });
+  }
+
   // Hide the "+ Add Integration" button whenever the per-type create form
   // is open so it doesn't compete visually with the in-progress form.
-  // Many call sites toggle formEl.style.display directly; observe instead
-  // of patching every one of them.
   if (formEl && addBtn && addBtn.parentElement && !formEl._addBtnObserved) {
     formEl._addBtnObserved = true;
     const addBtnWrap = addBtn.parentElement;
@@ -3662,40 +3692,74 @@ async function initUnifiedIntegrations() {
       const statusText = srv.needs_oauth ? 'needs auth' : srv.status === 'connected' ? `${srv.enabled_tool_count}/${srv.tool_count} tools` : srv.status === 'error' ? 'error' : 'disconnected';
       items.push({ type: 'mcp', id: srv.id || srv.name, name: srv.name || 'MCP Server', detail: statusText, enabled: srv.is_enabled !== false, data: srv });
     }
+    // CLI Agent Connections (AGY CLI, Codex CLI, Claude Code)
     for (const tok of (Array.isArray(tokenRes) ? tokenRes : [])) {
       const scopes = tok.scopes || [];
       const lowerName = (tok.name || '').toLowerCase();
-      let agentType = null;
-      if (lowerName.startsWith('claude agent')) agentType = 'claude';
-      else if (lowerName.startsWith('codex agent')) agentType = 'codex';
-      else if (scopes.some(s => String(s || '').startsWith('todos:') || String(s || '').startsWith('email:') || String(s || '').startsWith('documents:'))) {
-        // Legacy / un-prefixed scoped tokens fall back to Codex for backwards compat.
-        agentType = 'codex';
+      let agentType = tok.agent_provider || tok.provider || null;
+      if (!agentType || !AGENT_CONFIGS[agentType]) {
+        if (lowerName.startsWith('agy') || lowerName.includes('agy')) agentType = 'agy';
+        else if (lowerName.startsWith('claude')) agentType = 'claude';
+        else if (lowerName.startsWith('codex')) agentType = 'codex';
+        else if (scopes.some(s => String(s || '').startsWith('todos:') || String(s || '').startsWith('email:') || String(s || '').startsWith('documents:') || String(s || '').startsWith('cookbook:'))) {
+          // Legacy / un-prefixed scoped tokens fall back to Codex for backwards compat.
+          agentType = 'codex';
+        }
       }
-      if (!agentType) continue;
-      const detail = `${tok.token_prefix || 'token'}... - ${scopes.join(', ') || 'chat'}`;
-      items.push({ type: agentType, id: tok.id, name: tok.name || (agentType === 'claude' ? 'Claude Agent' : 'Codex Agent'), detail, enabled: true, data: tok });
+      if (!agentType || !AGENT_CONFIGS[agentType]) continue;
+
+      let statusText = 'Configured';
+      let statusDotColor = 'var(--fg)';
+      let statusOpacity = '0.5';
+      if (tok.is_active === false) {
+        statusText = 'Revoked';
+        statusDotColor = 'var(--color-error, #ff5555)';
+        statusOpacity = '1';
+      } else if (tok.last_used_at) {
+        const lastUsed = new Date(tok.last_used_at);
+        const diffHours = (Date.now() - lastUsed.getTime()) / (1000 * 60 * 60);
+        if (diffHours <= 24) {
+          statusText = 'Recently used';
+          statusDotColor = 'var(--color-success, #50fa7b)';
+          statusOpacity = '1';
+        } else {
+          statusText = 'Configured';
+          statusDotColor = 'var(--color-success, #50fa7b)';
+          statusOpacity = '0.7';
+        }
+      }
+
+      const detail = `${tok.token_prefix || 'token'}... · ${statusText}`;
+      const cfg = AGENT_CONFIGS[agentType];
+      items.push({
+        type: agentType,
+        id: tok.id,
+        name: tok.name || cfg.defaultName,
+        detail,
+        statusText,
+        statusDotColor,
+        statusOpacity,
+        enabled: tok.is_active !== false,
+        data: tok,
+      });
     }
-    // Vaultwarden removed as an integration option.
     return items;
   }
 
   function renderCard(item) {
     const t = INTG_TYPES[item.type] || INTG_TYPES.api;
-    // Static enabled/disabled indicator — same dot every integration
-    // type gets. (The clickable glow-on-test variant for email was
-    // removed earlier; this matches the API/CalDAV/MCP pattern.)
-    const statusDot = item.enabled
-      ? '<span style="width:8px;height:8px;border-radius:50%;background:var(--color-success,#50fa7b);flex-shrink:0;--notif-glow:var(--color-success,#50fa7b);animation:cookbook-notif-pulse 2s ease-in-out infinite;" title="Active"></span>'
-      : '<span style="width:8px;height:8px;border-radius:50%;background:var(--fg);opacity:0.3;flex-shrink:0" title="Disabled"></span>';
-    return `<div class="intg-card" data-intg-id="${item.id}" data-intg-type="${item.type}" style="display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:color-mix(in srgb, var(--fg) 3%, transparent);margin-bottom:6px;cursor:pointer;transition:all 0.15s;" title="Click to edit">
+    const dotColor = item.statusDotColor || (item.enabled ? 'var(--color-success,#50fa7b)' : 'var(--fg)');
+    const opacity = item.statusOpacity || (item.enabled ? '1' : '0.3');
+    const statusDot = `<span style="width:8px;height:8px;border-radius:50%;background:${dotColor};opacity:${opacity};flex-shrink:0;" title="${esc(item.statusText || (item.enabled ? 'Active' : 'Disabled'))}"></span>`;
+
+    return `<div class="intg-card" data-intg-id="${esc(item.id)}" data-intg-type="${esc(item.type)}" style="display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:color-mix(in srgb, var(--fg) 3%, transparent);margin-bottom:6px;cursor:pointer;transition:all 0.15s;" title="Click to edit">
       <span style="color:var(--accent, var(--red));flex-shrink:0">${t.icon}</span>
       <div style="flex:1;min-width:0">
-        <div style="font-size:12px;font-weight:600;display:flex;align-items:center;gap:6px">${item.name} <span style="font-size:9px;text-transform:uppercase;letter-spacing:0.5px;padding:1px 5px;border:1px solid color-mix(in srgb, var(--accent, var(--red)) 50%, transparent);border-radius:3px;color:var(--accent, var(--red));background:color-mix(in srgb, var(--accent, var(--red)) 12%, transparent);">${t.label}</span></div>
-        <div style="font-size:11px;opacity:0.5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${item.detail || ''}</div>
+        <div style="font-size:12px;font-weight:600;display:flex;align-items:center;gap:6px">${esc(item.name)} <span style="font-size:9px;text-transform:uppercase;letter-spacing:0.5px;padding:1px 5px;border:1px solid color-mix(in srgb, var(--accent, var(--red)) 50%, transparent);border-radius:3px;color:var(--accent, var(--red));background:color-mix(in srgb, var(--accent, var(--red)) 12%, transparent);">${esc(t.label)}</span></div>
+        <div style="font-size:11px;opacity:0.55;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(item.detail || '')}</div>
       </div>
       ${statusDot}
-      <button class="admin-btn-sm intg-del-btn" data-intg-id="${item.id}" data-intg-type="${item.type}" data-intg-name="${(item.name || '').replace(/"/g, '&quot;')}" title="Remove" style="background:none;border:none;padding:4px;cursor:pointer;color:var(--red);opacity:0.55;display:inline-flex;align-items:center;justify-content:center;">
+      <button class="admin-btn-sm intg-del-btn" data-intg-id="${esc(item.id)}" data-intg-type="${esc(item.type)}" data-intg-name="${esc(item.name || '')}" title="Remove" style="background:none;border:none;padding:4px;cursor:pointer;color:var(--red);opacity:0.55;display:inline-flex;align-items:center;justify-content:center;">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
       </button>
     </div>`;
@@ -3708,30 +3772,159 @@ async function initUnifiedIntegrations() {
         <span style="flex:1;line-height:1.35">${integrationNotice}</span>
         <button type="button" class="admin-btn-sm intg-open-email-settings" style="white-space:nowrap;">Email settings</button>
       </div>` : '';
-    if (items.length === 0) {
-      listEl.innerHTML = noticeHtml + '<div style="padding:12px;opacity:0.5;font-size:12px;text-align:center">No integrations configured</div>';
+
+    if (_currentCategory === 'overview') {
+      const counts = {
+        agents: items.filter(i => ['agy', 'codex', 'claude'].includes(i.type)).length,
+        mcp: items.filter(i => i.type === 'mcp').length,
+        email: items.filter(i => i.type === 'email').length,
+        calendar: items.filter(i => i.type === 'caldav').length,
+        contacts: items.filter(i => ['contacts', 'carddav'].includes(i.type)).length,
+        api: items.filter(i => i.type === 'api').length,
+      };
+
+      const categories = [
+        { key: 'agents', name: 'CLI Agents', desc: 'AGY CLI, Codex CLI, Claude Code', icon: INTG_TYPES.agy.icon, count: counts.agents },
+        { key: 'mcp', name: 'MCP Servers', desc: 'Model Context Protocol tool servers', icon: INTG_TYPES.mcp.icon, count: counts.mcp },
+        { key: 'email', name: 'Email Accounts', desc: 'IMAP / SMTP mailboxes', icon: INTG_TYPES.email.icon, count: counts.email },
+        { key: 'calendar', name: 'Calendar', desc: 'CalDAV sync & time blocks', icon: INTG_TYPES.caldav.icon, count: counts.calendar },
+        { key: 'contacts', name: 'Contacts', desc: 'CardDAV & address book import', icon: INTG_TYPES.contacts.icon, count: counts.contacts },
+        { key: 'api', name: 'API Services', desc: 'External API integrations', icon: INTG_TYPES.api.icon, count: counts.api },
+      ];
+
+      const gridHtml = `<div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(200px, 1fr));gap:8px;margin-bottom:12px;">
+        ${categories.map(c => `
+          <div class="intg-cat-card" data-switch-cat="${c.key}" style="border:1px solid var(--border);border-radius:8px;padding:10px;background:color-mix(in srgb, var(--fg) 2.5%, transparent);cursor:pointer;display:flex;flex-direction:column;gap:6px;transition:all 0.15s;">
+            <div style="display:flex;align-items:center;justify-content:space-between;">
+              <span style="display:flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:var(--fg);"><span style="color:var(--accent, var(--red));">${c.icon}</span> ${esc(c.name)}</span>
+              <span style="font-size:10px;font-weight:600;padding:1px 6px;border-radius:999px;background:color-mix(in srgb, var(--accent, var(--red)) 15%, transparent);color:var(--accent, var(--red));">${c.count}</span>
+            </div>
+            <div style="font-size:11px;opacity:0.55;line-height:1.3;">${esc(c.desc)}</div>
+            <div style="text-align:right;margin-top:auto;"><span style="font-size:10px;color:var(--accent, var(--red));font-weight:600;">Manage &rarr;</span></div>
+          </div>
+        `).join('')}
+      </div>`;
+
+      const activeListHtml = items.length === 0
+        ? '<div style="padding:12px;opacity:0.5;font-size:12px;text-align:center">No integrations configured</div>'
+        : items.map(renderCard).join('');
+
+      listEl.innerHTML = noticeHtml + gridHtml + `<div style="font-size:11px;font-weight:600;opacity:0.6;margin-bottom:6px;">All Connected Services (${items.length})</div>` + activeListHtml;
+
+      listEl.querySelectorAll('.intg-cat-card').forEach(card => {
+        card.addEventListener('click', () => {
+          const targetCat = card.dataset.switchCat;
+          if (catTabsEl) {
+            const btn = catTabsEl.querySelector(`[data-cat="${targetCat}"]`);
+            if (btn) btn.click();
+          }
+        });
+      });
+
+    } else if (_currentCategory === 'agents') {
+      const agentProviders = [
+        { kind: 'agy', title: 'AGY CLI', desc: 'AGY command-line agent connections', config: AGENT_CONFIGS.agy },
+        { kind: 'codex', title: 'Codex CLI', desc: 'Codex command-line agent connections', config: AGENT_CONFIGS.codex },
+        { kind: 'claude', title: 'Claude Code', desc: 'Claude Code command-line agent connections', config: AGENT_CONFIGS.claude },
+      ];
+
+      const agentSectionsHtml = agentProviders.map(p => {
+        const providerTokens = items.filter(i => i.type === p.kind);
+        const tokensListHtml = providerTokens.length === 0
+          ? `<div style="padding:8px 10px;font-size:11px;opacity:0.5;border:1px dashed var(--border);border-radius:6px;margin-bottom:8px;">No connected clients for ${esc(p.title)}</div>`
+          : providerTokens.map(renderCard).join('');
+
+        return `
+          <div class="agent-provider-section" style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:10px;background:color-mix(in srgb, var(--fg) 1.5%, transparent);">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">
+              <div style="display:flex;align-items:center;gap:6px;">
+                <span style="color:var(--accent, var(--red));">${INTG_TYPES[p.kind].icon}</span>
+                <span style="font-size:13px;font-weight:600;">${esc(p.title)}</span>
+                <span style="font-size:10px;opacity:0.5;">(${providerTokens.length} client${providerTokens.length === 1 ? '' : 's'})</span>
+              </div>
+              <button type="button" class="admin-btn-sm btn-connect-agent" data-agent-kind="${p.kind}" style="display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:600;color:var(--accent, var(--red));border:1px solid color-mix(in srgb, var(--accent, var(--red)) 40%, transparent);background:color-mix(in srgb, var(--accent, var(--red)) 10%, transparent);border-radius:4px;padding:3px 8px;cursor:pointer;">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+                ${esc(p.config.connectLabel)}
+              </button>
+            </div>
+            <div style="font-size:11px;opacity:0.6;margin-bottom:8px;">${esc(p.desc)}</div>
+            <div>${tokensListHtml}</div>
+          </div>
+        `;
+      }).join('');
+
+      listEl.innerHTML = noticeHtml + agentSectionsHtml;
+
+      listEl.querySelectorAll('.btn-connect-agent').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const kind = btn.dataset.agentKind;
+          showForm(kind, 'new');
+        });
+      });
+
     } else {
-      listEl.innerHTML = noticeHtml + items.map(renderCard).join('');
+      let filteredItems = [];
+      let catTitle = '';
+      let addType = _currentCategory;
+
+      if (_currentCategory === 'mcp') {
+        filteredItems = items.filter(i => i.type === 'mcp');
+        catTitle = 'MCP Tool Servers';
+      } else if (_currentCategory === 'email') {
+        filteredItems = items.filter(i => i.type === 'email');
+        catTitle = 'Email Accounts';
+      } else if (_currentCategory === 'calendar') {
+        filteredItems = items.filter(i => i.type === 'caldav');
+        catTitle = 'Calendar Accounts';
+        addType = 'caldav';
+      } else if (_currentCategory === 'contacts') {
+        filteredItems = items.filter(i => ['contacts', 'carddav'].includes(i.type));
+        catTitle = 'Contacts Integrations';
+        addType = 'carddav';
+      } else if (_currentCategory === 'api') {
+        filteredItems = items.filter(i => i.type === 'api');
+        catTitle = 'API Service Integrations';
+      }
+
+      const listHtml = filteredItems.length === 0
+        ? `<div style="padding:16px;opacity:0.5;font-size:12px;text-align:center">No ${esc(catTitle)} configured</div>`
+        : filteredItems.map(renderCard).join('');
+
+      listEl.innerHTML = noticeHtml + `
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+          <span style="font-size:12px;font-weight:600;opacity:0.7;">${esc(catTitle)} (${filteredItems.length})</span>
+          <button type="button" class="admin-btn-sm intg-cat-add-btn" data-type="${addType}" style="display:inline-flex;align-items:center;gap:4px;font-size:11px;color:var(--accent, var(--red));border:1px solid color-mix(in srgb, var(--accent, var(--red)) 35%, transparent);background:transparent;border-radius:4px;padding:3px 8px;cursor:pointer;">
+            + Add ${esc(INTG_TYPES[addType]?.label || catTitle)}
+          </button>
+        </div>
+        ${listHtml}
+      `;
+
+      listEl.querySelector('.intg-cat-add-btn')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        showForm(addType, 'new');
+      });
     }
+
     listEl.querySelector('.intg-open-email-settings')?.addEventListener('click', (e) => {
       e.stopPropagation();
       _openEmailSettings();
     });
-    // Wire edit clicks
+
+    // Wire edit clicks on cards
     listEl.querySelectorAll('.intg-card').forEach(card => {
       card.addEventListener('click', (e) => {
         if (e.target.closest('.intg-del-btn')) return;
         const type = card.dataset.intgType;
         const id = card.dataset.intgId;
-        // Toggle a class instead of mutating inline borderColor — the
-        // inline border shorthand made the reset unreliable, leaving
-        // stale accent borders on previously-clicked cards.
         listEl.querySelectorAll('.intg-card.intg-card-active').forEach(c => c.classList.remove('intg-card-active'));
         card.classList.add('intg-card-active');
         showForm(type, id);
       });
     });
-    // Wire delete
+
+    // Wire delete on cards
     listEl.querySelectorAll('.intg-del-btn').forEach(btn => {
       btn.addEventListener('click', async (e) => {
         e.stopPropagation();
@@ -3750,10 +3943,10 @@ async function initUnifiedIntegrations() {
           }
           else if (type === 'email') await fetch(`/api/email/accounts/${id}`, { method: 'DELETE', credentials: 'same-origin' });
           else if (type === 'mcp') await fetch(`/api/mcp/servers/${id}`, { method: 'DELETE', credentials: 'same-origin' });
-          else if (type === 'codex' || type === 'claude') await fetch(`/api/tokens/${id}`, { method: 'DELETE', credentials: 'same-origin' });
+          else if (['codex', 'claude', 'agy'].includes(type)) await fetch(`/api/tokens/${id}`, { method: 'DELETE', credentials: 'same-origin' });
           else if (type === 'vault') await fetch('/api/vault/logout', { method: 'POST', credentials: 'same-origin' });
         } catch (_) {}
-        formEl.style.display = 'none';
+        if (formEl) formEl.style.display = 'none';
         await renderList();
         notifyIntegrationsChanged();
       });
@@ -3761,14 +3954,13 @@ async function initUnifiedIntegrations() {
   }
 
   function showForm(type, editId) {
-    formEl.style.display = '';
+    if (formEl) formEl.style.display = '';
     if (type === 'api') showApiForm(editId);
     else if (type === 'caldav') showCalDavForm(editId);
     else if (type === 'contacts' || type === 'carddav') showCardDavForm();
     else if (type === 'email') showEmailForm(editId);
     else if (type === 'mcp') showMcpForm(editId);
-    else if (type === 'codex') showAgentForm('codex', editId);
-    else if (type === 'claude') showAgentForm('claude', editId);
+    else if (type === 'codex' || type === 'claude' || type === 'agy') showAgentForm(type, editId);
     else if (type === 'vault') showVaultForm();
   }
 
@@ -5240,10 +5432,12 @@ async function initUnifiedIntegrations() {
       { key: 'cookbook:read', label: 'Cookbook', detail: 'List cookbook tasks + tail their tmux output (debug a model serve from outside the UI)' },
       { key: 'cookbook:launch', label: 'Cookbook launch', detail: 'Launch and stop cookbook serve tasks. Powerful: runs SSH commands on your configured servers, bounded by the same allowlist the UI uses (vllm/python3/sglang/llama-server/...)' },
     ];
-    // Strict name-prefix match keeps Codex and Claude tokens in their own forms.
-    const agentTokens = (Array.isArray(tokens) ? tokens : []).filter(tok =>
-      (tok.name || '').toLowerCase().startsWith(cfg.namePrefix)
-    );
+    // Filter tokens for this agent provider kind (e.g. agy, codex, claude)
+    const agentTokens = (Array.isArray(tokens) ? tokens : []).filter(tok => {
+      const p = tok.agent_provider || tok.provider;
+      if (p) return p === kind;
+      return (tok.name || '').toLowerCase().startsWith(cfg.namePrefix);
+    });
     const current = agentTokens.find(t => String(t.id) === String(editId));
     const _scopeIcons = {
       todos: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><line x1="8" y1="9" x2="16" y2="9"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="13" y2="17"/></svg>',
@@ -5281,8 +5475,7 @@ async function initUnifiedIntegrations() {
 
     // Inline editor for the existing token the user clicked into (current).
     // Shows the rename input, the prefix/last-used, and scope toggles that
-    // PATCH /api/tokens/{id} on change. The integration row's trash button
-    // handles revoke, so no Revoke button in here.
+    // PATCH /api/tokens/{id} on change.
     const editExistingHtml = current ? `
       <div style="border:1px solid var(--border);border-radius:6px;padding:9px 10px;margin-bottom:8px;">
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
@@ -5299,8 +5492,12 @@ async function initUnifiedIntegrations() {
         <div class="settings-col">
           ${editExistingHtml}
           <div id="uf-codex-prompt" style="display:${current ? 'none' : 'block'};padding:6px 0;">
-            <div style="font-size:11px;opacity:0.7;margin-bottom:6px;">Name this ${esc(cfg.word)} agent so you can tell it apart from other ones (e.g. "${esc(cfg.defaultName)} — laptop").</div>
-            <input type="text" id="uf-codex-name-input" class="settings-select" placeholder="${esc(cfg.defaultName)}" style="width:100%;font-size:12px;padding:6px 8px;">
+            <div style="font-size:11px;opacity:0.7;margin-bottom:6px;">Name this ${esc(cfg.word)} connection so you can tell it apart from other ones (e.g. "${esc(cfg.defaultName)}").</div>
+            <input type="text" id="uf-codex-name-input" class="settings-select" placeholder="${esc(cfg.defaultName)}" style="width:100%;font-size:12px;padding:6px 8px;margin-bottom:8px;">
+            <div style="font-size:11px;font-weight:600;opacity:0.62;margin-bottom:4px;">Permissions</div>
+            <div id="uf-codex-creation-scopes" style="margin-bottom:8px;">
+              ${scopeToggles({ scopes: ['chat'] })}
+            </div>
           </div>
           <div id="uf-codex-pending" style="display:none;align-items:center;gap:8px;padding:6px 0;font-size:11px;opacity:0.7;"></div>
           <div id="uf-codex-reveal" style="display:none;width:100%;box-sizing:border-box;">
@@ -5331,7 +5528,7 @@ async function initUnifiedIntegrations() {
               </button>
             </div>
             <div id="uf-codex-config-body" style="display:none;">
-              <div style="font-size:11px;opacity:0.62;margin:4px 0 6px;">Toggle which Odysseus tools this agent can use. New agents start with chat only.</div>
+              <div style="font-size:11px;opacity:0.62;margin:4px 0 6px;">Toggle which Odysseus tools this agent connection can use. New connections start with chat only.</div>
               <div id="uf-codex-inline-scopes"></div>
             </div>
           </div>
@@ -5347,7 +5544,7 @@ async function initUnifiedIntegrations() {
             </button>
             <button class="admin-btn-add" id="uf-codex-create-btn" style="display:${current ? 'none' : 'inline-flex'};align-items:center;gap:5px;background:transparent;color:var(--accent, var(--red));border-color:color-mix(in srgb, var(--accent, var(--red)) 45%, var(--border));">
               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 2l-9.6 9.6"/><circle cx="7.5" cy="15.5" r="5.5"/><path d="M15.5 7.5l3 3"/></svg>
-              Create token
+              Create connection
             </button>
             <button class="admin-btn-add" id="uf-codex-save" style="display:none;align-items:center;gap:5px;background:transparent;color:var(--accent, var(--red));border-color:color-mix(in srgb, var(--accent, var(--red)) 45%, var(--border));font-weight:600;">
               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"/></svg>
@@ -5503,9 +5700,14 @@ async function initUnifiedIntegrations() {
       // with everything granted before the user has clicked Save. The
       // UI toggles below are pre-checked as a preview of what *will*
       // be granted; nothing else is persisted server-side until Save.
+      const creationScopes = ['chat'].concat(
+        Array.from(formEl.querySelectorAll('#uf-codex-creation-scopes .uf-codex-scope:checked'))
+          .map(input => input.dataset.scope)
+      );
       const fd = new FormData();
       fd.append('name', name);
-      fd.append('scopes', 'chat');
+      fd.append('agent_provider', kind);
+      fd.append('scopes', creationScopes.join(','));
       try {
         const r = await fetch('/api/tokens', { method: 'POST', credentials: 'same-origin', body: fd });
         const d = await r.json();
@@ -5518,10 +5720,7 @@ async function initUnifiedIntegrations() {
         if (setupBtn) setupBtn.dataset.token = d.token || '';
         const setupCode = el('uf-codex-setup-code');
         if (setupCode) setupCode.textContent = setupForToken(d.token || '');
-        // Populate inline scope toggles for the just-created token with
-        // ALL scopes pre-checked as a UI preview — the underlying token
-        // still only has 'chat' until the user clicks Save below.
-        const uiToken = { id: d.id, scopes: ['chat'].concat(toolScopes.map(s => s.key)) };
+        const uiToken = { id: d.id, scopes: Array.isArray(d.scopes) ? d.scopes : creationScopes };
         const inlineEl = el('uf-codex-inline-scopes');
         if (inlineEl) {
           inlineEl.innerHTML = `
@@ -5659,14 +5858,15 @@ async function initUnifiedIntegrations() {
   // ── Add button now drops a type-picker menu directly anchored to itself ──
   if (addBtn) {
     const _typeOptions = [
-      ['api', 'API Service'],
-      ['caldav', 'CalDAV Calendar'],
-      ['claude', 'Claude Agent'],
-      ['codex', 'Codex Agent'],
-      ['carddav', 'Contacts (CardDAV)'],
-      ['contacts', 'Contacts Import'],
-      ['email', 'Email (IMAP/SMTP)'],
+      ['agy', 'AGY CLI'],
+      ['codex', 'Codex CLI'],
+      ['claude', 'Claude Code'],
       ['mcp', 'MCP Tool Server'],
+      ['email', 'Email (IMAP/SMTP)'],
+      ['caldav', 'CalDAV Calendar'],
+      ['contacts', 'Contacts Import'],
+      ['carddav', 'Contacts (CardDAV)'],
+      ['api', 'API Service'],
     ];
     const _iconFor = (k) => (INTG_TYPES[k]?.icon || '').replace(/width="14"/, 'width="16"').replace(/height="14"/, 'height="16"');
     const _rowsHtml = _typeOptions.map(([k, label]) => `<button type="button" class="uf-type-option" data-value="${k}" style="display:flex;align-items:center;gap:10px;width:100%;padding:8px 10px;background:transparent;border:0;color:var(--fg);font:inherit;cursor:pointer;text-align:left;"><span style="display:inline-flex;color:var(--accent, var(--red));flex-shrink:0;">${_iconFor(k)}</span><span>${esc(label)}</span></button>`).join('');

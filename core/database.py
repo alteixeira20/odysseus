@@ -632,8 +632,15 @@ class Signature(TimestampMixin, Base):
 
 
 class ApiToken(TimestampMixin, Base):
-    """API tokens for external integrations (n8n, Make, etc.)."""
+    """API tokens for external integrations (n8n, Make, etc.).
+
+    When ``agent_provider`` is set, this token represents a CLI agent
+    connection (one of ``'agy'``, ``'codex'``, ``'claude'``).  Ordinary
+    API tokens leave this column NULL.
+    """
     __tablename__ = "api_tokens"
+
+    ALLOWED_AGENT_PROVIDERS = frozenset({"agy", "codex", "claude"})
 
     id = Column(String, primary_key=True, index=True)
     owner = Column(String, nullable=True, index=True)
@@ -643,6 +650,7 @@ class ApiToken(TimestampMixin, Base):
     scopes = Column(String, nullable=False, default="chat")
     is_active = Column(Boolean, default=True)
     last_used_at = Column(DateTime, nullable=True)
+    agent_provider = Column(String, nullable=True)  # 'agy' | 'codex' | 'claude' | NULL
 
 
 class Webhook(TimestampMixin, Base):
@@ -1393,6 +1401,33 @@ def _migrate_add_api_token_scopes_column():
         except Exception:
             pass
 
+def _migrate_api_tokens_agent_provider():
+    """Add the ``agent_provider`` column to pre-existing ``api_tokens`` tables.
+
+    New installs get the column via ``create_all()``.  Existing databases
+    need an ``ALTER TABLE``.  The column is nullable so ordinary API tokens
+    can leave it NULL.
+    """
+    import sqlite3
+    db_path = DATABASE_URL.replace("sqlite:///", "")
+    if not os.path.exists(db_path):
+        return
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path)
+        columns = [row[1] for row in conn.execute("PRAGMA table_info(api_tokens)").fetchall()]
+        if columns and "agent_provider" not in columns:
+            conn.execute("ALTER TABLE api_tokens ADD COLUMN agent_provider TEXT")
+            conn.commit()
+            logging.getLogger(__name__).info("Migrated: added agent_provider column to api_tokens")
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"api_tokens.agent_provider migration failed: {e}")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
 def _migrate_assign_legacy_owner():
     """Assign all null-owner data to the first (admin) user.
 
@@ -2102,6 +2137,7 @@ def init_db():
     _migrate_add_multiuser_owner_columns()
     _migrate_add_gallery_caption_column()
     _migrate_add_api_token_scopes_column()
+    _migrate_api_tokens_agent_provider()
     _migrate_backfill_document_owner_from_session()
     _migrate_assign_legacy_owner()
     _migrate_add_tidy_verdict()
