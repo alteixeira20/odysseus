@@ -9,7 +9,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # Keep superseded broad runs cancellable while isolating the authoritative
+  # qualification series from stale jobs created by the earlier CI namespace.
+  group: ci-authoritative-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
