@@ -3535,7 +3535,7 @@ const AGENT_CONFIGS = {
 export ODYSSEUS_API_TOKEN='${token}'
 mkdir -p ~/.gemini/skills/
 curl -fsSL -H "Authorization: Bearer $ODYSSEUS_API_TOKEN" "$ODYSSEUS_URL/api/agy/plugin.zip" -o /tmp/odysseus-agy-skill.zip
-python3 -m zipfile -e /tmp/odysseus-agy-skill.zip ~/.gemini/skills/
+python3 -m zipfile -e /tmp/odysseus-agy-skill.zip ~/.gemini/
 python3 ~/.gemini/skills/odysseus/scripts/odysseus_api.py capabilities`,
   },
   codex: {
@@ -3607,6 +3607,7 @@ async function initUnifiedIntegrations() {
   const catTabsEl = el('intg-category-tabs');
   if (!listEl) return;
   let integrationNotice = '';
+  let _syncAddBtnWrap = () => {};
 
   if (catTabsEl) {
     catTabsEl.querySelectorAll('.intg-cat-btn').forEach(btn => {
@@ -3616,6 +3617,7 @@ async function initUnifiedIntegrations() {
         _currentCategory = btn.dataset.cat || 'overview';
         if (formEl) formEl.style.display = 'none';
         renderList();
+        _syncAddBtnWrap();
       });
     });
   }
@@ -3625,9 +3627,11 @@ async function initUnifiedIntegrations() {
   if (formEl && addBtn && addBtn.parentElement && !formEl._addBtnObserved) {
     formEl._addBtnObserved = true;
     const addBtnWrap = addBtn.parentElement;
-    const _syncAddBtnWrap = () => {
-      const formOpen = formEl.style.display && formEl.style.display !== 'none';
-      addBtnWrap.style.display = formOpen ? 'none' : '';
+    _syncAddBtnWrap = () => {
+      const formOpen =
+        formEl.style.display !== 'none' && formEl.children.length > 0;
+      addBtnWrap.style.display =
+        (_currentCategory === 'overview' && !formOpen) ? '' : 'none';
     };
     new MutationObserver(_syncAddBtnWrap).observe(formEl, { attributes: true, attributeFilter: ['style'] });
     _syncAddBtnWrap();
@@ -3698,7 +3702,7 @@ async function initUnifiedIntegrations() {
       const lowerName = (tok.name || '').toLowerCase();
       let agentType = tok.agent_provider || tok.provider || null;
       if (!agentType || !AGENT_CONFIGS[agentType]) {
-        if (lowerName.startsWith('agy') || lowerName.includes('agy')) agentType = 'agy';
+        if (lowerName.startsWith('agy agent') || lowerName === 'agy') agentType = 'agy';
         else if (lowerName.startsWith('claude')) agentType = 'claude';
         else if (lowerName.startsWith('codex')) agentType = 'codex';
         else if (scopes.some(s => String(s || '').startsWith('todos:') || String(s || '').startsWith('email:') || String(s || '').startsWith('documents:') || String(s || '').startsWith('cookbook:'))) {
@@ -3809,7 +3813,7 @@ async function initUnifiedIntegrations() {
         ? '<div style="padding:12px;opacity:0.5;font-size:12px;text-align:center">No integrations configured</div>'
         : items.map(renderCard).join('');
 
-      listEl.innerHTML = noticeHtml + gridHtml + `<div style="font-size:11px;font-weight:600;opacity:0.6;margin-bottom:6px;">All Connected Services (${items.length})</div>` + activeListHtml;
+      listEl.innerHTML = noticeHtml + gridHtml + `<div style="font-size:11px;font-weight:600;opacity:0.6;margin-bottom:6px;">All Integrations (${items.length})</div>` + activeListHtml;
 
       listEl.querySelectorAll('.intg-cat-card').forEach(card => {
         card.addEventListener('click', () => {

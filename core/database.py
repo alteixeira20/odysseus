@@ -1402,31 +1402,54 @@ def _migrate_add_api_token_scopes_column():
             pass
 
 def _migrate_api_tokens_agent_provider():
-    """Add the ``agent_provider`` column to pre-existing ``api_tokens`` tables.
+    """Add/backfill ``api_tokens.agent_provider`` on supported databases.
 
-    New installs get the column via ``create_all()``.  Existing databases
-    need an ``ALTER TABLE``.  The column is nullable so ordinary API tokens
-    can leave it NULL.
+    ``create_all()`` covers fresh installs but does not add columns to an
+    existing table. Use SQLAlchemy inspection/DDL instead of SQLite-only
+    PRAGMA calls so PostgreSQL upgrades receive the column too. Known
+    legacy CLI-agent names are backfilled once so future renames do not
+    erase provider identity.
     """
-    import sqlite3
-    db_path = DATABASE_URL.replace("sqlite:///", "")
-    if not os.path.exists(db_path):
-        return
-    conn = None
     try:
-        conn = sqlite3.connect(db_path)
-        columns = [row[1] for row in conn.execute("PRAGMA table_info(api_tokens)").fetchall()]
-        if columns and "agent_provider" not in columns:
-            conn.execute("ALTER TABLE api_tokens ADD COLUMN agent_provider TEXT")
-            conn.commit()
-            logging.getLogger(__name__).info("Migrated: added agent_provider column to api_tokens")
+        with engine.begin() as conn:
+            inspector = inspect(conn)
+            if not inspector.has_table("api_tokens"):
+                return
+
+            columns = {
+                column["name"]
+                for column in inspector.get_columns("api_tokens")
+            }
+
+            if "agent_provider" not in columns:
+                conn.execute(text(
+                    "ALTER TABLE api_tokens "
+                    "ADD COLUMN agent_provider VARCHAR"
+                ))
+                logging.getLogger(__name__).info(
+                    "Migrated: added agent_provider column to api_tokens"
+                )
+
+            conn.execute(text("""
+                UPDATE api_tokens
+                SET agent_provider = CASE
+                    WHEN lower(trim(name)) = 'agy'
+                         OR lower(trim(name)) LIKE 'agy agent%'
+                        THEN 'agy'
+                    WHEN lower(trim(name)) = 'claude'
+                         OR lower(trim(name)) LIKE 'claude agent%'
+                        THEN 'claude'
+                    WHEN lower(trim(name)) = 'codex'
+                         OR lower(trim(name)) LIKE 'codex agent%'
+                        THEN 'codex'
+                    ELSE agent_provider
+                END
+                WHERE agent_provider IS NULL
+            """))
     except Exception as e:
-        logging.getLogger(__name__).warning(f"api_tokens.agent_provider migration failed: {e}")
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+        logging.getLogger(__name__).warning(
+            "api_tokens.agent_provider migration failed: %s", e
+        )
 
 def _migrate_assign_legacy_owner():
     """Assign all null-owner data to the first (admin) user.
