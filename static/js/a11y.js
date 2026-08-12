@@ -1,4 +1,5 @@
 import './integrationCategoryActions.js';
+import './integrationHeaderActions.js';
 
 // Accessibility enhancements for keyboard + screen-reader users.
 //
