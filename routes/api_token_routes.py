@@ -194,6 +194,14 @@ def setup_api_token_routes() -> APIRouter:
                 raise HTTPException(404, "Token not found")
             if current_user and token.owner != current_user:
                 raise HTTPException(403, "Not your token")
+
+            # Persist provider identity before a legacy token is renamed away
+            # from the historical "Codex Agent …" / "Claude Agent …" naming
+            # convention. Without this, a chat-only legacy token can disappear
+            # from the Agents UI after the first rename because there is no
+            # longer any name prefix left to infer from.
+            legacy_provider = getattr(token, "agent_provider", None) or _infer_legacy_provider(token.name)
+
             if isinstance(payload.get("name"), str) and payload["name"].strip():
                 token.name = payload["name"].strip()[:MAX_NAME_LEN]
             if "agent_provider" in payload:
@@ -205,6 +213,8 @@ def setup_api_token_routes() -> APIRouter:
                 else:
                     p = None
                 token.agent_provider = p
+            elif not getattr(token, "agent_provider", None) and legacy_provider:
+                token.agent_provider = legacy_provider
 
             # Only touch scopes when the caller actually sent them. A partial
             # update such as a rename ({"name": ...} with no "scopes" key) must
