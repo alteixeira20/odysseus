@@ -1,7 +1,9 @@
-"""Frontend JS behavioral tests for Integrations settings module (settings.js).
+"""Behavioral regression tests for Settings > Integrations frontend code.
 
-Tests category filtering, CLI agent rendering (AGY, Codex, Claude), token ID identity,
-duplicate display names, HTML escaping, and separation of unrelated API tokens.
+The Node harness executes the real ``integrationCategoryActions.js`` module
+inside a deliberately small DOM shim. This keeps the test dependency-free
+while still exercising production rendering, identity, layout, and modal
+lifecycle behavior instead of reimplementing those rules in the test.
 """
 import json
 import shutil
@@ -24,10 +26,11 @@ def _run_js_behavior_test():
         encoding="utf-8",
         timeout=30,
     )
-    assert proc.returncode == 0, f"Node execution error: {proc.stderr}"
+    assert proc.returncode == 0, f"Node execution error:\n{proc.stderr}"
     results = json.loads(proc.stdout.strip())
-    for r in results:
-        assert r["pass"] is True, f"Failed JS behavioral test: {r['test']}"
+    assert results, "Node integration harness returned no behavioral checks"
+    failures = [result for result in results if result.get("pass") is not True]
+    assert not failures, "Failed JS behavioral checks: " + json.dumps(failures, indent=2)
 
 
 @pytest.mark.skipif(not _HAS_NODE, reason="node binary not on PATH")

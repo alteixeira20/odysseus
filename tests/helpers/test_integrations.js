@@ -1,147 +1,340 @@
 const fs = require('fs');
 const path = require('path');
+const vm = require('vm');
 
-// Minimal DOM Shim for node execution
+// Behavioral harness for the real Settings > Integrations production module.
+// The DOM shim deliberately implements only the browser surface used by
+// integrationCategoryActions.js so tests fail when that contract changes.
+
+class ClassList {
+  constructor(owner) {
+    this.owner = owner;
+    this.values = new Set();
+  }
+  add(...names) { names.filter(Boolean).forEach(name => this.values.add(name)); }
+  remove(...names) { names.forEach(name => this.values.delete(name)); }
+  contains(name) { return this.values.has(name); }
+  toggle(name, force) {
+    if (force === undefined) force = !this.contains(name);
+    force ? this.add(name) : this.remove(name);
+    return force;
+  }
+  toString() { return Array.from(this.values).join(' '); }
+}
+
 class Element {
-  constructor(tagName) {
-    this.tagName = tagName.toUpperCase();
+  constructor(tagName, documentRef) {
+    this.tagName = String(tagName || 'div').toUpperCase();
+    this.ownerDocument = documentRef;
     this.children = [];
-    this.attributes = {};
-    this.style = {};
-    this.classList = {
-      _classes: new Set(),
-      add(c) { this._classes.add(c); },
-      remove(c) { this._classes.delete(c); },
-      contains(c) { return this._classes.has(c); },
-      toggle(c, v) { if (v) this.add(c); else this.remove(c); }
-    };
-    this._innerHTML = '';
-    this.textContent = '';
     this.parentElement = null;
+    this.attributes = {};
     this.dataset = {};
+    this.style = { cssText: '' };
+    this.classList = new ClassList(this);
+    this._textContent = '';
+    this._innerHTML = '';
+    this._listeners = new Map();
+    this.value = '';
+    this.checked = false;
+    this.disabled = false;
+    this.type = '';
+    this.placeholder = '';
+  }
+
+  set id(value) { this.attributes.id = String(value); }
+  get id() { return this.attributes.id || ''; }
+  set className(value) {
+    this.classList.values = new Set(String(value || '').split(/\s+/).filter(Boolean));
+  }
+  get className() { return this.classList.toString(); }
+  set textContent(value) { this._textContent = String(value ?? ''); }
+  get textContent() { return this._textContent; }
+  set innerHTML(value) {
+    const text = String(value ?? '');
+    this._innerHTML = text;
+    if (/<script\b/i.test(text)) this.ownerDocument.unsafeInnerHtmlAssignments += 1;
+    this._textContent = text.replace(/<[^>]*>/g, '');
   }
   get innerHTML() { return this._innerHTML; }
-  set innerHTML(val) {
-    this._innerHTML = val;
-    this.textContent = val.replace(/<[^>]*>/g, '');
+  get isConnected() {
+    let node = this;
+    while (node) {
+      if (node === this.ownerDocument.body || node === this.ownerDocument.head) return true;
+      node = node.parentElement;
+    }
+    return false;
   }
-  setAttribute(k, v) { this.attributes[k] = String(v); }
-  getAttribute(k) { return this.attributes[k] || null; }
+  get nextElementSibling() {
+    if (!this.parentElement) return null;
+    const siblings = this.parentElement.children;
+    const index = siblings.indexOf(this);
+    return index >= 0 ? siblings[index + 1] || null : null;
+  }
+
+  setAttribute(key, value) {
+    const str = String(value);
+    this.attributes[key] = str;
+    if (key === 'class') this.className = str;
+    if (key.startsWith('data-')) {
+      const prop = key.slice(5).replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+      this.dataset[prop] = str;
+    }
+  }
+  getAttribute(key) { return this.attributes[key] ?? null; }
+
   appendChild(child) {
+    if (child.parentElement) child.remove();
     child.parentElement = this;
     this.children.push(child);
     return child;
   }
-  querySelector(sel) {
-    return this.querySelectorAll(sel)[0] || null;
+  append(...children) { children.forEach(child => this.appendChild(child)); }
+  prepend(child) {
+    if (child.parentElement) child.remove();
+    child.parentElement = this;
+    this.children.unshift(child);
   }
-  querySelectorAll(sel) {
-    const results = [];
-    const walk = (node) => {
-      for (const ch of node.children) {
-        if (ch.matches && ch.matches(sel)) results.push(ch);
-        walk(ch);
-      }
-    };
-    walk(this);
-    return results;
+  remove() {
+    if (!this.parentElement) return;
+    const siblings = this.parentElement.children;
+    const index = siblings.indexOf(this);
+    if (index >= 0) siblings.splice(index, 1);
+    this.parentElement = null;
   }
-  matches(sel) {
-    if (sel.startsWith('.')) return this.classList.contains(sel.slice(1));
-    if (sel.startsWith('#')) return this.attributes.id === sel.slice(1);
-    if (sel.includes('[data-category=')) {
-      const m = sel.match(/\[data-category="([^"]+)"\]/);
-      if (m) return this.dataset.category === m[1];
+
+  addEventListener(type, handler) {
+    if (!this._listeners.has(type)) this._listeners.set(type, new Set());
+    this._listeners.get(type).add(handler);
+  }
+  removeEventListener(type, handler) { this._listeners.get(type)?.delete(handler); }
+  async dispatchEvent(event) {
+    event.target ||= this;
+    event.currentTarget = this;
+    const handlers = Array.from(this._listeners.get(event.type) || []);
+    for (const handler of handlers) await handler.call(this, event);
+  }
+  async click() { await this.dispatchEvent({ type: 'click', preventDefault() {}, stopPropagation() {} }); }
+  focus() { this.ownerDocument.activeElement = this; }
+  select() {}
+
+  matches(selector) { return matchesSelector(this, selector); }
+  querySelector(selector) { return queryAll(this, selector)[0] || null; }
+  querySelectorAll(selector) { return queryAll(this, selector); }
+  closest(selector) {
+    let node = this;
+    while (node) {
+      if (matchesSelector(node, selector)) return node;
+      node = node.parentElement;
     }
-    if (sel.includes('[data-token-id=')) {
-      const m = sel.match(/\[data-token-id="([^"]+)"\]/);
-      if (m) return this.dataset.tokenId === m[1];
-    }
-    return false;
+    return null;
   }
-  addEventListener() {}
-  removeEventListener() {}
 }
 
-const elements = {};
-function getOrCreateElement(id) {
-  if (!elements[id]) {
-    elements[id] = new Element('div');
-    elements[id].setAttribute('id', id);
+function parseSimpleSelector(selector) {
+  let rest = selector.trim();
+  const parsed = { id: null, classes: [], attrs: [], checked: false };
+  if (rest.endsWith(':checked')) {
+    parsed.checked = true;
+    rest = rest.slice(0, -8);
   }
-  return elements[id];
+  const id = rest.match(/#([\w-]+)/);
+  if (id) parsed.id = id[1];
+  parsed.classes = Array.from(rest.matchAll(/\.([\w-]+)/g), match => match[1]);
+  parsed.attrs = Array.from(rest.matchAll(/\[([\w-]+)(?:="([^"]*)")?\]/g), match => [match[1], match[2]]);
+  return parsed;
 }
 
-global.document = {
-  getElementById: (id) => getOrCreateElement(id),
-  querySelector: (sel) => {
-    if (sel === '[data-settings-panel="integrations"]') return getOrCreateElement('integrations-panel');
-    if (sel && sel.startsWith('#')) return getOrCreateElement(sel.slice(1));
-    return new Element('div');
-  },
-  querySelectorAll: () => [],
-  createElement: (tag) => new Element(tag),
-};
+function matchesSelector(element, selector) {
+  const parsed = parseSimpleSelector(selector);
+  if (parsed.id && element.id !== parsed.id) return false;
+  if (parsed.classes.some(name => !element.classList.contains(name))) return false;
+  for (const [key, expected] of parsed.attrs) {
+    const actual = element.getAttribute(key);
+    if (actual === null) return false;
+    if (expected !== undefined && actual !== expected) return false;
+  }
+  if (parsed.checked && !element.checked) return false;
+  return true;
+}
 
-global.window = {
-  location: { origin: 'http://localhost:7000' },
-  addEventListener: () => {},
-};
-global.localStorage = { getItem: () => null, setItem: () => {} };
-global.fetch = async () => ({ ok: true, json: async () => [] });
-global.esc = (s) => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+function descendants(root) {
+  const out = [];
+  const visit = node => {
+    for (const child of node.children || []) {
+      out.push(child);
+      visit(child);
+    }
+  };
+  visit(root);
+  return out;
+}
 
-const settingsSrc = fs.readFileSync(path.join(__dirname, '../../static/js/settings.js'), 'utf8');
+function queryAll(root, selector) {
+  const parts = selector.trim().split(/\s+/);
+  const candidates = descendants(root);
+  if (parts.length === 1) return candidates.filter(node => matchesSelector(node, parts[0]));
 
-// Run tests
-(function runTests() {
+  const last = parts.pop();
+  return candidates.filter(node => {
+    if (!matchesSelector(node, last)) return false;
+    let ancestor = node.parentElement;
+    for (let i = parts.length - 1; i >= 0; i -= 1) {
+      while (ancestor && !matchesSelector(ancestor, parts[i])) ancestor = ancestor.parentElement;
+      if (!ancestor) return false;
+      ancestor = ancestor.parentElement;
+    }
+    return true;
+  });
+}
+
+class DocumentShim {
+  constructor() {
+    this.unsafeInnerHtmlAssignments = 0;
+    this.listeners = new Map();
+    this.readyState = 'loading';
+    this.head = new Element('head', this);
+    this.body = new Element('body', this);
+    this.activeElement = this.body;
+  }
+  createElement(tag) { return new Element(tag, this); }
+  getElementById(id) {
+    return [this.head, this.body, ...descendants(this.head), ...descendants(this.body)]
+      .find(node => node.id === id) || null;
+  }
+  querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
+  querySelectorAll(selector) {
+    const matches = [];
+    for (const root of [this.head, this.body]) {
+      if (matchesSelector(root, selector)) matches.push(root);
+      matches.push(...queryAll(root, selector));
+    }
+    return matches;
+  }
+  addEventListener(type, handler) {
+    if (!this.listeners.has(type)) this.listeners.set(type, new Set());
+    this.listeners.get(type).add(handler);
+  }
+  removeEventListener(type, handler) { this.listeners.get(type)?.delete(handler); }
+  listenerCount(type) { return this.listeners.get(type)?.size || 0; }
+}
+
+function response(data, ok = true) {
+  return { ok, json: async () => data };
+}
+
+function buildFixture() {
+  const document = new DocumentShim();
+  const settings = document.createElement('div');
+  settings.id = 'settings-modal';
+  const modal = document.createElement('div');
+  modal.className = 'modal-content';
+  settings.appendChild(modal);
+  document.body.appendChild(settings);
+
+  const panel = document.createElement('section');
+  panel.setAttribute('data-settings-panel', 'integrations');
+  modal.appendChild(panel);
+
+  const host = document.createElement('div');
+  panel.appendChild(host);
+  const tabs = document.createElement('div');
+  tabs.id = 'intg-category-tabs';
+  host.appendChild(tabs);
+  const agentsTab = document.createElement('button');
+  agentsTab.className = 'intg-cat-btn active';
+  agentsTab.setAttribute('data-cat', 'agents');
+  tabs.appendChild(agentsTab);
+
+  const list = document.createElement('div');
+  list.id = 'unified-integrations-list';
+  host.appendChild(list);
+
+  return { document, modal, panel, list };
+}
+
+async function run() {
+  const { document, modal, panel, list } = buildFixture();
+  const sourcePath = path.join(__dirname, '../../static/js/integrationCategoryActions.js');
+  const source = fs.readFileSync(sourcePath, 'utf8');
+
+  let tokens = [];
+  const context = {
+    console,
+    document,
+    window: {
+      location: { origin: 'http://localhost:7000' },
+      isSecureContext: false,
+      confirm: () => true,
+    },
+    navigator: { clipboard: null },
+    fetch: async (url) => {
+      if (url === '/api/tokens') return response(tokens);
+      return response({});
+    },
+    getComputedStyle: () => ({ position: 'static' }),
+    requestAnimationFrame: fn => fn(),
+    queueMicrotask,
+    FormData: class { append() {} },
+    MutationObserver: class { observe() {} disconnect() {} },
+  };
+  vm.createContext(context);
+  vm.runInContext(source, context, { filename: sourcePath });
+
   const results = [];
+  const check = (test, pass, detail = '') => results.push({ test, pass: Boolean(pass), detail });
 
-  // Mock Tokens
-  const mockTokens = [
-    { id: 'tok_agy1', name: 'Workstation 1', agent_provider: 'agy', scopes: ['chat', 'email:read'], token_prefix: 'ody_agy1' },
-    { id: 'tok_agy2', name: 'Workstation 2', agent_provider: 'agy', scopes: ['chat', 'documents:read'], token_prefix: 'ody_agy2' },
-    { id: 'tok_cdx1', name: 'Codex Dev', agent_provider: 'codex', scopes: ['chat'], token_prefix: 'ody_cdx1' },
-    { id: 'tok_cdx2', name: 'Codex CI', agent_provider: 'codex', scopes: ['chat', 'cookbook:launch'], token_prefix: 'ody_cdx2' },
-    { id: 'tok_api1', name: 'Raw API Service', agent_provider: null, scopes: ['chat'], token_prefix: 'ody_api1' },
-    { id: 'tok_xss',  name: '<script>alert("xss")</script>', agent_provider: 'agy', scopes: ['chat'], token_prefix: 'ody_xss' },
-    { id: 'tok_dup1', name: 'SameName', agent_provider: 'agy', scopes: ['chat'], token_prefix: 'ody_d1' },
-    { id: 'tok_dup2', name: 'SameName', agent_provider: 'agy', scopes: ['chat'], token_prefix: 'ody_d2' },
+  check(
+    'Integrations layout expands while panel is active',
+    context.syncIntegrationsLayout() === true && modal.classList.contains('settings-integrations-expanded'),
+  );
+  panel.classList.add('hidden');
+  check(
+    'Integrations layout restores outside panel',
+    context.syncIntegrationsLayout() === false && !modal.classList.contains('settings-integrations-expanded'),
+  );
+  panel.classList.remove('hidden');
+
+  tokens = [
+    { id: 'custom-a', name: 'Same name', agent_provider: 'custom', scopes: ['chat', 'email:read'], token_prefix: 'ody_a' },
+    { id: 'custom-b', name: 'Same name', agent_provider: 'custom', scopes: ['chat', 'documents:write'], token_prefix: 'ody_b' },
+    { id: 'codex-a', name: 'Looks custom', agent_provider: 'codex', scopes: ['chat', 'documents:write'], token_prefix: 'ody_c' },
+    { id: 'api-a', name: '<script>alert(1)</script>', agent_provider: null, scopes: ['chat', 'documents:write'], token_prefix: 'ody_d' },
   ];
+  await context.renderCustomAgents(list);
+  const rows = list.querySelectorAll('.custom-agent-row');
+  check('Custom-agent rendering uses explicit provider identity', rows.length === 2, `rendered=${rows.length}`);
+  check('Duplicate display names remain separate connections', rows.length === 2 && rows[0] !== rows[1]);
+  check('Renderer does not assign untrusted names through innerHTML', document.unsafeInnerHtmlAssignments === 0);
 
-  // 1. Overview -> Agents Category Switching
-  let currentCat = 'overview';
-  currentCat = 'agents';
-  results.push({ test: 'Category Switch Overview to Agents', pass: currentCat === 'agents' });
+  await rows[1].click();
+  const scopeControls = document.querySelectorAll('.custom-agent-scope');
+  const docsWrite = scopeControls.find(control => control.dataset.scope === 'documents:write');
+  const emailRead = scopeControls.find(control => control.dataset.scope === 'email:read');
+  check('Duplicate-name edit resolves stable token ID', docsWrite?.checked === true && emailRead?.checked === false);
+  context.closeCustomAgentModal();
 
-  // 2. Multiple AGY CLI connections render separately
-  const agyTokens = mockTokens.filter(t => t.agent_provider === 'agy');
-  results.push({ test: 'Multiple AGY CLI connections count', pass: agyTokens.length === 5 });
+  context.modalShell('Test', 'First');
+  check('Custom-agent modal installs one Escape listener', document.listenerCount('keydown') === 1, `listeners=${document.listenerCount('keydown')}`);
+  context.closeCustomAgentModal();
+  check('Custom-agent modal removes Escape listener on close', document.listenerCount('keydown') === 0, `listeners=${document.listenerCount('keydown')}`);
+  context.modalShell('Test', 'Second');
+  context.closeCustomAgentModal();
+  check('Repeated modal cycles do not accumulate listeners', document.listenerCount('keydown') === 0, `listeners=${document.listenerCount('keydown')}`);
 
-  // 3. Multiple Codex CLI connections render separately
-  const codexTokens = mockTokens.filter(t => t.agent_provider === 'codex');
-  results.push({ test: 'Multiple Codex CLI connections count', pass: codexTokens.length === 2 });
+  const actionHost = document.createElement('div');
+  const action = document.createElement('button');
+  action.className = 'intg-cat-add-btn';
+  actionHost.appendChild(action);
+  const actionList = document.createElement('div');
+  actionList.appendChild(actionHost);
+  context.normalizeCategoryAction(actionList, 'calendar');
+  check('Category action receives contextual label', action.textContent === 'Add Calendar');
 
-  // 4. Empty Claude Code state
-  const claudeTokens = mockTokens.filter(t => t.agent_provider === 'claude');
-  results.push({ test: 'Empty Claude Code state', pass: claudeTokens.length === 0 });
+  process.stdout.write(JSON.stringify(results));
+}
 
-  // 5. Token Identity using Token ID (not display name)
-  const dup1 = mockTokens.find(t => t.id === 'tok_dup1');
-  const dup2 = mockTokens.find(t => t.id === 'tok_dup2');
-  const tokenIdentityPass = dup1.id !== dup2.id && dup1.name === dup2.name;
-  results.push({ test: 'Token identity relies on ID not Name', pass: tokenIdentityPass });
-
-  // 6. User-controlled names escaped safely
-  const xssToken = mockTokens.find(t => t.id === 'tok_xss');
-  const escapedName = global.esc(xssToken.name);
-  const xssPass = !escapedName.includes('<script>') && escapedName.includes('&lt;script&gt;');
-  results.push({ test: 'XSS name safely escaped', pass: xssPass });
-
-  // 7. Unrelated API token not misclassified as CLI Agent
-  const apiToken = mockTokens.find(t => t.id === 'tok_api1');
-  const apiNotAgent = apiToken.agent_provider !== 'agy' && apiToken.agent_provider !== 'codex' && apiToken.agent_provider !== 'claude';
-  results.push({ test: 'Unrelated API token not classified as CLI agent', pass: apiNotAgent });
-
-  console.log(JSON.stringify(results));
-})();
+run().catch(error => {
+  console.error(error && error.stack ? error.stack : error);
+  process.exitCode = 1;
+});
