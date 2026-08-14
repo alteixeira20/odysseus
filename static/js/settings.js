@@ -3699,17 +3699,7 @@ async function initUnifiedIntegrations() {
     // CLI Agent Connections (AGY CLI, Codex CLI, Claude Code)
     for (const tok of (Array.isArray(tokenRes) ? tokenRes : [])) {
       const scopes = tok.scopes || [];
-      const lowerName = (tok.name || '').toLowerCase();
-      let agentType = tok.agent_provider || tok.provider || null;
-      if (!agentType || !AGENT_CONFIGS[agentType]) {
-        if (lowerName.startsWith('agy agent') || lowerName === 'agy') agentType = 'agy';
-        else if (lowerName.startsWith('claude')) agentType = 'claude';
-        else if (lowerName.startsWith('codex')) agentType = 'codex';
-        else if (scopes.some(s => String(s || '').startsWith('todos:') || String(s || '').startsWith('email:') || String(s || '').startsWith('documents:') || String(s || '').startsWith('cookbook:'))) {
-          // Legacy / un-prefixed scoped tokens fall back to Codex for backwards compat.
-          agentType = 'codex';
-        }
-      }
+      const agentType = tok.agent_provider || null;
       if (!agentType || !AGENT_CONFIGS[agentType]) continue;
 
       let statusText = 'Configured';

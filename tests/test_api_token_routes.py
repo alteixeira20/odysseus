@@ -621,6 +621,11 @@ def test_create_and_list_token_with_explicit_agent_provider(monkeypatch, token_r
     assert resp_claude["agent_provider"] == "claude"
     assert captured["agent_provider"] == "claude"
 
+    # Custom external CLI connections are explicit agent connections too.
+    resp_custom = create_token(request=req, name="Local CLI", agent_provider="custom")
+    assert resp_custom["agent_provider"] == "custom"
+    assert captured["agent_provider"] == "custom"
+
     # Invalid agent provider should raise 400
     with pytest.raises(HTTPException) as exc_info:
         create_token(request=req, name="Bad Provider", agent_provider="invalid_provider")

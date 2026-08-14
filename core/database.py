@@ -635,12 +635,12 @@ class ApiToken(TimestampMixin, Base):
     """API tokens for external integrations (n8n, Make, etc.).
 
     When ``agent_provider`` is set, this token represents a CLI agent
-    connection (one of ``'agy'``, ``'codex'``, ``'claude'``).  Ordinary
+    connection (one of ``'agy'``, ``'codex'``, ``'claude'``, ``'custom'``).  Ordinary
     API tokens leave this column NULL.
     """
     __tablename__ = "api_tokens"
 
-    ALLOWED_AGENT_PROVIDERS = frozenset({"agy", "codex", "claude"})
+    ALLOWED_AGENT_PROVIDERS = frozenset({"agy", "codex", "claude", "custom"})
 
     id = Column(String, primary_key=True, index=True)
     owner = Column(String, nullable=True, index=True)
@@ -650,7 +650,7 @@ class ApiToken(TimestampMixin, Base):
     scopes = Column(String, nullable=False, default="chat")
     is_active = Column(Boolean, default=True)
     last_used_at = Column(DateTime, nullable=True)
-    agent_provider = Column(String, nullable=True)  # 'agy' | 'codex' | 'claude' | NULL
+    agent_provider = Column(String, nullable=True)  # 'agy' | 'codex' | 'claude' | 'custom' | NULL
 
 
 class Webhook(TimestampMixin, Base):

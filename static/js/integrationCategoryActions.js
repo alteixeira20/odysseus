@@ -248,12 +248,17 @@ function ensureStyles() {
   document.head.appendChild(style);
 }
 
-function expandIntegrationsLayout() {
+function syncIntegrationsLayout() {
   ensureStyles();
   const tabs = document.getElementById('intg-category-tabs');
+  const panel = tabs?.closest('[data-settings-panel="integrations"]');
   const modal = tabs?.closest('.modal-content') || document.querySelector('#settings-modal .modal-content');
-  if (!modal) return;
-  modal.classList.add('settings-integrations-expanded');
+  if (!modal) return false;
+
+  const active = !!panel && !panel.classList.contains('hidden');
+  modal.classList.toggle('settings-integrations-expanded', active);
+  if (!active) return false;
+
   if (getComputedStyle(modal).position === 'static') modal.style.position = 'relative';
 
   const host = tabs?.parentElement;
@@ -262,6 +267,11 @@ function expandIntegrationsLayout() {
     host.style.maxWidth = 'none';
     host.style.boxSizing = 'border-box';
   }
+  return true;
+}
+
+function expandIntegrationsLayout() {
+  syncIntegrationsLayout();
 }
 
 function stripOverviewAggregate(list) {
@@ -341,9 +351,15 @@ function refreshAgents() {
   document.querySelector('#intg-category-tabs [data-cat="agents"]')?.click();
 }
 
+let _customAgentModalCleanup = null;
+
 function closeCustomAgentModal() {
   const layer = document.querySelector('.custom-agent-modal-layer');
   if (layer) layer.remove();
+
+  const cleanup = _customAgentModalCleanup;
+  _customAgentModalCleanup = null;
+  if (cleanup) cleanup();
 }
 
 function modalShell(titleText, subtitleText) {
@@ -392,12 +408,22 @@ function modalShell(titleText, subtitleText) {
   layer.appendChild(modal);
   settingsModal.appendChild(layer);
 
+  const opener = document.activeElement;
   const esc = event => {
     if (event.key !== 'Escape' || !layer.isConnected) return;
+    event.preventDefault();
+    event.stopPropagation();
     closeCustomAgentModal();
-    document.removeEventListener('keydown', esc, true);
   };
+
   document.addEventListener('keydown', esc, true);
+  _customAgentModalCleanup = () => {
+    document.removeEventListener('keydown', esc, true);
+    if (opener && opener.isConnected && typeof opener.focus === 'function') {
+      try { opener.focus(); } catch (_) {}
+    }
+  };
+
   return modal;
 }
 
@@ -674,6 +700,23 @@ function init() {
 
   new MutationObserver(schedule).observe(list, { childList: true });
   document.querySelectorAll('#intg-category-tabs .intg-cat-btn').forEach(btn => btn.addEventListener('click', schedule));
+
+  const integrationPanel = document.querySelector('[data-settings-panel="integrations"]');
+  if (integrationPanel) {
+    new MutationObserver(() => {
+      syncIntegrationsLayout();
+      if (!integrationPanel.classList.contains('hidden')) schedule();
+    }).observe(integrationPanel, {
+      attributes: true,
+      attributeFilter: ['class', 'style'],
+    });
+  }
+
+  document.querySelectorAll('[data-settings-tab]').forEach(btn => {
+    btn.addEventListener('click', () => queueMicrotask(syncIntegrationsLayout));
+  });
+
+  syncIntegrationsLayout();
   schedule();
 }
 
