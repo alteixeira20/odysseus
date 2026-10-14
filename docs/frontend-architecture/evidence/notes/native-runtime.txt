@@ -1,3 +1,0 @@
-{"native":true,"mobile":false,"noteId":"3b3f3fe0-da95-44e6-b31f-68c7211fa7d2","crud":true,"selectedContext":true}
-{"native":true,"mobile":true,"noteId":"112e0673-2f6e-454f-b61f-b2455d9ac08b","crud":true,"selectedContext":true}
-PASS: original Notes release smoke test against the disposable authenticated instance

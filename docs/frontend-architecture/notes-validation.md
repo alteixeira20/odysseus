@@ -5,8 +5,7 @@ non-destructive fast-forward to latest official `upstream/dev` at
 `86b886c611338282af6d4a717246ea4e256f58df` (incorporating PRs #6704 and #6693).
 Independent AGY audit returned CONDITIONAL PASS. Pre-publication corrective
 pass verified issue template, PR template, visual evidence paths, and em-dash removal.
-The official integration branch is `dev`; no commit, push, issue or PR publication
-was performed. Publication waits for maintainer authorization.
+The official integration branch is `dev`. Tracking issue #6712; PR #6713.
 
 ## Final executed evidence
 
@@ -29,15 +28,11 @@ The foundation-based full repository result is not green. Its failures reproduce
 the unchanged foundation in a disposable archive, with the same interpreter and
 closed Chroma port. None was disabled, relabeled or fixed in this Notes change.
 The focused Notes suite and required source/deployment gates are green. The final
-code/test overlay is fingerprinted in [implementation.sha256](evidence/notes/implementation.sha256)
-and the N6 archive. The only post-full-suite test-source edit removes a terminal
+code/test overlay is fingerprinted in [implementation.sha256](evidence/notes/implementation.sha256).
+The only post-full-suite test-source edit removes a terminal
 blank line from the browser wrapper; its content was compared ignoring terminal
-whitespace and all three focused contract/browser checks passed again. Copied text
-transcripts have trailing whitespace normalized for publication; original command
-outputs remain in the local validation directory.
-Final focused logs: [Node](evidence/notes/node-tests.txt),
-[Notes/F1 Python](evidence/notes/notes-pytest.txt),
-[native app and original smoke](evidence/notes/native-runtime.txt).
+whitespace and all three focused contract/browser checks passed again. Raw command
+outputs are kept out of the repository; the counts above are the record.
 
 The first full run reported 19 failures. Six were introduced validation issues:
 the SW cache name did not follow the existing numeric convention; a temporary
@@ -65,9 +60,7 @@ in those affected files passed after correction. The foundation-based full run h
 - `tests/test_readiness.py::test_tool_index_is_reported_but_not_critical_by_default`
 
 These cover existing compaction fixtures/source assertions, namespace containment,
-settings-row CSS baseline drift and readiness expectations. Their detailed traces
-are retained in the [baseline log](evidence/notes/baseline-failures.txt) and
-[full-suite log](evidence/notes/full-pytest.txt). The baseline reproduction used
+settings-row CSS baseline drift and readiness expectations. The baseline reproduction used
 `git archive` into `/tmp/odysseus-notes-baseline-OitxsU`, not another branch/worktree.
 
 ## Reproducible commands
@@ -87,7 +80,7 @@ skips. Both affected files subsequently passed all 19 tests with metadata presen
 the complete suite was then rerun in that indexed fixture.
 An untouched archive at `/tmp/odysseus-notes-latest-baseline-mfE4ss` reproduced
 the remaining two containment failures and the readiness failure: three failed,
-87 passed. See [latest baseline evidence](evidence/notes/latest-baseline-failures.txt).
+87 passed.
 
 These are reproduced local-environment failures, not a claim that official CI is
 currently failing. The readiness assertion expects prewarming enabled, whereas
@@ -99,20 +92,19 @@ no backend containment code was changed or a failing assertion weakened.
 Reproduce those two checks on the supported CI runner before claiming a green
 full-suite certification.
 
-The final indexed full-suite receipt is [latest-overlay-pytest.txt](evidence/notes/latest-overlay-pytest.txt).
-Its only failures are `test_namespace_handshake_closes_model_stdin`,
+In the final indexed full-suite run the only failures are `test_namespace_handshake_closes_model_stdin`,
 `test_execution_environment_cannot_replace_probed_bwrap[False]`, and
 `test_tool_index_is_reported_but_not_critical_by_default`. The missing-Git-metadata
 publication failure and the seven checkout-only skips are absent from this run.
-No Notes regression was reported. Feature code matches N6 exactly; the cosmetic
-test-wrapper normalization and its focused recheck are recorded above.
+No Notes regression was reported. Feature code matched N6 at publication. Later
+commits on the PR changed `ui/reminderPicker.js` (date input value assigned through
+the DOM property) and, after review, `index.js`, `ui/layout.js` and
+`application/state.js`; `implementation.sha256` covers the current files.
 
 To reproduce the integration rehearsal, extract the latest target with `git archive`
 into a fresh fixture and copy only files in the changed-file inventory on top.
 Do not overlay foundation files that are unchanged in this PR. Install the locked
 development dependencies in the fixture, then run the commands below there.
-Checkpoint snapshots reconstruct the foundation-based stages; do not use their
-broader historical overlays as a substitute for this latest-target rehearsal.
 
 While this review diff is uncommitted, this prepares an equivalent Linux fixture
 without changing either task worktree:
@@ -154,23 +146,23 @@ ENDPOINT_URL=http://127.0.0.1:1 node --test \
   tests/notesReminders.test.mjs tests/notesWorkflows.test.mjs
 
 CHROMADB_HOST=127.0.0.1 CHROMADB_PORT=1 \
-  /home/alteixeira20/.venvs/odysseus-pr-6495/bin/python -m pytest -q -rs \
+  python -m pytest -q -rs \
   $(rg --files tests -g 'test_*note*.py') \
   tests/test_frontend_build.py tests/test_frontend_foundation_offline_js.py \
   tests/test_frontend_module_graph.py tests/test_frontend_module_version_parity.py \
   tests/test_panel_loader_js.py
 
-/home/alteixeira20/.venvs/odysseus-pr-6495/bin/python scripts/verify_frontend_runtime.py
-/home/alteixeira20/.venvs/odysseus-pr-6495/bin/python scripts/verify_notes_browser_runtime.py
+python scripts/verify_frontend_runtime.py
+python scripts/verify_notes_browser_runtime.py
 
 docker run --rm --network none \
-  --mount type=bind,src=/home/alteixeira20/Projects/Odysseus/worktrees/architecture/notes-reference,dst=/candidate,readonly \
+  --mount type=bind,src="$PWD",dst=/candidate,readonly \
   --workdir /candidate --entrypoint python \
-  odysseus-maintainer-preview-odysseus:latest scripts/verify_frontend_runtime.py
+  <existing-odysseus-image> scripts/verify_frontend_runtime.py
 
 CHROMADB_HOST=127.0.0.1 CHROMADB_PORT=1 \
   ODYSSEUS_STARTUP_WARMUPS=0 ODYSSEUS_TOOL_INDEX_PREWARM=0 \
-  /home/alteixeira20/.venvs/odysseus-pr-6495/bin/python -m pytest -q -rfs
+  python -m pytest -q -rfs
 
 git diff --check
 ```
@@ -221,11 +213,10 @@ Keep explicit warmup/storage isolation on the disposable live-app probes.
 
 ## Internal checkpoints
 
-Snapshots are included under [evidence/notes/checkpoints/](evidence/notes/checkpoints/).
-Verify them against [checkpoints.sha256](evidence/notes/checkpoints.sha256). They contain scoped
-source/output/facade/manifest/test overlays, not secrets or user data. Each starts
-from the same frozen baseline. Keep these artifacts with the maintainer handoff;
-they are not separate PRs or release candidates.
+Checkpoint snapshots are kept with the maintainer handoff, not in the repository.
+The hashes below identify them. They contain scoped source/output/facade/manifest/test
+overlays, not secrets or user data. Each starts from the same frozen baseline; they
+are not separate PRs or release candidates.
 
 | Stage | Boundary and executed exit evidence | Snapshot SHA-256 |
 | --- | --- | --- |
@@ -235,19 +226,16 @@ they are not separate PRs or release candidates.
 | N3 | Single state owner and CRUD/undo boundary; ten Node and seven focused Python passes; read-only state and archive rollback | `4bc5293519b8438d0126a61887bea64195dcdb7d59bcfaaba8ed4ae8c38be439` |
 | N4 | Page-owned reminder workflow; four reminder contract tests and seven focused Python passes; singleton interval, catch-up, markers and fallback | `febb835c4958c8758e4b7c23ce89f3ec8d103c2cc28f89817d258b3791a9fcdf` |
 | N5 | Complete UI/application integration; 44 Node passes, targeted source guards and actual browser checks; drawing binding correction, read-only state and disposal | `e147f645bdb2161a4b1dc6cf10c36ba6d0c214d8e12fccb478835043eaaf3e94` |
-| N6 | Final facade, identity, exact offline graph, native/Docker checks, final editor-deletion/reorder ownership review, touch cleanup regression checks and maintainer review package | Final handoff snapshot/hash recorded in `evidence/notes/checkpoints.sha256` |
+| N6 | Final facade, identity, exact offline graph, native/Docker checks, final editor-deletion/reorder ownership review, touch cleanup regression checks and maintainer review package | `c450e91f9fbfe5f0cd805e596b92a76383f22a74e9515ca3e3f6154aebf5f61f` |
 
-N6 SHA-256: `c450e91f9fbfe5f0cd805e596b92a76383f22a74e9515ca3e3f6154aebf5f61f`.
-Its 112-file overlay contains the final code, tests, manifest and attributes, not
-the evidence directory itself. Documentation/receipt edits made after freezing
-that overlay do not change its implementation fingerprint. From the repository
-root, run `sha256sum -c docs/frontend-architecture/evidence/notes/implementation.sha256`.
-From `docs/frontend-architecture/evidence/notes/`, run
-`sha256sum -c checkpoints.sha256` before extracting a snapshot.
+The N6 overlay contained the final code, tests, manifest and attributes at
+publication, not the evidence directory itself. From the repository root, run
+`sha256sum -c docs/frontend-architecture/evidence/notes/implementation.sha256`
+to verify the current implementation files.
 
-No checkpoint commits were made. To reproduce an overlay without altering this
-worktree, create a fresh temporary directory, extract `git archive 1cc56cb9...`
-there, then extract the desired `N<n>.tgz` on top. Install the locked test dependencies
+No checkpoint commits were made. To reproduce an overlay, create a fresh temporary
+directory, extract `git archive 1cc56cb9...` there, then extract the desired
+snapshot from the handoff on top. Install the locked test dependencies
 in that fixture and run its relevant commands. Begin from the baseline rather than
 overlaying snapshots onto a later dirty tree. For live rollback, release a complete
 matching artifact through the authorized release workflow.
@@ -270,5 +258,4 @@ The following remained open at the read-only GitHub refresh:
 Their changes were not merged or reimplemented. Shared UI exceptions, root-SW scope,
 the original last-completion fetch race, temporary-note correlation and canvas-draft
 limits are documented in the case study. Backend owner checks and PR #6495 contracts
-remain authoritative. A dedicated issue must be created/linked before the single
-Notes PR is published. Its draft is included; publication waits for explicit approval.
+remain authoritative.

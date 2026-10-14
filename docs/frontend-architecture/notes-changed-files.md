@@ -1,12 +1,9 @@
 # Notes complete changed-file inventory
 
-Uncommitted review diff on `refactor/notes-reference-decomposition` from
-latest official `upstream/dev` at `86b886c611338282af6d4a717246ea4e256f58df`
-(incorporating PRs #6704 and #6693).
-139 files: 16 modified and 123 added. M and A denote
-working-tree status, not staged changes. No files are deleted. Deployment copies
-are byte-identical to their registered maintained sources. Archive and image files
-are review evidence, not production dependencies.
+Changed files in PR #6713 (`refactor/notes-reference-decomposition`) against
+`dev`. 121 files: 16 modified and 105 added. No files are deleted. Deployment copies
+are byte-identical to their registered maintained sources. Image files are review
+evidence, not production dependencies.
 
 The unchanged foundation worktree, backend, app bootstrap, HTML, CSS, dependency
 lockfiles, Dockerfile and CI workflow are outside this diff. The only Compare
@@ -149,35 +146,17 @@ change delegates its existing stateless confetti export to maintained shared UI.
 | M | [scripts/verify_frontend_runtime.py](../../scripts/verify_frontend_runtime.py) |
 | A | [scripts/verify_notes_browser_runtime.py](../../scripts/verify_notes_browser_runtime.py) |
 
-## Documentation and execution receipts (27)
+## Documentation and execution receipts (9)
 
 | Status | File |
 | --- | --- |
-| A | [docs/frontend-architecture/evidence/notes/baseline-failures.txt](../../docs/frontend-architecture/evidence/notes/baseline-failures.txt) |
-| A | [docs/frontend-architecture/evidence/notes/checkpoints.sha256](../../docs/frontend-architecture/evidence/notes/checkpoints.sha256) |
-| A | [docs/frontend-architecture/evidence/notes/checkpoints/N0.tgz](../../docs/frontend-architecture/evidence/notes/checkpoints/N0.tgz) |
-| A | [docs/frontend-architecture/evidence/notes/checkpoints/N1.tgz](../../docs/frontend-architecture/evidence/notes/checkpoints/N1.tgz) |
-| A | [docs/frontend-architecture/evidence/notes/checkpoints/N2.tgz](../../docs/frontend-architecture/evidence/notes/checkpoints/N2.tgz) |
-| A | [docs/frontend-architecture/evidence/notes/checkpoints/N3.tgz](../../docs/frontend-architecture/evidence/notes/checkpoints/N3.tgz) |
-| A | [docs/frontend-architecture/evidence/notes/checkpoints/N4.tgz](../../docs/frontend-architecture/evidence/notes/checkpoints/N4.tgz) |
-| A | [docs/frontend-architecture/evidence/notes/checkpoints/N5.tgz](../../docs/frontend-architecture/evidence/notes/checkpoints/N5.tgz) |
-| A | [docs/frontend-architecture/evidence/notes/checkpoints/N6.tgz](../../docs/frontend-architecture/evidence/notes/checkpoints/N6.tgz) |
-| A | [docs/frontend-architecture/evidence/notes/full-pytest.txt](../../docs/frontend-architecture/evidence/notes/full-pytest.txt) |
 | A | [docs/frontend-architecture/evidence/notes/implementation.sha256](../../docs/frontend-architecture/evidence/notes/implementation.sha256) |
-| A | [docs/frontend-architecture/evidence/notes/latest-baseline-failures.txt](../../docs/frontend-architecture/evidence/notes/latest-baseline-failures.txt) |
-| A | [docs/frontend-architecture/evidence/notes/latest-overlay-pytest.txt](../../docs/frontend-architecture/evidence/notes/latest-overlay-pytest.txt) |
 | A | [docs/frontend-architecture/evidence/notes/native-desktop.png](../../docs/frontend-architecture/evidence/notes/native-desktop.png) |
 | A | [docs/frontend-architecture/evidence/notes/native-mobile.png](../../docs/frontend-architecture/evidence/notes/native-mobile.png) |
-| A | [docs/frontend-architecture/evidence/notes/native-runtime.txt](../../docs/frontend-architecture/evidence/notes/native-runtime.txt) |
-| A | [docs/frontend-architecture/evidence/notes/node-tests-initial.txt](../../docs/frontend-architecture/evidence/notes/node-tests-initial.txt) |
-| A | [docs/frontend-architecture/evidence/notes/node-tests.txt](../../docs/frontend-architecture/evidence/notes/node-tests.txt) |
-| A | [docs/frontend-architecture/evidence/notes/notes-pytest.txt](../../docs/frontend-architecture/evidence/notes/notes-pytest.txt) |
 | M | [docs/frontend-architecture/handbook.md](../../docs/frontend-architecture/handbook.md) |
 | A | [docs/frontend-architecture/notes-case-study.md](../../docs/frontend-architecture/notes-case-study.md) |
 | A | [docs/frontend-architecture/notes-changed-files.md](../../docs/frontend-architecture/notes-changed-files.md) |
-| A | [docs/frontend-architecture/notes-issue.md](../../docs/frontend-architecture/notes-issue.md) |
 | A | [docs/frontend-architecture/notes-module-inventory.md](../../docs/frontend-architecture/notes-module-inventory.md) |
-| A | [docs/frontend-architecture/notes-pr.md](../../docs/frontend-architecture/notes-pr.md) |
 | M | [docs/frontend-architecture/notes-roadmap.md](../../docs/frontend-architecture/notes-roadmap.md) |
 | A | [docs/frontend-architecture/notes-validation.md](../../docs/frontend-architecture/notes-validation.md) |
 

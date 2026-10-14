@@ -8,12 +8,11 @@ non-destructive fast-forward to latest official `upstream/dev` at
 Neither changed a file in the Notes diff. The independent AGY audit returned
 CONDITIONAL PASS; all pre-publication corrective actions (issue template conformance,
 PR template conformance, visual evidence paths, and em-dash removal) have been completed.
-Publication and the post-integration maintainer handoff remain pending.
 
 The entire implementation belongs to one Notes PR. N0 through N6 are internal
 checkpoints, not separate branches, commits or PRs. The [validation receipts](notes-validation.md),
-[module inventory](notes-module-inventory.md), [changed-file inventory](notes-changed-files.md),
-[PR draft](notes-pr.md) and [dedicated issue draft](notes-issue.md) accompany this case study.
+[module inventory](notes-module-inventory.md) and [changed-file inventory](notes-changed-files.md)
+accompany this case study.
 
 ## Responsibility map and size
 
