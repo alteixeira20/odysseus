@@ -1,7 +1,8 @@
-from tests.helpers.notes_source import notes_source
 """Regression guards for Notes DOM rendering helpers."""
 
 from pathlib import Path
+
+from tests.helpers.notes_source import notes_source
 
 
 _REPO = Path(__file__).resolve().parent.parent

@@ -11,6 +11,17 @@ export function createNotesState(initial = {}) {
     // giving a view a writable reference to the application store.
     const views = new WeakMap(), targets = new WeakMap();
     const unwrap = value => targets.get(value) || value;
+    // Copies built from views (spread, filter, map) still hold nested views;
+    // store only raw data so the owner never keeps its own read-only views.
+    function unwrapDeep(value, seen = new WeakSet()) {
+      if (!value || typeof value !== 'object') return value;
+      if (targets.has(value)) return targets.get(value);
+      if (seen.has(value)) return value;
+      seen.add(value);
+      if (Array.isArray(value)) value.forEach((item, index) => { value[index] = unwrapDeep(item, seen); });
+      else if (Object.getPrototypeOf(value) === Object.prototype) for (const key of Object.keys(value)) value[key] = unwrapDeep(value[key], seen);
+      return value;
+    }
     function readonly(value) {
       if (!value || typeof value !== 'object') return value;
       if (targets.has(value)) return value;
@@ -59,12 +70,12 @@ export function createNotesState(initial = {}) {
       setFiredDotDismissedAt: value => { values.firedDotDismissedAt = value; },
       replaceNotes: notes => { values.notes = notes; },
       removeNoteAt: index => readonly(values.notes.splice(index, 1)[0]),
-      insertNoteAt: (index, note) => { values.notes.splice(index, 0, unwrap(note)); },
-      prependNote: note => { values.notes.unshift(note); },
-      replaceNoteAt: (index, note) => { values.notes[index] = note; },
-      mergeNote: (note, patch) => { for (const [key, value] of Object.entries(patch)) unwrap(note)[key] = unwrap(value); },
-      updateItem: (note, index, patch) => { Object.assign(unwrap(unwrap(note).items[index]), patch); },
-      spliceItems: (note, ...args) => unwrap(unwrap(note).items).splice(...args.map(unwrap)),
+      insertNoteAt: (index, note) => { values.notes.splice(index, 0, unwrapDeep(note)); },
+      prependNote: note => { values.notes.unshift(unwrapDeep(note)); },
+      replaceNoteAt: (index, note) => { values.notes[index] = unwrapDeep(note); },
+      mergeNote: (note, patch) => { for (const [key, value] of Object.entries(patch)) unwrap(note)[key] = unwrapDeep(value); },
+      updateItem: (note, index, patch) => { Object.assign(unwrap(unwrap(note).items[index]), unwrapDeep({ ...patch })); },
+      spliceItems: (note, ...args) => unwrap(unwrap(note).items).splice(...args.map(arg => unwrapDeep(arg))),
       selectId: id => { values.selectedIds.add(id); },
       deselectId: id => values.selectedIds.delete(id),
       clearSelection: () => values.selectedIds.clear(),

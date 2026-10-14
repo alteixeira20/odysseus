@@ -1,3 +1,4 @@
+/** Notes composition and intentional public API. The legacy entry activates compatibility startup. */
 import { createSelectionOperations } from './application/selection.js';
 import { createToolbar } from './ui/toolbar.js';
 import { createWindowLayout } from './ui/windowLayout.js';
@@ -31,18 +32,27 @@ import { createChecklistReorder } from './ui/checklistReorder.js';
 import { createQueries } from './application/queries.js';
 import { createAgentActions } from './application/agentActions.js';
 import { createDeletion } from './application/deletion.js';
-/** Notes composition and intentional public API. The legacy entry activates compatibility startup. */
 import { createNotesReminders } from './application/reminders.js';
 import { createNotesNotifications } from './infrastructure/notifications.js';
 import { createNotesState } from './application/state.js';
 import { createNotesWorkflows } from './application/workflows.js';
 import { createNotesApi } from './infrastructure/http.js';
-import { createNotesPersistence, REMINDER_FIRED_KEY, REMINDER_GLOWED_KEY, REMINDER_PENDING_HIGHLIGHT_KEY, REMINDER_ACTIVE_HIGHLIGHT_KEY, REMINDER_DISMISSED_AT_KEY, NOTES_FIRST_OPEN_HINT_KEY, NOTES_LABELS_COLLAPSED_KEY, _DRAFT_PREFIX } from './infrastructure/storage.js';
+import { createNotesPersistence, REMINDER_DISMISSED_AT_KEY, NOTES_FIRST_OPEN_HINT_KEY, NOTES_LABELS_COLLAPSED_KEY } from './infrastructure/storage.js';
+import * as dates from './domain/recurrence.js';
+import uiModule from '/static/js/ui.js?v=20260916largetoolscroll1';
+import { spawnConfetti } from '/static/js/shared/ui/confetti.js';
+import * as Modals from '/static/js/modalManager.js';
+import { attachColorPicker } from '/static/js/colorPicker.js?v=20260910eyedropper1';
+import { makeWindowDraggable } from '/static/js/windowDrag.js';
+import { snapModalToZone } from '/static/js/tileManager.js?v=20260910responsivebounds1';
+import { applyEdgeDock, clearDockSide } from '/static/js/modalSnap.js';
+import { topToolWindowZ, topPortalZ } from '/static/js/toolWindowZOrder.js';
+import { bindMenuDismiss, dismissOrRemove } from '/static/js/escMenuStack.js';
+import { bindTourHintDismiss } from '/static/js/tourHintDismiss.js';
+
 const api = createNotesApi({ origin: window.location.origin, request: (...args) => fetch(...args) });
 const persistence = createNotesPersistence({ storage: typeof localStorage === 'undefined' ? undefined : localStorage });
 const { _loadPendingHighlights, _loadGlowedReminders, _saveGlowedReminders, _loadActiveHighlights, _saveActiveHighlights, _savePendingHighlights, _loadFiredReminders, _saveFiredReminders, _draftKey, _loadDraft, _clearDraft } = persistence;
-import * as dates from './domain/recurrence.js';
-import { _hasTimeComponent, _toLocalDatetimeStr, _nthWeekdayLabel, _isLastWeekdayOfMonth, _nthWeekdayOfMonth, _lastWeekdayOfMonth, _formatRepeatLabel, _normalizeRepeat, _ORDINALS, _DAYS } from './domain/recurrence.js';
 const clock = { now: () => Date.now() };
 const app = createNotesState({
  viewMode: (typeof localStorage !== 'undefined' && localStorage.getItem('odysseus-notes-view')) || 'list',
@@ -81,16 +91,6 @@ const workflows = createNotesWorkflows({
  celebrateArchive: (note, card) => { if (_hasItems(note) && !(note.items || []).some(i => !i.done)) { const r = card.getBoundingClientRect(); spawnConfetti(r.left + r.width / 2, r.top + r.height / 2, 80); } },
 }
 });
-import uiModule from '/static/js/ui.js?v=20260916largetoolscroll1';
-import { spawnConfetti } from '/static/js/shared/ui/confetti.js';
-import * as Modals from '/static/js/modalManager.js';
-import { attachColorPicker } from '/static/js/colorPicker.js?v=20260910eyedropper1';
-import { makeWindowDraggable } from '/static/js/windowDrag.js';
-import { snapModalToZone } from '/static/js/tileManager.js?v=20260910responsivebounds1';
-import { applyEdgeDock, clearDockSide } from '/static/js/modalSnap.js';
-import { topToolWindowZ, topPortalZ } from '/static/js/toolWindowZOrder.js';
-import { bindMenuDismiss, dismissOrRemove } from '/static/js/escMenuStack.js';
-import { bindTourHintDismiss } from '/static/js/tourHintDismiss.js';
 const _NOTE_UNDO_ICON = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:middle;"><polyline points="9 14 4 9 9 4"/><path d="M4 9h11a5 5 0 0 1 5 5v0a5 5 0 0 1-5 5H9"/></svg>';
 function _pushUndo(entry) { return workflows._pushUndo(entry); }
 function _popAndRunUndo() { return workflows._popAndRunUndo(); }
@@ -114,21 +114,11 @@ function _ensureNotificationPermission() { return notifications.ensurePermission
 function _startReminderLoop() { return reminders._startReminderLoop(); }
 
 function _countFiredReminders() { return reminders._countFiredReminders(); }
-function dismissFiredReminderDot() { return reminders.dismissFiredReminderDot(); }
-function refreshDueBadge(opts) { return reminders.refreshDueBadge(opts); }
 
-const _isCalendarReminderNote = noteRules._isCalendarReminderNote;
 function _hasActiveReminder(...args) { return noteRules._hasActiveReminder(...args, clock); }
 const _isNoteFullyDone = noteRules._isNoteFullyDone;
 const _hasItems = noteRules._hasItems;
-const _goalProgress = noteRules._goalProgress;
-const _nextGoalStep = noteRules._nextGoalStep;
-const _noteTags = noteRules._noteTags;
-const _visibleNoteTags = noteRules._visibleNoteTags;
 function _isPastReminder(...args) { return noteRules._isPastReminder(...args, clock); }
-const _serializeNoteForCopy = noteRules._serializeNoteForCopy;
-const _noteToAgentPrompt = noteRules._noteToAgentPrompt;
-const _standardVisualVariant = noteRules._standardVisualVariant;
 function _esc(...args) { return text._esc(...args); }
 
 function _safeImgSrc(...args) { return text._safeImgSrc(...args); }
@@ -142,10 +132,6 @@ function _pickCustomBgImage(...args) { return colors._pickCustomBgImage(...args)
 function _wireFormColors(...args) { return colors._wireFormColors(...args); }
 
 function openPanel(...args) { return panel.openPanel(...args); }
-function closePanel(...args) { return panel.closePanel(...args); }
-function togglePanel(...args) { return panel.togglePanel(...args); }
-function isPanelOpen(...args) { return panel.isPanelOpen(...args); }
-function openNote(...args) { return panel.openNote(...args); }
 
 function _smoothScrollToNoteCard(...args) { return panel._smoothScrollToNoteCard(...args); }
 function _clearViewedReminderGlows(...args) { return reminderDisplay._clearViewedReminderGlows(...args); }
@@ -165,7 +151,6 @@ function _animateReflow(...args) { return layout._animateReflow(...args); }
 function _applyMasonry(...args) { return layout._applyMasonry(...args); }
 function _renderQuickAdd(...args) { return quickAdd._renderQuickAdd(...args); }
 
-function newNote(...args) { return quickAdd.newNote(...args); }
 function _editNote(...args) { return quickAdd._editNote(...args); }
 function _bindCardEvents(...args) { return cardInteractions._bindCardEvents(...args); }
 function _wireCardChecklist(...args) { return cardChecklist._wireCardChecklist(...args); }
@@ -320,7 +305,7 @@ const cardRendering = createCardRendering({
   uiModule
 });
 const layout = createLayout({
-
+  isOpen: () => state.open
 });
 const quickAdd = createQuickAdd({
   _applyDraftToNote,

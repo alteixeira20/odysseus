@@ -1,5 +1,5 @@
 /** Card reflow animation and the owned masonry resize observer. */
-export function createLayout({}) {
+export function createLayout({ isOpen = () => true } = {}) {
   function _captureCardPositions() {
     const body = document.querySelector('#notes-pane .notes-pane-body');
     if (!body) return null;
@@ -44,6 +44,9 @@ export function createLayout({}) {
     const isMobileGrid = isGrid && window.matchMedia('(max-width: 768px)').matches;
     // Tear down any prior observer (defensive : _renderNotes wipes body.innerHTML).
     if (_masonryObserver) { try { _masonryObserver.disconnect(); } catch {} _masonryObserver = null; }
+    // A save that resolves after close re-renders the leaving pane; don't
+    // re-create the observer that panel teardown already disposed.
+    if (!isOpen()) return;
     if (!isGrid) {
       // Clear any leftover inline spans so list view lays out normally.
       body.querySelectorAll('.note-card, .notes-label-toggle, .notes-labels-bar, .notes-quick-add, .note-form, .doclib-chip-scroll-frame:has(> .notes-labels-bar)').forEach(c => { c.style.gridRowEnd = ''; });

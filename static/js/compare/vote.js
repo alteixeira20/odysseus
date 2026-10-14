@@ -1,5 +1,5 @@
-import { spawnConfetti } from '../shared/ui/confetti.js';
 // compare/vote.js — voting, revealing, confetti
+import { spawnConfetti } from '../shared/ui/confetti.js';
 import Storage from '../storage.js';
 import state from './state.js';
 import { _modelDisplayNames } from './models.js';
