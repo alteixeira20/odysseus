@@ -20,13 +20,13 @@ static/js/actionMenuOrder.js text eol=lf
 *.bat text eol=crlf
 
 # Vendored third-party bundles in static/lib/ are published minified artifacts
-# and must stay byte-identical to what npm ships — stripping trailing whitespace
+# and must stay byte-identical to what npm ships - stripping trailing whitespace
 # to satisfy `git diff --check` would desync them from the upstream release. Turn
 # the whitespace check off for that tree instead, and keep the bundles out of
 # GitHub's language statistics.
 static/lib/** -whitespace linguist-vendored
 
-# Binary assets — never normalize.
+# Binary assets - never normalize.
 *.png  binary
 *.jpg  binary
 *.jpeg binary
@@ -36,3 +36,7 @@ static/lib/** -whitespace linguist-vendored
 *.ico  binary
 *.woff binary
 *.woff2 binary
+
+# Notes reference deployment modules.
+static/js/features/notes/** text eol=lf
+static/js/shared/ui/confetti.js text eol=lf

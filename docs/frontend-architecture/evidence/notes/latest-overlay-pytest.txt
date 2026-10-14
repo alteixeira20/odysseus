@@ -1,0 +1,565 @@
+.........................................................sssssssssssssss [  0%]
+s....................................................................... [  1%]
+........................................................................ [  1%]
+........................................................................ [  2%]
+........................................................................ [  2%]
+........................................................................ [  3%]
+........................................................................ [  3%]
+........................................................................ [  4%]
+........................................................................ [  4%]
+....................ssssssssssssssssssssssssssss........................ [  5%]
+........................................................................ [  5%]
+........................................................................ [  6%]
+........................................................................ [  6%]
+........................................................................ [  7%]
+........................................................................ [  7%]
+........................................................................ [  8%]
+.........................................ssss........................... [  8%]
+........................................................................ [  9%]
+........................................................................ [  9%]
+........................................................................ [ 10%]
+........................................................................ [ 10%]
+........................................................................ [ 11%]
+........................................................................ [ 11%]
+........................................................................ [ 12%]
+........................................................................ [ 12%]
+........................................................................ [ 13%]
+........................................................................ [ 13%]
+........................................................................ [ 14%]
+........................................................................ [ 14%]
+........................................................................ [ 15%]
+........................................................................ [ 15%]
+........................................................................ [ 16%]
+........................................................................ [ 16%]
+........................................................................ [ 17%]
+........................................................................ [ 18%]
+........................................................................ [ 18%]
+........................................................................ [ 19%]
+........................................................................ [ 19%]
+........................................................................ [ 20%]
+........................................................................ [ 20%]
+........................................................................ [ 21%]
+........................................................................ [ 21%]
+........................................................................ [ 22%]
+..F.F........................s.......................................... [ 22%]
+........................................................................ [ 23%]
+........................................................................ [ 23%]
+........................................................................ [ 24%]
+........................................................................ [ 24%]
+..................................................................s..... [ 25%]
+........................................................................ [ 25%]
+........................................................................ [ 26%]
+........................................................................ [ 26%]
+........................................................................ [ 27%]
+.........s.............................................................. [ 27%]
+........................................................................ [ 28%]
+........................................................................ [ 28%]
+........................................................................ [ 29%]
+........................................................................ [ 29%]
+........................................................................ [ 30%]
+........................................................................ [ 30%]
+........................................................................ [ 31%]
+.................................................................s.s...s [ 31%]
+........................................................................ [ 32%]
+........................................................................ [ 32%]
+........................................................................ [ 33%]
+........................................................................ [ 33%]
+........................................................................ [ 34%]
+........................................................................ [ 35%]
+........................................................................ [ 35%]
+........................................................................ [ 36%]
+........................................................................ [ 36%]
+........................................................................ [ 37%]
+........................................................................ [ 37%]
+........................................................................ [ 38%]
+........................................................................ [ 38%]
+........................................................................ [ 39%]
+........................................................................ [ 39%]
+........................................................................ [ 40%]
+........................................................................ [ 40%]
+........................................................................ [ 41%]
+........................................................................ [ 41%]
+........................................................................ [ 42%]
+........................................................................ [ 42%]
+........................................................................ [ 43%]
+........................................................................ [ 43%]
+........................................................................ [ 44%]
+........................................................................ [ 44%]
+...............s............s........................................... [ 45%]
+........................................................................ [ 45%]
+........................................................................ [ 46%]
+........................................................................ [ 46%]
+........................................................................ [ 47%]
+........................................................................ [ 47%]
+........................................................................ [ 48%]
+........................................................................ [ 48%]
+........................................................................ [ 49%]
+........................................................................ [ 49%]
+........................................................................ [ 50%]
+..........................s............................................. [ 50%]
+........................................................................ [ 51%]
+........................................................................ [ 51%]
+........................................................................ [ 52%]
+........................................................................ [ 53%]
+........................................................................ [ 53%]
+........................................................................ [ 54%]
+........................................................................ [ 54%]
+........................................................................ [ 55%]
+........................................................................ [ 55%]
+........................................................................ [ 56%]
+........................................................................ [ 56%]
+........................................................................ [ 57%]
+........................................................................ [ 57%]
+...................s.................................................... [ 58%]
+........................................................................ [ 58%]
+........................................................................ [ 59%]
+.................................................................. [ 59%]
+........................................................................ [ 60%]
+........................................................................ [ 60%]
+........................................................................ [ 61%]
+........................................................................ [ 61%]
+........................................................................ [ 62%]
+......................................F................................. [ 62%]
+........................................................................ [ 63%]
+........................................................................ [ 63%]
+........................................................................ [ 64%]
+........................................................................ [ 64%]
+........................................................................ [ 65%]
+........................................................................ [ 65%]
+........................................................................ [ 66%]
+........................................................................ [ 66%]
+........................................................................ [ 67%]
+........................................................................ [ 67%]
+.........................................s.............................. [ 68%]
+........................................................................ [ 68%]
+........................................................................ [ 69%]
+........................................................................ [ 69%]
+........................................................................ [ 70%]
+........................................................................ [ 70%]
+........................................................................ [ 71%]
+........................................................................ [ 72%]
+........................................................................ [ 72%]
+........................................................................ [ 73%]
+........................................................................ [ 73%]
+........................................................................ [ 74%]
+........................................................................ [ 74%]
+........................................................................ [ 75%]
+........................................................................ [ 75%]
+........................................................................ [ 76%]
+........................................................................ [ 76%]
+........................................................................ [ 77%]
+........................................................................ [ 77%]
+........................................................................ [ 78%]
+........................................................................ [ 78%]
+........................................................................ [ 79%]
+........................................................................ [ 79%]
+........................................................................ [ 80%]
+........................................................................ [ 80%]
+........................................................................ [ 81%]
+........................................................................ [ 81%]
+........................................................................ [ 82%]
+........................................................................ [ 82%]
+........................................................................ [ 83%]
+........................................................................ [ 83%]
+........................................................................ [ 84%]
+........................................................................ [ 84%]
+........................................................................ [ 85%]
+........................................................................ [ 85%]
+........................................................................ [ 86%]
+........................................................................ [ 86%]
+........................................................................ [ 87%]
+........................................................................ [ 87%]
+........................................................................ [ 88%]
+........................................................................ [ 89%]
+........................................................................ [ 89%]
+........................................................................ [ 90%]
+........................................................................ [ 90%]
+........................................................................ [ 91%]
+........................................................................ [ 91%]
+........................................................................ [ 92%]
+........................................................................ [ 92%]
+........................................................................ [ 93%]
+........................................................................ [ 93%]
+........................................................................ [ 94%]
+...........................................................s............ [ 94%]
+........................................................................ [ 95%]
+........................................................................ [ 95%]
+........................................................................ [ 96%]
+........................................................................ [ 96%]
+........................................................................ [ 97%]
+........................................................................ [ 97%]
+........................................................................ [ 98%]
+........................................................................ [ 98%]
+........................................................................ [ 99%]
+........................................................................ [ 99%]
+........................                                                 [100%]
+=================================== FAILURES ===================================
+_________________ test_namespace_handshake_closes_model_stdin __________________
+
+namespaces = PosixPath('/tmp/ody-main-3c_ftn55/pytest/test_namespace_handshake_close0/workspace')
+
+    async def test_namespace_handshake_closes_model_stdin(namespaces):
+        result = await subprocess_tools.BashTool().execute(
+            "if read value; then echo unexpected; else echo closed; fi", {},
+        )
+>       assert result["output"] == "closed", result
+E       AssertionError: {'containment': {'id': '43ff764b9156', 'mechanism': 'bubblewrap', 'mode': 'enforcing', 'workspace': '/tmp/ody-main-3c_...ry
+E         Failed to create stream fd: No such file or directory
+E         Failed to create stream fd: No such file or directory', ...}
+E       assert 'closed\nSTDE... or directory' == 'closed'
+E
+E         - closed
+E         + closed
+E         ?       +
+E         + STDERR: Failed to create stream fd: No such file or directory
+E         + Failed to create stream fd: No such file or directory
+E         + Failed to create stream fd: No such file or directory
+
+tests/test_containment_enforcement.py:214: AssertionError
+________ test_execution_environment_cannot_replace_probed_bwrap[False] _________
+
+namespaces = PosixPath('/tmp/ody-main-3c_ftn55/pytest/test_execution_environment_can1/workspace')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7ea78b552190>
+legacy_name = False
+
+    @pytest.mark.parametrize("legacy_name", [True, False])
+    async def test_execution_environment_cannot_replace_probed_bwrap(namespaces, monkeypatch, legacy_name):
+        bin_dir = namespaces / "bin"
+        bin_dir.mkdir()
+        outside = namespaces.parent / "uncontained-effect"
+        impostor = bin_dir / "bwrap"
+        import shlex
+        impostor.write_text("#!/bin/sh\nprintf escaped > " + shlex.quote(str(outside)) + "\n")
+        impostor.chmod(0o700)
+        if legacy_name:
+            original = containment._bwrap_prefix
+            def bare_name(spec):
+                argv = original(spec)
+                argv[0] = "bwrap"
+                return argv
+            monkeypatch.setattr(containment, "_bwrap_prefix", bare_name)
+        result = await subprocess_tools.BashTool().execute("printf contained", {
+            "subproc_env": {**os.environ, "PATH": str(bin_dir) + os.pathsep + os.environ.get("PATH", "")},
+        })
+        if legacy_name:
+            # Reproduce the old mismatch: availability probed the host binary,
+            # while launch resolved a different binary through the child's PATH.
+            assert "containment unavailable" in result["error"]
+            assert outside.read_text() == "escaped"
+        else:
+>           assert result["output"] == "contained", result
+E           AssertionError: {'containment': {'id': 'd428429e83a6', 'mechanism': 'bubblewrap', 'mode': 'enforcing', 'workspace': '/tmp/ody-main-3c_...ry
+E             Failed to create stream fd: No such file or directory
+E             Failed to create stream fd: No such file or directory', ...}
+E           assert 'contained\nS... or directory' == 'contained'
+E
+E             - contained
+E             + contained
+E             ?          +
+E             + STDERR: Failed to create stream fd: No such file or directory
+E             + Failed to create stream fd: No such file or directory
+E             + Failed to create stream fd: No such file or directory
+
+tests/test_containment_enforcement.py:243: AssertionError
+___________ test_tool_index_is_reported_but_not_critical_by_default ____________
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7ea796b7f770>
+
+    def test_tool_index_is_reported_but_not_critical_by_default(monkeypatch):
+        import src.tool_index as tool_index
+
+        monkeypatch.delenv("ODYSSEUS_REQUIRE_TOOL_INDEX_READY", raising=False)
+        monkeypatch.setattr(
+            tool_index,
+            "get_tool_index_status",
+            lambda: {"state": "degraded", "ready": False, "error_type": "ProbeFailure"},
+        )
+
+        result = check_readiness()
+
+        assert result["ready"] is True
+>       assert result["checks"]["tool_index"] == {
+            "state": "degraded",
+            "ready": False,
+            "error_type": "ProbeFailure",
+            "prewarm_enabled": True,
+            "ok": False,
+            "critical": False,
+        }
+E       AssertionError: assert {'state': 'de...': False, ...} == {'state': 'de...d': True, ...}
+E
+E         Omitting 5 identical items, use -vv to show
+E         Differing items:
+E         {'prewarm_enabled': False} != {'prewarm_enabled': True}
+E         Use -v to get more diff
+
+tests/test_readiness.py:43: AssertionError
+=============================== warnings summary ===============================
+core/database.py:20
+tests/test_caldav_bidirectional_sync.py::test_failed_remote_delete_leaves_tombstone_and_later_retry_cleans_up
+  /tmp/odysseus-notes-latest-VmZrgC/core/database.py:20: MovedIn20Warning: The ``declarative_base()`` function is now available as sqlalchemy.orm.declarative_base(). (deprecated since: 2.0) (Background on SQLAlchemy 2.0 at: https://sqlalche.me/e/b8d9)
+    Base = declarative_base()
+
+../../home/alteixeira20/.venvs/odysseus-pr-6495/lib/python3.14/site-packages/chromadb/telemetry/opentelemetry/__init__.py:128
+  /home/alteixeira20/.venvs/odysseus-pr-6495/lib/python3.14/site-packages/chromadb/telemetry/opentelemetry/__init__.py:128: DeprecationWarning: 'asyncio.iscoroutinefunction' is deprecated and slated for removal in Python 3.16; use inspect.iscoroutinefunction() instead
+    if asyncio.iscoroutinefunction(f):
+
+tests/test_builtin_actions_owner_scope.py::test_classify_events_resolves_llm_for_task_owner
+  /tmp/odysseus-notes-latest-VmZrgC/src/builtin_actions.py:1530: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    now = datetime.utcnow()
+
+tests/test_builtin_actions_owner_scope.py::test_learn_sender_signatures_resolves_llm_for_task_owner
+tests/test_builtin_actions_owner_scope.py::test_learn_sender_signatures_writes_owner_scoped_cache
+tests/test_imap_uid_commands.py::test_sig_learner_uses_uid_search
+tests/test_imap_uid_commands.py::test_sig_learner_uses_uid_fetch
+  /tmp/odysseus-notes-latest-VmZrgC/src/builtin_actions.py:1835: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    cutoff_iso = (_dt.utcnow() - _td(days=30)).isoformat()
+
+tests/test_builtin_actions_owner_scope.py::test_learn_sender_signatures_writes_owner_scoped_cache
+  /tmp/odysseus-notes-latest-VmZrgC/src/builtin_actions.py:1946: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    (addr, owner_value, cached_sig, len(bodies), _dt.utcnow().isoformat(), model, "llm"),
+
+tests/test_builtin_actions_owner_scope.py: 1 warning
+tests/test_email_urgency_checkpoint.py: 33 warnings
+  /tmp/odysseus-notes-latest-VmZrgC/src/builtin_actions.py:2506: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    AGE_CUTOFF = _dt.utcnow() - _td(days=7)
+
+tests/test_caldav_client_cleanup.py::test_sync_closes_client_when_session_local_raises
+tests/test_caldav_google_principal_url.py::test_google_sync_pulls_events_instead_of_empty
+  /tmp/odysseus-notes-latest-VmZrgC/src/caldav_sync.py:309: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    start = datetime.utcnow() - timedelta(days=_LOOKBACK_DAYS)
+
+tests/test_caldav_client_cleanup.py::test_sync_closes_client_when_session_local_raises
+tests/test_caldav_google_principal_url.py::test_google_sync_pulls_events_instead_of_empty
+  /tmp/odysseus-notes-latest-VmZrgC/src/caldav_sync.py:310: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    end = datetime.utcnow() + timedelta(days=_LOOKAHEAD_DAYS)
+
+tests/test_caldav_google_principal_url.py::test_google_sync_pulls_events_instead_of_empty
+  /tmp/odysseus-notes-latest-VmZrgC/tests/test_caldav_google_principal_url.py:45: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    dt = datetime.utcnow() + timedelta(days=2)
+
+tests/test_chatgpt_session_binding.py::test_explicit_selection_switches_same_url_and_model_binding
+tests/test_chatgpt_session_binding.py::test_url_only_model_change_retains_exact_binding
+tests/test_selected_endpoint_header_hydration.py::test_selected_endpoint_hydrates_headers_when_model_and_url_match
+  /tmp/odysseus-notes-latest-VmZrgC/routes/chat_routes.py:2115: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    db_session.updated_at = datetime.utcnow()
+
+tests/test_clean_v3_native_workspace.py::test_native_visual_evidence_packs_every_frame_within_three_images
+tests/test_clean_v3_native_workspace.py::test_native_visual_evidence_packs_every_frame_within_three_images
+tests/test_clean_v3_native_workspace.py::test_native_visual_evidence_packs_every_frame_within_three_images
+  /tmp/odysseus-notes-latest-VmZrgC/tests/test_clean_v3_native_workspace.py:115: DeprecationWarning: Image.Image.getdata is deprecated and will be removed in Pillow 14 (2027-10-15). Use get_flattened_data instead.
+    for pixel in packed.convert("RGB").getdata():
+
+tests/test_codeql_python_residual_security.py::test_readiness_does_not_return_raw_database_error
+tests/test_codeql_python_residual_security.py::test_readiness_does_not_return_raw_data_dir_error
+tests/test_readiness.py::test_readiness_reports_core_subsystems
+tests/test_readiness.py::test_local_first_check_is_informational_never_fatal
+tests/test_readiness.py::test_tool_index_is_reported_but_not_critical_by_default
+tests/test_readiness.py::test_harness_can_require_tool_index_readiness
+tests/test_readiness.py::test_required_ready_tool_index_allows_readiness
+  /tmp/odysseus-notes-latest-VmZrgC/src/readiness.py:94: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    "timestamp": datetime.utcnow().isoformat(),
+
+tests/test_contact_tool_partial_update.py: 30 warnings
+  /tmp/odysseus-notes-latest-VmZrgC/routes/contacts/contacts_routes.py:438: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    by_owner[owner_key] = {"contacts": contacts, "fetched_at": datetime.utcnow()}
+
+tests/test_contact_tool_partial_update.py: 13 warnings
+  /tmp/odysseus-notes-latest-VmZrgC/routes/contacts/contacts_routes.py:141: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    _contact_cache["fetched_at"] = datetime.utcnow()
+
+tests/test_contact_tool_partial_update.py::test_contact_tool_does_not_create_or_modify_an_unavailable_target[missing]
+tests/test_contact_tool_partial_update.py::test_contact_tool_does_not_create_or_modify_an_unavailable_target[other-owner]
+  /tmp/odysseus-notes-latest-VmZrgC/routes/contacts/contacts_routes.py:419: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    age = (datetime.utcnow() - fetched_at).total_seconds()
+
+tests/test_contacts_import_nonstring.py::test_non_string_csv_degrades_cleanly
+  /tmp/odysseus-notes-latest-VmZrgC/routes/contacts/contacts_routes.py:448: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    _contact_cache["fetched_at"] = datetime.utcnow()
+
+tests/test_database_test_isolation.py: 4 warnings
+tests/test_history_display_model_hydration.py: 4 warnings
+tests/test_session_discovery_message_count.py: 1 warning
+tests/test_session_manager_persist_guard.py: 1 warning
+tests/test_truncate_message_count_regression.py: 6 warnings
+  /tmp/odysseus-notes-latest-VmZrgC/core/session_manager.py:285: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    msg_time = datetime.utcnow()
+
+tests/test_email_account_default_serialization.py::test_concurrent_legacy_seed_is_one_locked_transaction
+tests/test_email_account_default_serialization.py::test_concurrent_legacy_seed_is_one_locked_transaction
+  /home/alteixeira20/.venvs/odysseus-pr-6495/lib/python3.14/site-packages/sqlalchemy/engine/default.py:1192: DeprecationWarning: The default datetime adapter is deprecated as of Python 3.12; see the sqlite3 documentation for suggested replacement recipes
+    cursor.execute(statement, parameters)
+
+tests/test_email_attachment_search.py::test_attachment_cache_backfill_preserves_message_id
+tests/test_email_attachment_search.py::test_attachment_cache_backfill_preserves_message_id
+  /tmp/odysseus-notes-latest-VmZrgC/routes/email/email_routes.py:1371: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    datetime.utcnow().isoformat() + "Z",
+
+tests/test_email_attachment_search.py::test_attachment_cache_backfill_preserves_message_id
+tests/test_email_attachment_search.py::test_attachment_cache_backfill_preserves_message_id
+  /tmp/odysseus-notes-latest-VmZrgC/routes/email/email_routes.py:1390: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    datetime.utcnow().isoformat() + "Z",
+
+tests/test_email_owner_scope.py::test_email_index_helpers_roundtrip_and_update_flags
+  /tmp/odysseus-notes-latest-VmZrgC/routes/email/email_routes.py:1142: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    now = datetime.utcnow().isoformat() + "Z"
+
+tests/test_email_owner_scope.py::test_email_index_helpers_roundtrip_and_update_flags
+tests/test_email_owner_scope.py::test_email_index_helpers_roundtrip_and_update_flags
+  /tmp/odysseus-notes-latest-VmZrgC/routes/email/email_routes.py:1220: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    (" ".join(sorted(parts)), datetime.utcnow().isoformat() + "Z", owner or "", _account_cache_key(account_id, owner), folder, str(uid)),
+
+tests/test_email_owner_scope.py::test_sender_signature_read_lookup_is_owner_scoped
+  /tmp/odysseus-notes-latest-VmZrgC/routes/email/email_routes.py:1280: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    now = datetime.utcnow().isoformat() + "Z"
+
+tests/test_email_owner_scope.py::test_scheduled_email_routes_are_owner_scoped
+tests/test_email_owner_scope.py::test_scheduled_email_routes_are_owner_scoped
+tests/test_schedule_email_offset_normalization.py::test_positive_offset_stored_as_naive_utc
+tests/test_schedule_email_offset_normalization.py::test_negative_offset_does_not_fire_early
+tests/test_schedule_email_offset_normalization.py::test_z_suffix_stored_without_suffix
+tests/test_schedule_email_offset_normalization.py::test_naive_utc_send_at_unchanged
+  /tmp/odysseus-notes-latest-VmZrgC/routes/email/email_routes.py:5341: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    datetime.utcnow().isoformat(),
+
+tests/test_email_owner_scope.py::test_pending_agent_draft_routes_do_not_expose_ownerless_rows
+tests/test_email_owner_scope.py::test_pending_agent_draft_routes_block_cross_owner_actions
+  /tmp/odysseus-notes-latest-VmZrgC/routes/email/email_routes.py:5432: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    (datetime.utcnow().isoformat(), sid, owner or ""),
+
+tests/test_email_owner_scope.py::test_scheduled_poller_resolves_config_with_row_owner
+tests/test_scheduled_poll_race.py::test_concurrent_pollers_do_not_double_send
+tests/test_scheduled_poll_race.py::test_concurrent_pollers_do_not_double_send
+  /tmp/odysseus-notes-latest-VmZrgC/routes/email/email_pollers.py:1593: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    now_iso = datetime.utcnow().isoformat()
+
+tests/test_email_owner_scope.py::test_scheduled_poller_resolves_config_with_row_owner
+tests/test_scheduled_poll_race.py::test_concurrent_pollers_do_not_double_send
+  /tmp/odysseus-notes-latest-VmZrgC/routes/email/email_pollers.py:1647: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    outer["Date"] = datetime.utcnow().strftime("%a, %d %b %Y %H:%M:%S +0000")
+
+tests/test_email_polly_imap_leak.py::test_auto_summarize_pass_logs_out_imap_on_select_failure
+tests/test_email_summary_llm.py::test_scheduled_email_summary_uses_shared_helper_and_caches
+  /tmp/odysseus-notes-latest-VmZrgC/routes/email/email_pollers.py:673: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    since = (datetime.utcnow() - _td(days=max(1, days_back))).strftime("%d-%b-%Y")
+
+tests/test_email_summary_llm.py::test_manual_email_summary_uses_shared_helper_and_caches
+  /tmp/odysseus-notes-latest-VmZrgC/routes/email/email_routes.py:6044: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    subject, sender, content, model, datetime.utcnow().isoformat(),
+
+tests/test_email_summary_llm.py::test_scheduled_email_summary_uses_shared_helper_and_caches
+  /tmp/odysseus-notes-latest-VmZrgC/routes/email/email_pollers.py:990: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    """, (message_id, account_owner or "", uid.decode() if isinstance(uid, bytes) else str(uid), _folder, subject, sender, summary, model, datetime.utcnow().isoformat()))
+
+tests/test_email_urgency_checkpoint.py: 21 warnings
+  /tmp/odysseus-notes-latest-VmZrgC/src/builtin_actions.py:3063: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    _dt2.utcnow().isoformat()),
+
+tests/test_endpoint_registered_authority.py::test_assistant_settings_accept_registered_local_endpoint
+tests/test_endpoint_registered_authority.py::test_assistant_switch_accepts_catalog_chat_urls[ollama-http://192.168.1.5:11434-http://192.168.1.5:11434/api/chat]
+tests/test_endpoint_registered_authority.py::test_assistant_switch_accepts_catalog_chat_urls[openai-https://api.openai.com-https://api.openai.com/v1/chat/completions]
+tests/test_endpoint_registered_authority.py::test_assistant_switch_accepts_catalog_chat_urls[anthropic-https://api.anthropic.com/v1-https://api.anthropic.com/v1/messages]
+tests/test_endpoint_registered_authority.py::test_assistant_switch_accepts_catalog_chat_urls[local-http://localhost:1234/v1-http://localhost:1234/v1/chat/completions]
+  /tmp/odysseus-notes-latest-VmZrgC/routes/assistant_routes.py:208: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    crew_db.updated_at = datetime.utcnow()
+
+tests/test_manage_mcp_command_allowlist.py::test_add_allows_safe_server_writes_row_and_connects
+tests/test_manage_mcp_command_allowlist.py::test_add_allows_safe_server_writes_row_and_connects
+  /tmp/odysseus-notes-latest-VmZrgC/src/agent_tools/admin_tools.py:269: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    is_enabled=True, created_at=datetime.utcnow(), updated_at=datetime.utcnow())
+
+tests/test_mcp_email_decode_header_spaces.py::test_mcp_send_email_stages_with_visible_owner_account_id
+tests/test_mcp_email_decode_header_spaces.py::test_mcp_send_email_stages_owner_scoped_pending_draft
+  /tmp/odysseus-notes-latest-VmZrgC/mcp_servers/email_server.py:2590: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    now = datetime.utcnow().isoformat()
+
+tests/test_note_reminder_email_oauth.py::test_dispatch_reminder_sends_with_google_oauth_without_smtp_password
+  /tmp/odysseus-notes-latest-VmZrgC/routes/note/note_routes.py:372: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    msg["Date"] = _dt.utcnow().strftime("%a, %d %b %Y %H:%M:%S +0000")
+
+tests/test_research_routes_path_confinement.py::test_spinoff_uses_single_disk_lookup_for_completed_result
+tests/test_research_routes_path_confinement.py::test_spinoff_reads_saved_query_for_done_active_task
+  /tmp/odysseus-notes-latest-VmZrgC/routes/research/research_routes.py:872: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    date_str = datetime.utcnow().strftime("%Y-%m-%d")
+
+tests/test_schedule_email_offset_normalization.py::test_negative_offset_does_not_fire_early
+  /tmp/odysseus-notes-latest-VmZrgC/tests/test_schedule_email_offset_normalization.py:76: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    assert not value <= datetime.utcnow().isoformat()
+
+tests/test_schedule_email_offset_normalization.py::test_naive_utc_send_at_unchanged
+  /tmp/odysseus-notes-latest-VmZrgC/tests/test_schedule_email_offset_normalization.py:95: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    naive = (datetime.utcnow() + timedelta(days=1)).isoformat()
+
+tests/test_schedule_email_offset_normalization.py::test_naive_utc_send_at_unchanged
+  /tmp/odysseus-notes-latest-VmZrgC/routes/email/email_routes.py:5309: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    now_utc = _dt.now(_tz.utc) if parsed_at.tzinfo else _dt.utcnow()
+
+tests/test_skills_routes_owner_update.py::test_update_skill_route_passes_owner_to_manager
+  /tmp/odysseus-notes-latest-VmZrgC/routes/skills_routes.py:2428: PydanticDeprecatedSince20: The `dict` method is deprecated; use `model_dump` instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.14/migration/
+    updates = body.dict(exclude_none=True)
+
+tests/test_sqlite_foreign_keys.py::test_sqlite_foreign_keys_cascade
+  /tmp/odysseus-notes-latest-VmZrgC/tests/test_sqlite_foreign_keys.py:25: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    created_at=datetime.utcnow(),
+
+tests/test_sqlite_foreign_keys.py::test_sqlite_foreign_keys_cascade
+  /tmp/odysseus-notes-latest-VmZrgC/tests/test_sqlite_foreign_keys.py:26: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    updated_at=datetime.utcnow()
+
+tests/test_topic_analyzer.py::test_topic_analyzer_hydrates_sessions
+  /tmp/odysseus-notes-latest-VmZrgC/tests/test_topic_analyzer.py:62: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    created_at=datetime.utcnow(),
+
+tests/test_topic_analyzer.py::test_topic_analyzer_hydrates_sessions
+  /tmp/odysseus-notes-latest-VmZrgC/tests/test_topic_analyzer.py:63: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    updated_at=datetime.utcnow()
+
+tests/test_topic_analyzer.py::test_topic_analyzer_hydrates_sessions
+  /tmp/odysseus-notes-latest-VmZrgC/tests/test_topic_analyzer.py:70: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+    timestamp=datetime.utcnow()
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+
+release smoke suite skipped: APP_PORT is not set, so there is no instance to drive. Run the suite with `scripts/odysseus-smoke`, which boots this worktree and exports it.
+=========================== short test summary info ============================
+FAILED tests/test_containment_enforcement.py::test_namespace_handshake_closes_model_stdin
+FAILED tests/test_containment_enforcement.py::test_execution_environment_cannot_replace_probed_bwrap[False]
+FAILED tests/test_readiness.py::test_tool_index_is_reported_but_not_critical_by_default
+SKIPPED [1] tests/smoke/test_calendar_smoke.py:16: APP_PORT is not set, so there is no instance to drive. Run the suite with `scripts/odysseus-smoke`, which boots this worktree and exports it.
+SKIPPED [1] tests/smoke/test_chat_smoke.py:20: APP_PORT is not set, so there is no instance to drive. Run the suite with `scripts/odysseus-smoke`, which boots this worktree and exports it.
+SKIPPED [1] tests/smoke/test_chat_smoke.py:35: APP_PORT is not set, so there is no instance to drive. Run the suite with `scripts/odysseus-smoke`, which boots this worktree and exports it.
+SKIPPED [1] tests/smoke/test_chat_smoke.py:59: APP_PORT is not set, so there is no instance to drive. Run the suite with `scripts/odysseus-smoke`, which boots this worktree and exports it.
+SKIPPED [1] tests/smoke/test_compare_smoke.py:39: APP_PORT is not set, so there is no instance to drive. Run the suite with `scripts/odysseus-smoke`, which boots this worktree and exports it.
+SKIPPED [1] tests/smoke/test_cookbook_smoke.py:32: APP_PORT is not set, so there is no instance to drive. Run the suite with `scripts/odysseus-smoke`, which boots this worktree and exports it.
+SKIPPED [1] tests/smoke/test_cookbook_smoke.py:45: APP_PORT is not set, so there is no instance to drive. Run the suite with `scripts/odysseus-smoke`, which boots this worktree and exports it.
+SKIPPED [1] tests/smoke/test_cookbook_smoke.py:65: APP_PORT is not set, so there is no instance to drive. Run the suite with `scripts/odysseus-smoke`, which boots this worktree and exports it.
+SKIPPED [1] tests/smoke/test_documents_rag_smoke.py:31: APP_PORT is not set, so there is no instance to drive. Run the suite with `scripts/odysseus-smoke`, which boots this worktree and exports it.
+SKIPPED [1] tests/smoke/test_documents_smoke.py:12: APP_PORT is not set, so there is no instance to drive. Run the suite with `scripts/odysseus-smoke`, which boots this worktree and exports it.
+SKIPPED [1] tests/smoke/test_email_smoke.py:75: APP_PORT is not set, so there is no instance to drive. Run the suite with `scripts/odysseus-smoke`, which boots this worktree and exports it.
+SKIPPED [1] tests/smoke/test_memory_smoke.py:19: APP_PORT is not set, so there is no instance to drive. Run the suite with `scripts/odysseus-smoke`, which boots this worktree and exports it.
+SKIPPED [1] tests/smoke/test_notes_smoke.py:11: APP_PORT is not set, so there is no instance to drive. Run the suite with `scripts/odysseus-smoke`, which boots this worktree and exports it.
+SKIPPED [1] tests/smoke/test_settings_smoke.py:16: APP_PORT is not set, so there is no instance to drive. Run the suite with `scripts/odysseus-smoke`, which boots this worktree and exports it.
+SKIPPED [1] tests/smoke/test_tasks_smoke.py:16: APP_PORT is not set, so there is no instance to drive. Run the suite with `scripts/odysseus-smoke`, which boots this worktree and exports it.
+SKIPPED [1] tests/smoke/test_uploads_smoke.py:11: APP_PORT is not set, so there is no instance to drive. Run the suite with `scripts/odysseus-smoke`, which boots this worktree and exports it.
+SKIPPED [1] tests/test_ajax_email_live.py:21: opt-in live Ajax endpoint
+SKIPPED [5] tests/test_ajax_email_live.py:55: opt-in live Ajax endpoint
+SKIPPED [12] tests/test_ajax_email_live.py:74: opt-in live Ajax endpoint
+SKIPPED [2] tests/test_ajax_email_live.py:141: opt-in live Ajax endpoint
+SKIPPED [8] tests/test_ajax_email_live.py:175: opt-in live Ajax endpoint
+SKIPPED [1] tests/test_browser_producer_live_contract.py:44: requires explicit live contract gate in the allowlisted 0.35.0 release Docker image
+SKIPPED [1] tests/test_browser_producer_live_contract.py:53: requires explicit live contract gate in the allowlisted 0.35.0 release Docker image
+SKIPPED [1] tests/test_browser_producer_live_contract.py:71: requires explicit live contract gate in the allowlisted 0.35.0 release Docker image
+SKIPPED [1] tests/test_browser_producer_live_contract.py:103: requires explicit live contract gate in the allowlisted 0.35.0 release Docker image
+SKIPPED [1] tests/test_containment_process_tree.py:366: this platform can lower RLIMIT_AS, so there is no shortfall
+SKIPPED [1] tests/test_cookbook_helpers.py:875: Windows Ollama CLI startup guard
+SKIPPED [1] tests/test_docker_devops_hardening.py:187: Docker test image is unavailable: odysseus-odysseus:latest
+SKIPPED [1] tests/test_email_attachment_text.py:19: could not import 'fitz': No module named 'fitz'
+SKIPPED [1] tests/test_email_attachment_text.py:41: could not import 'openpyxl': No module named 'openpyxl'
+SKIPPED [1] tests/test_email_attachment_text.py:110: Opt-in Ajax fixture test
+SKIPPED [1] tests/test_inspect_media_tool.py:574: needs an ffmpeg built without webp
+SKIPPED [1] tests/test_inspect_media_tool.py:934: rsvg-convert required
+SKIPPED [1] tests/test_markitdown_runtime.py:64: could not import 'markitdown': No module named 'markitdown'
+SKIPPED [1] tests/test_path_confinement_boundary.py:133: needs a platform where /tmp is a symlink
+SKIPPED [1] tests/test_result_reference_followup.py:96: Opt-in live Ajax replay
+SKIPPED [1] tests/test_upload_content_detection_magic.py:41: libmagic/python-magic not installed in this environment
+3 failed, 13923 passed, 60 skipped, 192 warnings, 6 subtests passed in 512.09s (0:08:32)

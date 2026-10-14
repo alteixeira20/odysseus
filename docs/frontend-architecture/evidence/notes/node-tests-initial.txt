@@ -1,0 +1,275 @@
+TAP version 13
+# Subtest: stateless helper preserves its public API, ordering, references and inputs
+ok 1 - stateless helper preserves its public API, ordering, references and inputs
+  ---
+  duration_ms: 3.616862
+  type: 'test'
+  ...
+# Subtest: dependency direction separates composition, workflow, adapters and views
+ok 2 - dependency direction separates composition, workflow, adapters and views
+  ---
+  duration_ms: 0.575627
+  type: 'test'
+  ...
+# Subtest: parser sees re-exports, multiline and dynamic imports without comment false positives
+ok 3 - parser sees re-exports, multiline and dynamic imports without comment false positives
+  ---
+  duration_ms: 7.151117
+  type: 'test'
+  ...
+# Subtest: complete mapped graph and exact precache pass
+ok 4 - complete mapped graph and exact precache pass
+  ---
+  duration_ms: 3.305404
+  type: 'test'
+  ...
+# Subtest: feature-private import fails through the full checker
+ok 5 - feature-private import fails through the full checker
+  ---
+  duration_ms: 2.089938
+  type: 'test'
+  ...
+# Subtest: undeclared legacy coupling and alternate identities fail
+ok 6 - undeclared legacy coupling and alternate identities fail
+  ---
+  duration_ms: 5.70208
+  type: 'test'
+  ...
+# Subtest: a copy mapping cannot silently change relative import resolution
+ok 7 - a copy mapping cannot silently change relative import resolution
+  ---
+  duration_ms: 1.160802
+  type: 'test'
+  ...
+# Subtest: new modules must join exact offline manifests and cannot introduce cycles
+ok 8 - new modules must join exact offline manifests and cannot introduce cycles
+  ---
+  duration_ms: 1.997232
+  type: 'test'
+  ...
+# Subtest: legacy adapters require exact, used exceptions and reserved names cannot bypass ownership
+ok 9 - legacy adapters require exact, used exceptions and reserved names cannot bypass ownership
+  ---
+  duration_ms: 1.870844
+  type: 'test'
+  ...
+# Subtest: inventory reports executable static cycles and separates dynamic edges
+ok 10 - inventory reports executable static cycles and separates dynamic edges
+  ---
+  duration_ms: 2.10206
+  type: 'test'
+  ...
+# Subtest: shared expectations cover negation, exceptions and invalid cases
+ok 11 - shared expectations cover negation, exceptions and invalid cases
+  ---
+  duration_ms: 1.374135
+  type: 'test'
+  ...
+# Subtest: state oracle detects edits and additions, not just disappearing IDs
+ok 12 - state oracle detects edits and additions, not just disappearing IDs
+  ---
+  duration_ms: 5.784045
+  type: 'test'
+  ...
+# Subtest: duplicate deletion cannot pass exact proposal check
+ok 13 - duplicate deletion cannot pass exact proposal check
+  ---
+  duration_ms: 0.529721
+  type: 'test'
+  ...
+# Subtest: stale ID with valid unique title follows actual backend fallback
+ok 14 - stale ID with valid unique title follows actual backend fallback
+  ---
+  duration_ms: 0.277474
+  type: 'test'
+  ...
+# Subtest: views cannot mutate Notes state, but captured identities observe application updates
+ok 15 - views cannot mutate Notes state, but captured identities observe application updates
+  ---
+  duration_ms: 2.363695
+  type: 'test'
+  ...
+# Subtest: fetch preserves archived query, failures clear notes, and successful fallback shapes
+ok 16 - fetch preserves archived query, failures clear notes, and successful fallback shapes
+  ---
+  duration_ms: 1.94817
+  type: 'test'
+  ...
+# Subtest: fetch completions retain the original last-completion ordering
+ok 17 - fetch completions retain the original last-completion ordering
+  ---
+  duration_ms: 0.385528
+  type: 'test'
+  ...
+# Subtest: legacy public namespace and default API are intentional
+ok 18 - legacy public namespace and default API are intentional
+  ---
+  duration_ms: 1.584793
+  type: 'test'
+  ...
+# Subtest: CRUD preserves same-origin credentials, payloads and error contracts
+ok 19 - CRUD preserves same-origin credentials, payloads and error contracts
+  ---
+  duration_ms: 3.034261
+  type: 'test'
+  ...
+# Subtest: recurrence clock is read after first advancement and never for none
+ok 20 - recurrence clock is read after first advancement and never for none
+  ---
+  duration_ms: 2.407217
+  type: 'test'
+  ...
+# Subtest: archive failure restores position; undo failure rolls back reinsertion
+ok 21 - archive failure restores position; undo failure rolls back reinsertion
+  ---
+  duration_ms: 3.391396
+  type: 'test'
+  ...
+# Subtest: typing is backed up synchronously, even before the autosave timer
+ok 22 - typing is backed up synchronously, even before the autosave timer
+  ---
+  duration_ms: 2.081561
+  type: 'test'
+  ...
+# Subtest: checklist type without an active pill preserves items
+ok 23 - checklist type without an active pill preserves items
+  ---
+  duration_ms: 0.320175
+  type: 'test'
+  ...
+# Subtest: failed network save retains recoverable edits including empty text
+ok 24 - failed network save retains recoverable edits including empty text
+  ---
+  duration_ms: 3.219672
+  type: 'test'
+  ...
+# Subtest: older save cannot clear newer draft and writes are serialized
+ok 25 - older save cannot clear newer draft and writes are serialized
+  ---
+  duration_ms: 2.329089
+  type: 'test'
+  ...
+# Subtest: list, reorder, upload, reminder and agent transports retain exact requests
+ok 26 - list, reorder, upload, reminder and agent transports retain exact requests
+  ---
+  duration_ms: 1.230424
+  type: 'test'
+  ...
+# Subtest: draft and marker persistence retain keys, formats and malformed fallback
+ok 27 - draft and marker persistence retain keys, formats and malformed fallback
+  ---
+  duration_ms: 0.621504
+  type: 'test'
+  ...
+# Subtest: recurrence differential oracle in UTC
+ok 28 - recurrence differential oracle in UTC
+  ---
+  duration_ms: 50.792728
+  type: 'test'
+  ...
+# Subtest: recurrence differential oracle in Europe/Lisbon
+ok 29 - recurrence differential oracle in Europe/Lisbon
+  ---
+  duration_ms: 55.226894
+  type: 'test'
+  ...
+# Subtest: recurrence differential oracle in America/New_York
+ok 30 - recurrence differential oracle in America/New_York
+  ---
+  duration_ms: 68.585005
+  type: 'test'
+  ...
+# Subtest: recurrence differential oracle in Australia/Sydney
+ok 31 - recurrence differential oracle in Australia/Sydney
+  ---
+  duration_ms: 53.295475
+  type: 'test'
+  ...
+# Subtest: startup and loop are idempotent, and panel closure leaves background scheduling alive
+ok 32 - startup and loop are idempotent, and panel closure leaves background scheduling alive
+  ---
+  duration_ms: 2.675554
+  type: 'test'
+  ...
+# Subtest: fresh reminders dispatch once, stale reminders mark silently, recurring reminders advance
+ok 33 - fresh reminders dispatch once, stale reminders mark silently, recurring reminders advance
+  ---
+  duration_ms: 2.854571
+  type: 'test'
+  ...
+# Subtest: slow synthesis and rejected dispatch use the local fallback exactly once
+ok 34 - slow synthesis and rejected dispatch use the local fallback exactly once
+  ---
+  duration_ms: 1.64671
+  type: 'test'
+  ...
+# Subtest: notification denial, unsupported browsers and permission errors remain fail-safe
+ok 35 - notification denial, unsupported browsers and permission errors remain fail-safe
+  ---
+  duration_ms: 0.305146
+  type: 'test'
+  ...
+# Subtest: pin and delete failures roll back captured state and order
+ok 36 - pin and delete failures roll back captured state and order
+  ---
+  duration_ms: 3.575123
+  type: 'test'
+  ...
+# Subtest: item removal, quick add and checkbox errors preserve checklist contents
+ok 37 - item removal, quick add and checkbox errors preserve checklist contents
+  ---
+  duration_ms: 2.989156
+  type: 'test'
+  ...
+# Subtest: submission preserves top ordering, server ID replacement and newer draft recovery
+ok 38 - submission preserves top ordering, server ID replacement and newer draft recovery
+  ---
+  duration_ms: 1.311558
+  type: 'test'
+  ...
+# Subtest: selection can exit only after synchronous acceptance
+ok 39 - selection can exit only after synchronous acceptance
+  ---
+  duration_ms: 0.463596
+  type: 'test'
+  ...
+# Subtest: listener owners release on replacement and disposal is idempotent
+ok 40 - listener owners release on replacement and disposal is idempotent
+  ---
+  duration_ms: 0.353267
+  type: 'test'
+  ...
+# Subtest: render helpers reject script-capable media and escape URL attributes
+ok 41 - render helpers reject script-capable media and escape URL attributes
+  ---
+  duration_ms: 0.470739
+  type: 'test'
+  ...
+# Cannot attach Notes context: no active or pending chat
+# Subtest: pending selections transfer only to the materialized chat
+ok 42 - pending selections transfer only to the materialized chat
+  ---
+  duration_ms: 2.691283
+  type: 'test'
+  ...
+# Subtest: new chat resets old indicator and invalid selection is rejected
+ok 43 - new chat resets old indicator and invalid selection is rejected
+  ---
+  duration_ms: 1.537705
+  type: 'test'
+  ...
+# Subtest: producer events and rejection acknowledgement are wired in source
+ok 44 - producer events and rejection acknowledgement are wired in source
+  ---
+  duration_ms: 0.395517
+  type: 'test'
+  ...
+1..44
+# tests 44
+# suites 0
+# pass 44
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 290.064329
