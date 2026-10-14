@@ -290,7 +290,7 @@ export function createReminderPicker({
       menu.innerHTML = `
       <div class="note-reminder-menu-title">Pick date and time</div>
       <div class="note-reminder-menu-picker">
-        <input type="datetime-local" class="note-reminder-date-input" value="${initial}" />
+        <input type="datetime-local" class="note-reminder-date-input" />
       </div>
       <div class="note-reminder-menu-divider"></div>
       <button class="note-reminder-menu-item note-reminder-menu-confirm">
@@ -313,6 +313,7 @@ export function createReminderPicker({
       menu.style.top = top + 'px';
       menu.style.left = left + 'px';
       const dInput = menu.querySelector('.note-reminder-date-input');
+      dInput.value = initial;
       dInput.focus();
       if (typeof dInput.showPicker === 'function') {
         try { dInput.showPicker(); } catch {}
