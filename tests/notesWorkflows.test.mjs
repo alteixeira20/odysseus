@@ -143,5 +143,5 @@ test('render helpers reject script-capable media and escape URL attributes', () 
   assert.equal(helpers._safeImgSrc('data:image/png;base64,abc'), 'data:image/png;base64,abc');
   assert.equal(helpers._attrEsc('"\'<>`'), '&quot;&#39;&lt;&gt;&#96;');
   assert.match(helpers._linkify('<script> https://example.org/test'), /&lt;script&gt;/);
-  assert.doesNotMatch(helpers._linkify('<script> https://example.org/test'), /<script>/);
+  assert.doesNotMatch(helpers._linkify('<script> https://example.org/test'), /<script>/i);
 });
